@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -119,6 +120,32 @@ func NewAgentLoop(
 
 	// Register shared tools to all agents (now that al is created)
 	registerSharedTools(al, cfg, msgBus, registry, provider)
+
+	// Optional minimal coding profile: expose only read/write/edit/bash.
+	if os.Getenv("DEEPCLAW_CODING_PROFILE") == "1" {
+		for _, agentID := range registry.ListAgentIDs() {
+			agent, ok := registry.GetAgent(agentID)
+			if !ok || agent == nil || agent.Tools == nil {
+				continue
+			}
+			oldRegistry := agent.Tools
+			codingRegistry := tools.NewToolRegistry()
+			codingRegistry.SetWorkspace(agent.Workspace)
+			codingRegistry.SetMaxInlineResultRunes(cfg.Tools.GetMaxInlineResultChars())
+			for _, pair := range []struct{ old, new string }{
+				{"read_file", "read"},
+				{"write_file", "write"},
+				{"edit_file", "edit"},
+				{"exec", "bash"},
+			} {
+				if inner, ok := oldRegistry.Get(pair.old); ok {
+					codingRegistry.Register(tools.NewCodingAliasTool(pair.new, inner))
+				}
+			}
+			agent.Tools = codingRegistry
+		}
+		logger.InfoCF("agent", "minimal coding profile enabled", map[string]any{"tools": []string{"read", "write", "edit", "bash"}})
+	}
 
 	return al
 }
