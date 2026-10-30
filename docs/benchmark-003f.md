@@ -388,7 +388,7 @@ Configured free provider:
 | exact model | `poolside/laguna-xs-2.1:free` |
 | API base | `https://inference-api.nousresearch.com/v1` |
 | credential expiry | `2026-10-30T11:31:39Z` |
-| attempt time | `2026-10-30T14:17Z` |
+| attempt time | `2026-10-30T14:20Z` |
 | temperature | `0` |
 | max tokens | `256` |
 | context window | `32768` |
@@ -412,7 +412,7 @@ Results:
 - No prompt/completion/cache tokens, correctness or latency conclusions are
   claimed.
 
-The credential had expired about 2 hours 46 minutes before the attempt. The
+The credential had expired about 2 hours 48 minutes before the attempt. The
 blocker record with the exact configuration hash, expiry and per-trial errors
 is preserved at:
 
