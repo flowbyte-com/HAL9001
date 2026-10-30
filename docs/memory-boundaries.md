@@ -71,6 +71,16 @@ stored entry resident rather than risking suppression of a fact the summary did
 not actually preserve. The state remains a separate `PromptPart` with source
 `task.state`, inside the existing lower-trust retrieved-context envelope.
 
+The rendered block is a **per-request snapshot**, not a turn-long snapshot. A
+verified tool result is committed to the sidecar before the result joins the
+next request view. Before dispatch, the runtime re-renders only the
+`task.state` block against the current history, summary and committed state.
+The MPM block and the user-authored question are preserved, no retrieval is
+repeated, and the persisted session history is not rewritten. Once a request is
+dispatched its message slice is frozen, so a later tool result cannot rewrite
+what the provider already received. `always` retains 004A's visibility rules;
+it no longer carries a turn-start snapshot forward.
+
 ### Resident MPM retrieval cache
 
 Owned by the existing active-memory lifecycle. It carries retrieved MPM records

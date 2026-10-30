@@ -127,16 +127,23 @@ func (a *AgentInstance) taskStatePromptPart(
 	history []providers.Message,
 	summary, currentMessage string,
 ) (PromptPart, bool) {
+	visible := taskHistoryText(history, summary)
+	if strings.TrimSpace(currentMessage) != "" {
+		visible += "\n" + currentMessage
+	}
+	return a.taskStatePromptPartForVisible(sessionKey, visible)
+}
+
+// taskStatePromptPartForVisible renders the current task state against an
+// explicit visibility view. Both the initial prompt build and the in-turn
+// refresh use this path so residency rules cannot diverge.
+func (a *AgentInstance) taskStatePromptPartForVisible(sessionKey, visible string) (PromptPart, bool) {
 	if !a.taskStateActive() || strings.TrimSpace(sessionKey) == "" {
 		return PromptPart{}, false
 	}
 	state, err := a.ActiveMemory.TaskState(sessionKey)
 	if err != nil || state == nil {
 		return PromptPart{}, false
-	}
-	visible := taskHistoryText(history, summary)
-	if strings.TrimSpace(currentMessage) != "" {
-		visible += "\n" + currentMessage
 	}
 	text := strings.TrimSpace(state.RenderWithMode(visible, a.TaskStateBudget, a.TaskStateResidency))
 	if text == "" {
@@ -146,12 +153,100 @@ func (a *AgentInstance) taskStatePromptPart(
 		ID:      "context.task.state",
 		Layer:   PromptLayerContext,
 		Slot:    PromptSlotMemory,
-		Source:  PromptSource{ID: PromptSourceTaskState, Name: "task.state"},
+		Source:  PromptSource{ID: PromptSourceTaskState, Name: taskStateSourceName},
 		Title:   "task state",
 		Content: text,
 		Stable:  false,
 		Cache:   PromptCacheNone,
 	}, true
+}
+
+const taskStateSourceName = "task.state"
+
+// refreshTaskStatePromptPart updates only the task.state retrieved-context
+// block in the next request view. Tool results are recorded before the next
+// iteration, but the prompt attached at turn setup is otherwise frozen; this
+// makes the block a per-request snapshot instead of a per-turn one. The MPM
+// block, persisted history and retrieval cache are untouched, so a state
+// change never triggers another MPM retrieval.
+func (a *AgentInstance) refreshTaskStatePromptPart(ts *turnState, exec *turnExecution) {
+	if !a.taskStateActive() || ts == nil || exec == nil || len(exec.messages) == 0 {
+		return
+	}
+	index := taskStatePromptMessageIndex(ts, exec)
+	if index < 0 {
+		return
+	}
+	part, ok := a.taskStatePromptPartForVisible(
+		ts.sessionKey,
+		taskStateVisiblePrompt(ts, exec, index),
+	)
+	block := ""
+	if ok {
+		block = renderRetrievedContext([]PromptPart{part})
+	}
+	message := exec.messages[index]
+	updated := upsertRetrievedContextBlock(
+		message.Content, block, taskStateSourceName, ts.userMessage,
+	)
+	if updated == message.Content {
+		return
+	}
+	message.Content = updated
+	exec.messages[index] = message
+}
+
+// taskStatePromptMessageIndex finds the current user-authored request view.
+// The message already carrying the block is preferred; currentTurnStart is the
+// normal fallback, and the metadata scan covers a compaction rebuild that kept
+// the message in place.
+func taskStatePromptMessageIndex(ts *turnState, exec *turnExecution) int {
+	// Prefer the message that already carries the block. A compaction rebuild
+	// attaches retrieved context to the last user-authored message, which can
+	// be a steering message rather than currentTurnStart.
+	for index := len(exec.messages) - 1; index >= 0; index-- {
+		message := exec.messages[index]
+		if message.Role == "user" &&
+			strings.Contains(message.Content, retrievedContextBlockHeader(taskStateSourceName)) {
+			return index
+		}
+	}
+	if index := exec.currentTurnStart; index >= 0 && index < len(exec.messages) &&
+		exec.messages[index].Role == "user" {
+		return index
+	}
+	for index := len(exec.messages) - 1; index >= 0; index-- {
+		message := exec.messages[index]
+		if message.Role == "user" && message.PromptSource == string(PromptSourceUserMessage) {
+			return index
+		}
+	}
+	return -1
+}
+
+// taskStateVisiblePrompt builds the visibility view for an in-turn refresh.
+// The system prompt is excluded because the summary is passed separately; the
+// current user message contributes only its user-authored text, not the
+// retrieved-context decoration or the stale task-state block.
+func taskStateVisiblePrompt(ts *turnState, exec *turnExecution, current int) string {
+	var b strings.Builder
+	b.WriteString(exec.summary)
+	for index, message := range exec.messages {
+		if message.Role == "system" {
+			continue
+		}
+		b.WriteString("\n")
+		if index == current {
+			content := strings.TrimSpace(ts.userMessage)
+			if content == "" {
+				content = stripRetrievedContextBlock(message.Content, taskStateSourceName)
+			}
+			b.WriteString(content)
+			continue
+		}
+		b.WriteString(stripRetrievedContextBlock(message.Content, taskStateSourceName))
+	}
+	return b.String()
 }
 
 func taskHistoryText(history []providers.Message, summary string) string {

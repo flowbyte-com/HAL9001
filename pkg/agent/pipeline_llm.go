@@ -34,6 +34,11 @@ func (p *Pipeline) CallLLM(
 	// PreLLM: resolve media refs (except on iteration 1 where user media is already resolved)
 	if iteration > 1 {
 		exec.messages = resolveMediaRefsWithOptions(exec.messages, p.MediaStore, mediaOpts, exec.currentTurnStart)
+		// Tool results are recorded before the next iteration, but the
+		// task-state prompt part was attached when the turn started. Refresh
+		// only that dynamic part so this request reflects the state as of this
+		// iteration. MPM retrieval is not repeated.
+		ts.agent.refreshTaskStatePromptPart(ts, exec)
 	}
 
 	// PreLLM: graceful terminal handling
@@ -60,7 +65,10 @@ func (p *Pipeline) CallLLM(
 		exec.providerToolDefs = filtered
 	}
 
-	exec.callMessages = exec.messages
+	// Freeze the request view. The task-state refresh mutates exec.messages
+	// before this point; a later iteration must never rewrite the snapshot
+	// already handed to the provider.
+	exec.callMessages = append([]providers.Message(nil), exec.messages...)
 	if exec.gracefulTerminal {
 		exec.callMessages = append(append([]providers.Message(nil), exec.messages...), ts.interruptHintMessage())
 		exec.providerToolDefs = nil

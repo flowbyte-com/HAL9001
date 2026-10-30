@@ -453,7 +453,8 @@ It does **not** show that:
 - the final t6 request is perfectly current. Supersession is recorded after
   that request is assembled, so both B and C still show the failure there; the
   next turn is clean and the answer is correct. This is capture timing, not
-  residency.
+  residency. (Corrected in 004C: the task-state part is now refreshed from
+  committed state before each request; see `docs/milestone-004c.md`.)
 
 The production default is now `boundary`. `DEEPCLAW_TASK_STATE_RESIDENCY=always`
 restores exact 004A behavior for comparison or rollback. The task-state store,

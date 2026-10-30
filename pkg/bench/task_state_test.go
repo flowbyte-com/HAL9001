@@ -133,6 +133,32 @@ func TestTaskStateResidencyExperiment(t *testing.T) {
 		t.Fatalf("boundary repeated state still visible in history:\n%s", boundaryT2)
 	}
 
+	// The last t6 request is assembled after the successful rerun. Its task
+	// state must reflect that result; the earlier failure may remain only as
+	// superseded history and must not appear as an unresolved claim.
+	var t6 []RawRecord
+	for _, record := range readRawRecords(t, boundary.RawPath) {
+		if record.TurnID == "t6" {
+			t6 = append(t6, record)
+		}
+	}
+	if len(t6) < 2 {
+		t.Fatalf("t6 requests = %d, want at least 2", len(t6))
+	}
+	lastT6 := t6[len(t6)-1]
+	lastState := rawTaskStateBlock(lastT6)
+	if strings.Contains(lastState, TaskStateDiagnostic) {
+		t.Fatalf("last t6 task-state block still presented the resolved failure as active:\n%s", lastState)
+	}
+	lastT6Text := rawRecordText(lastT6)
+	if !strings.Contains(lastT6Text, "ok  \tgithub.com/example/parser\t0.02s") &&
+		!strings.Contains(lastT6Text, "ok github.com/example/parser 0.02s") {
+		t.Fatalf("last t6 request did not contain the successful tool result:\n%s", lastT6Text)
+	}
+	if got := strings.Count(lastT6Text, "source: task.state"); got != 1 {
+		t.Fatalf("last t6 request has %d task-state parts, want 1:\n%s", got, lastT6Text)
+	}
+
 	spec := trialSpec(t, boundary)
 	for _, root := range []string{spec.MPMWorkspace, spec.MPMHome} {
 		if found := filesContaining(t, root, TaskStateDiagnostic); len(found) > 0 {
@@ -277,4 +303,29 @@ func filesContaining(t *testing.T, root, needle string) []string {
 		t.Fatalf("scan %s: %v", root, err)
 	}
 	return found
+}
+
+func rawRecordText(record RawRecord) string {
+	var b strings.Builder
+	for _, message := range record.Messages {
+		b.WriteString(message.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func rawTaskStateBlock(record RawRecord) string {
+	const marker = "source: task.state):"
+	for _, message := range record.Messages {
+		index := strings.Index(message.Content, marker)
+		if index < 0 {
+			continue
+		}
+		block := message.Content[index+len(marker):]
+		if end := strings.Index(block, "\n\nQuestion: "); end >= 0 {
+			block = block[:end]
+		}
+		return block
+	}
+	return ""
 }
