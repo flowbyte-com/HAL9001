@@ -43,11 +43,19 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		}
 		logger.DebugCF("agent", "MPM retrieval", map[string]any{
 			"duration_ms": time.Since(retrievalStart).Milliseconds(),
-		 "records":     len(retrieval.Records),
-		 "tokens":      retrieval.Tokens,
+			"records":     len(retrieval.Records),
+			"tokens":      retrieval.Tokens,
 		})
 		if ts.agent.ActiveMemory != nil {
-			prev, _ := ts.agent.ActiveMemory.Load(ts.sessionKey)
+			prev, loadErr := ts.agent.ActiveMemory.Load(ts.sessionKey)
+			if loadErr != nil {
+				logger.WarnCF("agent", "Active memory load failed; starting from fresh scoped state",
+					map[string]any{
+						"session_key": ts.sessionKey,
+						"error":       loadErr.Error(),
+					})
+				prev = nil
+			}
 			projectID := ""
 			if ts.agent.MPMRetriever != nil {
 				projectID = ts.agent.MPMRetriever.Config().ProjectID

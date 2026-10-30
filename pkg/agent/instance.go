@@ -198,13 +198,19 @@ func NewAgentInstance(
 		logger.WarnCF("agent", "Failed to initialize MPM retriever; DeepClaw memory disabled",
 			map[string]any{"error": err.Error()})
 	}
+	deepClawProjectID := ""
 	if mpmRetriever != nil {
 		contextBuilder.deepClawMode = true
+		deepClawProjectID = strings.TrimSpace(mpmRetriever.Config().ProjectID)
+		// Bind all persisted conversation state (JSONL history, summaries and
+		// the context manager's own store) to the project. Routing and
+		// steering keep using the original session key.
+		sessions = newProjectScopedSessionStore(sessions, deepClawProjectID)
 	}
 
 	var activeMemory *ActiveMemoryStore
 	if os.Getenv("DEEPCLAW_ACTIVE_MEMORY") == "1" {
-		activeMemory = NewActiveMemoryStore(workspace)
+		activeMemory = NewActiveMemoryStore(workspace, deepClawProjectID)
 	}
 
 	agentID := routing.DefaultAgentID
@@ -369,8 +375,8 @@ func NewAgentInstance(
 		Provider:                provider,
 		Sessions:                sessions,
 		ContextBuilder:          contextBuilder,
-	MPMRetriever:            mpmRetriever,
-	ActiveMemory:             activeMemory,
+		MPMRetriever:            mpmRetriever,
+		ActiveMemory:            activeMemory,
 		Tools:                   toolsRegistry,
 		Definition:              definition,
 		Subagents:               subagents,

@@ -2,14 +2,14 @@ package agent
 
 import (
 	"encoding/json"
-
+	"fmt"
 	"os"
-
-	"github.com/sipeed/picoclaw/pkg/mpm"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/mpm"
 )
 
 // ActiveMemoryRecord is a bounded resident MPM record.
@@ -31,17 +31,29 @@ type ActiveWorkingSet struct {
 
 // ActiveMemoryStore persists bounded working sets as session-local files.
 type ActiveMemoryStore struct {
-	dir string
-	mu  sync.Mutex
+	dir       string
+	projectID string
+	mu        sync.Mutex
 }
 
-func NewActiveMemoryStore(workspace string) *ActiveMemoryStore {
+// NewActiveMemoryStore creates a project-aware store. The project argument is
+// optional only for compatibility with callers outside DeepClaw mode; when it
+// is empty, the store keeps the legacy unscoped path and Load/Save cannot
+// establish ownership, so DeepClaw callers must pass it.
+func NewActiveMemoryStore(workspace string, projectIDs ...string) *ActiveMemoryStore {
 	dir := filepath.Join(workspace, ".deepclaw", "active-memory")
 	_ = os.MkdirAll(dir, 0o700)
-	return &ActiveMemoryStore{dir: dir}
+	projectID := ""
+	if len(projectIDs) > 0 {
+		projectID = strings.TrimSpace(projectIDs[0])
+	}
+	return &ActiveMemoryStore{dir: dir, projectID: projectID}
 }
 
 func (s *ActiveMemoryStore) path(sessionKey string) string {
+	if s.projectID != "" {
+		sessionKey = projectScopedSessionKey(s.projectID, sessionKey)
+	}
 	name := strings.ReplaceAll(sessionKey, ":", "_")
 	name = strings.ReplaceAll(name, "/", "_")
 	name = strings.ReplaceAll(name, "\\", "_")
@@ -68,12 +80,30 @@ func (s *ActiveMemoryStore) Load(sessionKey string) (*ActiveWorkingSet, error) {
 	if ws.SessionKey != sessionKey {
 		return nil, nil
 	}
+	// Ownership is established by both the stored project and every resident
+	// record's tag. A matching session key alone is never sufficient: the old
+	// implementation could write the current project into ProjectID while
+	// retaining records from a previous project.
+	if s.projectID != "" && strings.TrimSpace(ws.ProjectID) != s.projectID {
+		return nil, nil
+	}
+	ws.Records = filterActiveRecordsByProject(ws.Records, s.projectID)
 	return &ws, nil
 }
 
 func (s *ActiveMemoryStore) Save(ws *ActiveWorkingSet) error {
 	if ws == nil {
 		return nil
+	}
+	if s.projectID != "" && strings.TrimSpace(ws.ProjectID) != s.projectID {
+		return fmt.Errorf(
+			"active memory project mismatch: store=%q working_set=%q",
+			s.projectID,
+			ws.ProjectID,
+		)
+	}
+	if s.projectID != "" {
+		ws.Records = filterActiveRecordsByProject(ws.Records, s.projectID)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,6 +118,29 @@ func (s *ActiveMemoryStore) Delete(sessionKey string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_ = os.Remove(s.path(sessionKey))
+}
+
+func activeRecordProject(rec ActiveMemoryRecord) string {
+	for _, tag := range rec.Tags {
+		tag = strings.TrimSpace(tag)
+		if strings.HasPrefix(tag, "project:") {
+			return strings.TrimSpace(strings.TrimPrefix(tag, "project:"))
+		}
+	}
+	return ""
+}
+
+func filterActiveRecordsByProject(records []ActiveMemoryRecord, projectID string) []ActiveMemoryRecord {
+	if projectID == "" {
+		return records
+	}
+	filtered := make([]ActiveMemoryRecord, 0, len(records))
+	for _, rec := range records {
+		if activeRecordProject(rec) == projectID {
+			filtered = append(filtered, rec)
+		}
+	}
+	return filtered
 }
 
 func estimateTokens(s string) int {
@@ -130,24 +183,30 @@ func MergeActiveWorkingSet(prev *ActiveWorkingSet, retrieval *mpm.Retrieval, obj
 	if budget <= 0 {
 		budget = 500
 	}
+	project = strings.TrimSpace(project)
 	ws := &ActiveWorkingSet{
 		SessionKey: "",
 		ProjectID:  project,
 		Objective:  strings.TrimSpace(objective),
 		UpdatedAt:  time.Now(),
 	}
-	if prev != nil {
+	// Previous state is trusted only when it declares the same project and
+	// every resident record carries the matching project tag. A matching
+	// session key is not enough; legacy unscoped or cross-project state must be
+	// discarded rather than relabelled.
+	prevBelongs := prev != nil && project != "" && strings.TrimSpace(prev.ProjectID) == project
+	if prevBelongs {
 		if ws.Objective == "" {
 			ws.Objective = prev.Objective
-		}
-		if ws.ProjectID == "" {
-			ws.ProjectID = prev.ProjectID
 		}
 	}
 	seen := map[string]bool{}
 	var records []ActiveMemoryRecord
 	add := func(rec ActiveMemoryRecord) {
 		if rec.ID == "" || seen[rec.ID] {
+			return
+		}
+		if project != "" && activeRecordProject(rec) != project {
 			return
 		}
 		// Bound the resident set by estimated tokens.
@@ -165,7 +224,7 @@ func MergeActiveWorkingSet(prev *ActiveWorkingSet, retrieval *mpm.Retrieval, obj
 			add(ActiveMemoryRecord{ID: r.ID, Content: r.Content, Tags: append([]string(nil), r.Tags...), Score: r.Score})
 		}
 	}
-	if prev != nil {
+	if prevBelongs {
 		for _, r := range prev.Records {
 			add(ActiveMemoryRecord{ID: r.ID, Content: r.Content, Tags: append([]string(nil), r.Tags...), Score: r.Score})
 		}
