@@ -401,3 +401,103 @@ func TestTaskStateFilesCannotBeRewrittenByAgentTools(t *testing.T) {
 }
 
 func intPtr(value int) *int { return &value }
+
+func TestTaskStateResidencyMode(t *testing.T) {
+	t.Setenv(TaskStateResidencyEnv, "")
+	if got := TaskStateResidencyMode(); got != TaskStateResidencyBoundary {
+		t.Fatalf("default residency = %q", got)
+	}
+	t.Setenv(TaskStateResidencyEnv, TaskStateResidencyAlways)
+	if got := TaskStateResidencyMode(); got != TaskStateResidencyAlways {
+		t.Fatalf("always residency = %q", got)
+	}
+	t.Setenv(TaskStateResidencyEnv, "unexpected")
+	if got := TaskStateResidencyMode(); got != TaskStateResidencyBoundary {
+		t.Fatalf("invalid residency = %q", got)
+	}
+}
+
+func TestTaskStateBoundarySuppressesWhitespaceDuplicate(t *testing.T) {
+	state := NewTaskState("atlas", "sk_v1_test")
+	state.RecordTool("bash", map[string]any{"command": "go test ./parser"}, failingTestOutput(), true, "call-1", "t1", "")
+	rawHistory := "--- FAIL: TestParsePort\nparse.go:12: undefined: parsePort\nFAIL\tgithub.com/example/parser\t0.01s\n\n[Command exited with code 1]"
+
+	if !strings.Contains(state.Render(rawHistory, 500), "Failure") {
+		t.Fatal("always mode should not match a multi-line history against a normalized quote")
+	}
+	if rendered := state.RenderWithMode(rawHistory, 500, TaskStateResidencyBoundary); rendered != "" {
+		t.Fatalf("boundary mode repeated a fact visible in history:\n%s", rendered)
+	}
+}
+
+func TestTaskStateBoundaryDropsRoutineAndBookkeeping(t *testing.T) {
+	store := newTaskStateStore(t, "atlas")
+	state := applyTaskState(t, store, "sk_v1_test", func(state *TaskState) {
+		state.RecordTool("write", map[string]any{"path": "parser_check.sh"}, "File written: parser_check.sh", false, "call-1", "t1", "")
+		state.RecordTool("bash", map[string]any{"command": "sh parser_check.sh"}, failingTestOutput(), true, "call-2", "t1", "")
+		state.RecordTool("bash", map[string]any{"command": "sh parser_check.sh"}, passingTestOutput(), false, "call-3", "t2", "")
+		state.RecordCompaction("threshold", "t3")
+	})
+	boundary := state.RenderWithMode("", 500, TaskStateResidencyBoundary)
+	if strings.Contains(boundary, "parser_check.sh. Reported: File written") {
+		t.Fatalf("routine write observation was rendered:\n%s", boundary)
+	}
+	if strings.Contains(boundary, "Compaction") {
+		t.Fatalf("compaction bookkeeping was rendered:\n%s", boundary)
+	}
+	if !strings.Contains(boundary, "bash succeeded: sh parser_check.sh") {
+		t.Fatalf("command observation was dropped:\n%s", boundary)
+	}
+	always := state.Render("", 500)
+	if !strings.Contains(always, "Compaction") || !strings.Contains(always, "File written: parser_check.sh") {
+		t.Fatalf("always mode should retain 004A output:\n%s", always)
+	}
+}
+
+func TestTaskStateBoundaryKeepsHiddenFailure(t *testing.T) {
+	state := NewTaskState("atlas", "sk_v1_test")
+	state.RecordTool("bash", map[string]any{"command": "go test ./parser"}, failingTestOutput(), true, "call-1", "t1", "")
+	rendered := state.RenderWithMode("", 500, TaskStateResidencyBoundary)
+	if !strings.Contains(rendered, "undefined: parsePort") || !strings.Contains(rendered, "Failure") {
+		t.Fatalf("hidden failure was suppressed:\n%s", rendered)
+	}
+}
+
+func TestTaskStateBoundarySuppressesSummaryEquivalentEvidence(t *testing.T) {
+	state := NewTaskState("atlas", "sk_v1_test")
+	state.RecordTool("bash", map[string]any{"command": "go test ./parser"}, failingTestOutput(), true, "call-1", "t1", "")
+	summary := "Compaction summary: Source: bash `go test ./parser` (exit 1) reported " +
+		"--- FAIL: TestParsePort parse.go:12: undefined: parsePort FAIL github.com/example/parser 0.01s " +
+		"[Command exited with code 1]"
+	rendered := state.RenderWithMode(summary, 500, TaskStateResidencyBoundary)
+	if strings.Contains(rendered, "Failure") {
+		t.Fatalf("summary-equivalent evidence was repeated:\n%s", rendered)
+	}
+}
+
+func TestTaskStateBoundaryCompletedObjectiveIsNotResident(t *testing.T) {
+	state := NewTaskState("atlas", "sk_v1_test")
+	state.ApplyUserMessage("Objective: Fix port parsing.\nDone: objective complete.", "t1")
+	if rendered := state.RenderWithMode("", 500, TaskStateResidencyBoundary); rendered != "" {
+		t.Fatalf("completed objective was rendered:\n%s", rendered)
+	}
+	if !strings.Contains(state.Render("", 500), "Objective [completed]") {
+		t.Fatal("always mode should retain 004A completed-objective output")
+	}
+}
+
+func TestTaskStateBoundaryPartialSupersession(t *testing.T) {
+	store := newTaskStateStore(t, "atlas")
+	state := applyTaskState(t, store, "sk_v1_test", func(state *TaskState) {
+		state.RecordTool("bash", map[string]any{"command": "sh parser_check.sh"}, "--- FAIL: parse.go:12: undefined: parsePort", true, "call-1", "t1", "")
+		state.RecordTool("bash", map[string]any{"command": "sh lint_check.sh"}, "--- FAIL: lint.go:4: unused import", true, "call-2", "t1", "")
+		state.RecordTool("bash", map[string]any{"command": "sh parser_check.sh"}, "ok parser\nPASS", false, "call-3", "t2", "")
+	})
+	rendered := state.RenderWithMode("", 500, TaskStateResidencyBoundary)
+	if strings.Contains(rendered, "undefined: parsePort") {
+		t.Fatalf("superseded parser failure was rendered:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "unused import") {
+		t.Fatalf("unrelated lint failure was lost:\n%s", rendered)
+	}
+}

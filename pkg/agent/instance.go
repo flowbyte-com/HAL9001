@@ -54,9 +54,11 @@ type AgentInstance struct {
 	MPMUnsandboxed bool
 	ActiveMemory   *ActiveMemoryStore
 	// TaskStateEnabled gates the 004A evidence-backed short-term task state.
-	// TaskStateBudget is the enforced estimated-token budget for its rendering.
+	// TaskStateBudget is the enforced estimated-token budget for its rendering,
+	// and TaskStateResidency selects which stored entries occupy the prompt.
 	TaskStateEnabled   bool
 	TaskStateBudget    int
+	TaskStateResidency string
 	Definition         AgentContextDefinition
 	Subagents          *config.SubagentsConfig
 	SkillsFilter       []string
@@ -253,6 +255,7 @@ func NewAgentInstance(
 	var activeMemory *ActiveMemoryStore
 	taskStateEnabled := TaskStateEnabled()
 	taskStateBudget := TaskStateBudget()
+	taskStateResidency := TaskStateResidencyMode()
 	if taskStateEnabled {
 		// Task state must not be forgeable by the agent's own shell or file
 		// tools, so its sidecar lives outside the workspace and is registered
@@ -445,6 +448,7 @@ func NewAgentInstance(
 		ActiveMemory:            activeMemory,
 		TaskStateEnabled:        taskStateEnabled,
 		TaskStateBudget:         taskStateBudget,
+		TaskStateResidency:      taskStateResidency,
 		Tools:                   toolsRegistry,
 		Definition:              definition,
 		Subagents:               subagents,

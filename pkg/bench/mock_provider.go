@@ -18,6 +18,9 @@ type mockProvider struct {
 	// rerun" turns. The provider is recreated per trial and called sequentially.
 	t1Stage int
 	t6Stage int
+	// multiT1Stage/multiT2Stage sequence the two-failure scenario.
+	multiT1Stage int
+	multiT2Stage int
 }
 
 func NewMockProvider(spec TrialSpec) providers.LLMProvider {
@@ -45,11 +48,20 @@ func (m *mockProvider) Chat(
 	// neutrally so the compacted history cannot carry the failure diagnostic.
 	if strings.HasPrefix(strings.TrimSpace(lastUser), "Provide a concise summary") ||
 		strings.Contains(lastUser, "Merge these two conversation summaries") {
+		if m.spec.Scenario == "task_state_summary_source" {
+			return m.respond(TaskStateSummarySource, messages), nil
+		}
 		return m.respond("The user worked on parser test changes; earlier conversation details were compacted.", messages), nil
 	}
 
 	if m.spec.Scenario == "task_state_script" {
 		return m.taskStateScriptResponse(messages, lastUser, joined), nil
+	}
+	if m.spec.Scenario == "task_state_multi_failure" {
+		return m.taskStateMultiFailureResponse(messages, lastUser, joined), nil
+	}
+	if m.spec.Scenario == "task_state_summary_source" {
+		return m.taskStateSummarySourceResponse(messages, lastUser, joined), nil
 	}
 
 	if m.spec.Scenario == "abstention" {
@@ -171,6 +183,100 @@ func (m *mockProvider) taskStateScriptResponse(
 			return m.respond("No, the test now passes.", messages)
 		}
 		return m.respond("I don't know whether it is still failing.", messages)
+	}
+	return m.respond("Done.", messages)
+}
+
+func (m *mockProvider) taskStateMultiFailureResponse(
+	messages []providers.Message,
+	lastUser, joined string,
+) *providers.LLMResponse {
+	switch {
+	case strings.Contains(lastUser, "Run both checks and report the failures"):
+		switch m.multiT1Stage {
+		case 0:
+			m.multiT1Stage = 1
+			return m.toolCall(m.toolName("write"), map[string]any{
+				"path": "parser_check.sh", "content": TaskStateCheckScript, "overwrite": true,
+			}, messages)
+		case 1:
+			m.multiT1Stage = 2
+			return m.toolCall(m.toolName("write"), map[string]any{
+				"path": "lint_check.sh", "content": TaskStateLintScript, "overwrite": true,
+			}, messages)
+		case 2:
+			m.multiT1Stage = 3
+			return m.toolCall(m.toolName("bash"), map[string]any{"command": TaskStateTestCommand}, messages)
+		case 3:
+			m.multiT1Stage = 4
+			return m.toolCall(m.toolName("bash"), map[string]any{"command": TaskStateLintCommand}, messages)
+		default:
+			return m.respond("Both checks failed; the tool output has the diagnostics.", messages)
+		}
+	case strings.Contains(lastUser, "Run only the parser test again"):
+		switch m.multiT2Stage {
+		case 0:
+			m.multiT2Stage = 1
+			return m.toolCall(m.toolName("write"), map[string]any{
+				"path": "fixed.flag", "content": "fixed\n", "overwrite": true,
+			}, messages)
+		case 1:
+			m.multiT2Stage = 2
+			return m.toolCall(m.toolName("bash"), map[string]any{"command": TaskStateTestCommand}, messages)
+		default:
+			return m.respond("The parser test now passes.", messages)
+		}
+	case strings.Contains(lastUser, "Which failures remain"):
+		block := taskStateBlock(messages)
+		if block != "" {
+			parser := strings.Contains(block, TaskStateDiagnostic)
+			lint := strings.Contains(block, TaskStateLintDiagnostic)
+			switch {
+			case lint && !parser:
+				return m.respond("The lint check still fails: lint.go:4: unused import.", messages)
+			case lint && parser:
+				return m.respond("Both failures remain.", messages)
+			case parser:
+				return m.respond("The parser failure remains.", messages)
+			default:
+				return m.respond("No recorded failure remains.", messages)
+			}
+		}
+		if strings.Contains(joined, TaskStateLintDiagnostic) {
+			return m.respond("The lint check still fails: lint.go:4: unused import.", messages)
+		}
+		return m.respond("I don't know which failures remain; that detail is no longer in the conversation.", messages)
+	case strings.Contains(lastUser, "Objective: Add a metrics endpoint"):
+		return m.respond("Starting the metrics endpoint task.", messages)
+	}
+	return m.respond("Done.", messages)
+}
+
+func (m *mockProvider) taskStateSummarySourceResponse(
+	messages []providers.Message,
+	lastUser, joined string,
+) *providers.LLMResponse {
+	switch {
+	case strings.Contains(lastUser, "Run the failing parser test"):
+		switch m.t1Stage {
+		case 0:
+			m.t1Stage = 1
+			return m.toolCall(m.toolName("write"), map[string]any{
+				"path": "parser_check.sh", "content": TaskStateCheckScript, "overwrite": true,
+			}, messages)
+		case 1:
+			m.t1Stage = 2
+			return m.toolCall(m.toolName("bash"), map[string]any{"command": TaskStateTestCommand}, messages)
+		default:
+			return m.respond("The failing test reported: parse.go:12: undefined: parsePort.", messages)
+		}
+	case strings.Contains(lastUser, "Continue after compaction"):
+		return m.respond("Compaction complete.", messages)
+	case strings.Contains(lastUser, "What did the failing test report"):
+		if strings.Contains(joined, TaskStateDiagnostic) {
+			return m.respond("The failing test reported: parse.go:12: undefined: parsePort.", messages)
+		}
+		return m.respond("I don't know; that detail is no longer in the conversation.", messages)
 	}
 	return m.respond("Done.", messages)
 }

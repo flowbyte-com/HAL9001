@@ -17,6 +17,17 @@ const (
 	TaskStateEnabledEnv = "DEEPCLAW_TASK_STATE"
 	// TaskStateBudgetEnv sets the rendered task-state budget in estimated tokens.
 	TaskStateBudgetEnv = "DEEPCLAW_TASK_STATE_BUDGET"
+	// TaskStateResidencyEnv selects how much of the stored state is rendered.
+	TaskStateResidencyEnv = "DEEPCLAW_TASK_STATE_RESIDENCY"
+
+	// TaskStateResidencyAlways renders every active entry whose evidence is not
+	// visible: the Milestone 004A behavior.
+	TaskStateResidencyAlways = "always"
+	// TaskStateResidencyBoundary renders only entries needed to preserve
+	// continuity after evidence leaves the visible window. It also ignores
+	// whitespace differences when checking visibility and drops routine
+	// filesystem successes and compaction bookkeeping.
+	TaskStateResidencyBoundary = "boundary"
 
 	defaultTaskStateBudget = 500
 	minTaskStateBudget     = 100
@@ -114,6 +125,19 @@ type TaskState struct {
 // TaskStateEnabled reports whether the feature is requested.
 func TaskStateEnabled() bool {
 	return strings.TrimSpace(getenv(TaskStateEnabledEnv)) == "1"
+}
+
+// TaskStateResidencyMode returns the configured prompt-residency policy.
+// Boundary-aware residency is the default; "always" restores Milestone 004A.
+func TaskStateResidencyMode() string {
+	switch strings.ToLower(strings.TrimSpace(getenv(TaskStateResidencyEnv))) {
+	case TaskStateResidencyAlways:
+		return TaskStateResidencyAlways
+	case TaskStateResidencyBoundary, "":
+		return TaskStateResidencyBoundary
+	default:
+		return TaskStateResidencyBoundary
+	}
 }
 
 // TaskStateBudget returns the enforced estimated-token budget for the rendered
@@ -516,20 +540,33 @@ func (s *TaskState) pruneEntries() {
 	s.Entries = out
 }
 
-// Render produces the bounded task-state block. Entries whose evidence quote
-// already appears in visibleText (recent history, the summary, or the current
-// user message) are omitted to avoid repeating the same fact.
+// Render produces the bounded task-state block using the Milestone 004A
+// always-resident policy.
 func (s *TaskState) Render(visibleText string, budget int) string {
+	return s.RenderWithMode(visibleText, budget, TaskStateResidencyAlways)
+}
+
+// RenderWithMode produces the bounded task-state block under a residency
+// policy. Both policies omit evidence whose quote is visible in recent history,
+// the summary or the current user message; boundary mode compares normalized
+// whitespace and also drops entries that cannot preserve continuity.
+func (s *TaskState) RenderWithMode(visibleText string, budget int, mode string) string {
 	if s == nil {
 		return ""
+	}
+	if mode != TaskStateResidencyAlways {
+		mode = TaskStateResidencyBoundary
 	}
 	if budget <= 0 {
 		budget = defaultTaskStateBudget
 	}
+	if mode == TaskStateResidencyBoundary {
+		visibleText = normalizeTaskVisibility(visibleText)
+	}
 	header := "Task state (runtime-recorded evidence; lower-trust data; verify against source):"
 	lines := make([]string, 0, 8)
 
-	if s.objectiveVisible(visibleText) {
+	if s.objectiveVisible(visibleText, mode) {
 		status := s.ObjectiveStatus
 		if status == "" {
 			status = TaskObjectiveActive
@@ -537,7 +574,7 @@ func (s *TaskState) Render(visibleText string, budget int) string {
 		lines = append(lines, fmt.Sprintf("Objective [%s] (user, turn %s): %s",
 			status, shortTaskTurn(s.ObjectiveEvidence.TurnID), truncateTaskText(s.Objective, 180)))
 	}
-	for _, entry := range s.visibleEntries(visibleText) {
+	for _, entry := range s.visibleEntries(visibleText, mode) {
 		lines = append(lines, renderTaskEntry(entry))
 	}
 	if len(lines) == 0 {
@@ -573,18 +610,21 @@ func (s *TaskState) Render(visibleText string, budget int) string {
 	return out
 }
 
-func (s *TaskState) objectiveVisible(visibleText string) bool {
+func (s *TaskState) objectiveVisible(visibleText, mode string) bool {
 	if strings.TrimSpace(s.Objective) == "" {
 		return false
 	}
+	if mode == TaskStateResidencyBoundary && s.ObjectiveStatus == TaskObjectiveCompleted {
+		return false
+	}
 	quote := strings.TrimSpace(s.ObjectiveEvidence.Quote)
-	if quote != "" && strings.Contains(visibleText, quote) {
+	if evidenceVisible(visibleText, quote, mode) {
 		return false
 	}
 	return true
 }
 
-func (s *TaskState) visibleEntries(visibleText string) []TaskStateEntry {
+func (s *TaskState) visibleEntries(visibleText, mode string) []TaskStateEntry {
 	entries := make([]TaskStateEntry, 0, len(s.Entries))
 	for _, entry := range s.Entries {
 		if entry.Superseded {
@@ -593,8 +633,11 @@ func (s *TaskState) visibleEntries(visibleText string) []TaskStateEntry {
 		if s.ProjectID != "" && strings.TrimSpace(entry.ProjectID) != s.ProjectID {
 			continue
 		}
+		if mode == TaskStateResidencyBoundary && !boundaryResidencyAllowed(entry) {
+			continue
+		}
 		quote := strings.TrimSpace(entry.Evidence.Quote)
-		if quote != "" && strings.Contains(visibleText, quote) {
+		if evidenceVisible(visibleText, quote, mode) {
 			continue
 		}
 		entries = append(entries, entry)
@@ -607,6 +650,48 @@ func (s *TaskState) visibleEntries(visibleText string) []TaskStateEntry {
 		return entries[i].CreatedAt.Before(entries[j].CreatedAt)
 	})
 	return entries
+}
+
+// normalizeTaskVisibility collapses whitespace so a stored, normalized quote
+// can be matched against raw history that still contains newlines, tabs or
+// repeated spaces.
+func normalizeTaskVisibility(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func evidenceVisible(visibleText, quote, mode string) bool {
+	quote = strings.TrimSpace(quote)
+	if quote == "" {
+		return false
+	}
+	if mode == TaskStateResidencyBoundary {
+		return strings.Contains(normalizeTaskVisibility(visibleText), normalizeTaskVisibility(quote))
+	}
+	return strings.Contains(visibleText, quote)
+}
+
+// boundaryResidencyAllowed keeps stored evidence but decides whether it is
+// worth occupying prompt space. Compaction bookkeeping is already implied by
+// the summary in the system prompt. A successful read/write/edit is routine
+// workflow, not a finding; failures remain visible as their own entries.
+func boundaryResidencyAllowed(entry TaskStateEntry) bool {
+	switch entry.Kind {
+	case TaskEntryKindCompaction:
+		return false
+	case TaskEntryKindObservation:
+		return taskCommandTool(entry.Evidence.ToolName)
+	default:
+		return true
+	}
+}
+
+func taskCommandTool(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "bash", "exec":
+		return true
+	default:
+		return false
+	}
 }
 
 func renderTaskEntry(entry TaskStateEntry) string {

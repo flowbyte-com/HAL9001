@@ -44,10 +44,32 @@ The store is created only when `DEEPCLAW_TASK_STATE=1`. It lives under
 registered with `isolation.ProtectPaths`, so agent file tools and the sandboxed
 shell cannot rewrite it.
 
-The rendered block has an enforced budget (`DEEPCLAW_TASK_STATE_BUDGET`,
-default 500 estimated tokens, clamped 100-2000), including its heading. It is a
-separate `PromptPart` with source `task.state`, inside the existing
-lower-trust retrieved-context envelope.
+Two budgets are distinct:
+
+- **Storage budget**: what the sidecar remembers. It is bounded to 64 entries,
+  240 characters per entry content and 320 characters per evidence excerpt.
+  Superseded entries are retained for audit but are not rendered.
+- **Prompt-residency budget**: how much of that stored state occupies a request.
+  `DEEPCLAW_TASK_STATE_BUDGET` caps the rendered block at 500 estimated tokens
+  by default (100-2000, heading included), but the actual block is usually much
+  smaller.
+
+`DEEPCLAW_TASK_STATE_RESIDENCY` selects the residency policy:
+
+- `boundary` (default): render an entry only while its evidence is unavailable
+  in the visible window. Visibility comparison is whitespace-normalized, so a
+  stored one-line excerpt matches multi-line history or a summary. Routine
+  filesystem successes and compaction bookkeeping are not rendered; failures
+  are. Completed objectives and superseded entries are omitted.
+- `always`: the Milestone 004A renderer, kept for comparison and compatibility.
+  It uses exact quote matching and renders every non-superseded entry whose
+  quote is not exactly present.
+
+Boundary mode is conservative: it can recognize an identical finding in a
+summary, but not a paraphrase. A paraphrased summary therefore leaves the
+stored entry resident rather than risking suppression of a fact the summary did
+not actually preserve. The state remains a separate `PromptPart` with source
+`task.state`, inside the existing lower-trust retrieved-context envelope.
 
 ### Resident MPM retrieval cache
 

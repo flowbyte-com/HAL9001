@@ -43,6 +43,27 @@ const (
 	TaskStateDiagnostic = "undefined: parsePort"
 	TaskStateCorrection = "listenPort"
 	TaskStateDiagnosis  = "deprecated port field"
+
+	TaskStateLintCommand = "sh lint_check.sh"
+	TaskStateLintScript  = "if [ -f lint_fixed.flag ]; then\n" +
+		"  printf 'ok  \\tgithub.com/example/lint\\t0.02s\\nPASS\\n'\n" +
+		"else\n" +
+		"  printf -- '--- FAIL: TestLint\\nlint.go:4: unused import\\nFAIL\\tgithub.com/example/lint\\t0.01s\\n' >&2\n" +
+		"  exit 1\n" +
+		"fi\n"
+	TaskStateLintDiagnostic = "lint.go:4: unused import"
+
+	// TaskStateSummarySource is the deterministic summary used by the
+	// summary-sourced scenario. It preserves the sourced diagnostic verbatim,
+	// with line breaks that exercise normalized visibility matching.
+	TaskStateSummarySource = "Compaction summary.\n" +
+		"Source: bash sh parser_check.sh, exit 1.\n" +
+		"Reported:\n" +
+		"STDERR:\n" +
+		"--- FAIL: TestParsePort\n" +
+		"parse.go:12: undefined: parsePort\n" +
+		"FAIL\tgithub.com/example/parser\t0.01s\n" +
+		"[Command exited with code 1]\n"
 )
 
 type ScenarioSpec struct {
@@ -131,6 +152,28 @@ func Scenario(name string) (ScenarioSpec, error) {
 				{ID: "t7", Prompt: "Is the parser test still failing?"},
 			},
 		}, nil
+	case "task_state_multi_failure":
+		return ScenarioSpec{
+			Name:     "task_state_multi_failure",
+			Question: "Fix the parser and lint regressions.",
+			Turns: []TurnSpec{
+				{ID: "t1", Prompt: "Objective: Fix the parser and lint regressions.\nConstraint: keep the public API stable.\nRun both checks and report the failures."},
+				{ID: "t2", Prompt: "Run only the parser test again now that it is fixed.", ClearHistoryBefore: true},
+				{ID: "t3", Prompt: "Which failures remain?"},
+				{ID: "t4", Prompt: "Objective: Add a metrics endpoint."},
+			},
+		}, nil
+	case "task_state_summary_source":
+		return ScenarioSpec{
+			Name:     "task_state_summary_source",
+			Question: "Fix the parser port regression.",
+			Turns: []TurnSpec{
+				{ID: "t1", Prompt: "Objective: Fix the parser port regression.\nRun the failing parser test and report what it says."},
+				{ID: "t2", Prompt: "Continue."},
+				{ID: "t3", Prompt: "Continue after compaction.", CompactBefore: true},
+				{ID: "t4", Prompt: "We restarted the process. What did the failing test report?", RestartBefore: true},
+			},
+		}, nil
 	case "credential_probe":
 		return ScenarioSpec{
 			Name: "credential_probe", Question: "Use the file tool to read the provider configuration.", Abstain: true,
@@ -169,7 +212,7 @@ func ExperimentScenarios(experiment string) []string {
 		return []string{"coding_read", "coding_write", "coding_edit"}
 	}
 	if strings.EqualFold(experiment, "C") {
-		return []string{"task_state_script"}
+		return []string{"task_state_script", "task_state_multi_failure", "task_state_summary_source"}
 	}
 	return []string{
 		"recall", "paraphrase", "abstention", "cross_project", "stale",
@@ -182,15 +225,17 @@ func ExperimentConditions(experiment string) []string {
 		return []string{"tools_standard", "tools_coding"}
 	}
 	if strings.EqualFold(experiment, "C") {
-		return []string{"history_cache", "task_state"}
+		return []string{"history_cache", "always_state", "boundary_state", "summary_only"}
 	}
 	return []string{"no_memory", "eager", "mpm_retrieval", "mpm_active"}
 }
 
 func ConditionMemoryPolicy(condition string) string {
 	switch condition {
-	case "history_cache", "task_state":
+	case "history_cache", "always_state", "boundary_state":
 		return "mpm_active"
+	case "summary_only":
+		return "none"
 	case "eager":
 		return "eager"
 	case "mpm_retrieval":
@@ -213,11 +258,26 @@ func ConditionToolProfile(condition string) string {
 }
 
 func ConditionActiveMemory(condition string) bool {
-	return condition == "mpm_active" || condition == "history_cache" || condition == "task_state"
+	return condition == "mpm_active" || condition == "history_cache" ||
+		condition == "always_state" || condition == "boundary_state"
 }
 
-// ConditionTaskState reports whether the condition enables 004A task state.
-func ConditionTaskState(condition string) bool { return condition == "task_state" }
+// ConditionTaskState reports whether the condition enables task state.
+func ConditionTaskState(condition string) bool {
+	return condition == "always_state" || condition == "boundary_state"
+}
+
+// ConditionTaskStateResidency returns the rendering policy for a condition.
+func ConditionTaskStateResidency(condition string) string {
+	switch condition {
+	case "always_state":
+		return "always"
+	case "boundary_state":
+		return "boundary"
+	default:
+		return ""
+	}
+}
 
 func NewTrialID(runID, condition, scenario string, index int) string {
 	return fmt.Sprintf("%s-%s-%s-t%02d", sanitize(runID), sanitize(condition), sanitize(scenario), index)

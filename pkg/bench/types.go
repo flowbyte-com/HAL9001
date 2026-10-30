@@ -48,8 +48,9 @@ type TrialSpec struct {
 
 	Turns []TurnSpec `json:"turns"`
 
-	TaskState       bool `json:"task_state,omitempty"`
-	TaskStateBudget int  `json:"task_state_budget,omitempty"`
+	TaskState          bool   `json:"task_state,omitempty"`
+	TaskStateBudget    int    `json:"task_state_budget,omitempty"`
+	TaskStateResidency string `json:"task_state_residency,omitempty"`
 
 	MaxTokens         int `json:"max_tokens"`
 	MaxToolIterations int `json:"max_tool_iterations"`
@@ -87,22 +88,23 @@ type Provenance struct {
 }
 
 type Settings struct {
-	Provider        string   `json:"provider"`
-	Model           string   `json:"model"`
-	MemoryPolicy    string   `json:"memory_policy"`
-	ToolProfile     string   `json:"tool_profile"`
-	Isolation       bool     `json:"isolation"`
-	MPMProject      string   `json:"mpm_project,omitempty"`
-	SessionKey      string   `json:"session_key"`
-	MaxTokens       int      `json:"max_tokens"`
-	MaxIterations   int      `json:"max_tool_iterations"`
-	ContextWindow   int      `json:"context_window"`
-	ActiveMemory    bool     `json:"active_memory"`
-	TaskState       bool     `json:"task_state"`
-	TaskStateBudget int      `json:"task_state_budget,omitempty"`
-	ToolNames       []string `json:"tool_names"`
-	ToolSchemaBytes int      `json:"tool_schema_bytes"`
-	ToolSchemaSHA   string   `json:"tool_schema_sha256"`
+	Provider           string   `json:"provider"`
+	Model              string   `json:"model"`
+	MemoryPolicy       string   `json:"memory_policy"`
+	ToolProfile        string   `json:"tool_profile"`
+	Isolation          bool     `json:"isolation"`
+	MPMProject         string   `json:"mpm_project,omitempty"`
+	SessionKey         string   `json:"session_key"`
+	MaxTokens          int      `json:"max_tokens"`
+	MaxIterations      int      `json:"max_tool_iterations"`
+	ContextWindow      int      `json:"context_window"`
+	ActiveMemory       bool     `json:"active_memory"`
+	TaskState          bool     `json:"task_state"`
+	TaskStateBudget    int      `json:"task_state_budget,omitempty"`
+	TaskStateResidency string   `json:"task_state_residency,omitempty"`
+	ToolNames          []string `json:"tool_names"`
+	ToolSchemaBytes    int      `json:"tool_schema_bytes"`
+	ToolSchemaSHA      string   `json:"tool_schema_sha256"`
 }
 
 type UsageRecord struct {
@@ -153,6 +155,10 @@ type RequestRecord struct {
 	RetrievalLatencyMS      int              `json:"retrieval_latency_ms"`
 	ActiveMemoryChars       int              `json:"active_memory_chars"`
 	ActiveMemoryTokens      int              `json:"active_memory_tokens_estimate"`
+	TaskStateChars          int              `json:"task_state_chars"`
+	TaskStateTokens         int              `json:"task_state_tokens_estimate"`
+	TaskStateRenderedCount  int              `json:"task_state_rendered_entries"`
+	TaskStateText           string           `json:"task_state_text,omitempty"`
 
 	Usage           UsageRecord      `json:"usage"`
 	CompletionChars int              `json:"completion_chars"`
@@ -191,6 +197,12 @@ type TurnResult struct {
 	// enabled. It is evidence for the mechanism, not a model-quality score.
 	TaskState *TaskStateSnapshot `json:"task_state,omitempty"`
 	ToolCalls []ToolCallRecord   `json:"tool_calls,omitempty"`
+
+	// Task-state prompt residency for the turn, summed over its requests.
+	TaskStatePromptChars  int    `json:"task_state_prompt_chars,omitempty"`
+	TaskStatePromptTokens int    `json:"task_state_prompt_tokens_estimate,omitempty"`
+	TaskStateRendered     int    `json:"task_state_rendered_entries,omitempty"`
+	TaskStatePromptText   string `json:"task_state_prompt_text,omitempty"`
 }
 
 type Score struct {
@@ -208,6 +220,7 @@ type Score struct {
 // turn. RenderedText is what a prompt with no visible history could carry.
 type TaskStateSnapshot struct {
 	Available           bool     `json:"available"`
+	Residency           string   `json:"residency,omitempty"`
 	Entries             int      `json:"entries"`
 	ActiveEntries       int      `json:"active_entries"`
 	Objective           string   `json:"objective,omitempty"`
@@ -215,6 +228,9 @@ type TaskStateSnapshot struct {
 	ActiveKinds         []string `json:"active_kinds,omitempty"`
 	ActiveVerifications []string `json:"active_verifications,omitempty"`
 	ActiveKeys          []string `json:"active_keys,omitempty"`
+	ActiveIDs           []string `json:"active_ids,omitempty"`
+	ActiveQuotes        []string `json:"active_quotes,omitempty"`
+	ActiveTools         []string `json:"active_tools,omitempty"`
 	RenderedChars       int      `json:"rendered_chars"`
 	RenderedTokens      int      `json:"rendered_tokens_estimate"`
 	RenderedText        string   `json:"rendered_text,omitempty"`
@@ -281,6 +297,8 @@ type TrialTotals struct {
 	TaskStateFinalActiveEntries int `json:"task_state_final_active_entries,omitempty"`
 	TaskStateRenderedChars      int `json:"task_state_rendered_chars,omitempty"`
 	TaskStateRenderedTokens     int `json:"task_state_rendered_tokens_estimate,omitempty"`
+	TaskStatePromptChars        int `json:"task_state_prompt_chars,omitempty"`
+	TaskStatePromptTokens       int `json:"task_state_prompt_tokens_estimate,omitempty"`
 }
 
 type RawRecord struct {
@@ -347,6 +365,8 @@ type Aggregate struct {
 	MeanTaskStateActiveEntries *float64 `json:"mean_task_state_active_entries"`
 	MeanTaskStateTokens        *float64 `json:"mean_task_state_rendered_tokens"`
 	MaxTaskStateTokens         int      `json:"max_task_state_rendered_tokens"`
+	MeanTaskStatePromptTokens  *float64 `json:"mean_task_state_prompt_tokens"`
+	MaxTaskStatePromptTokens   int      `json:"max_task_state_prompt_tokens"`
 }
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339Nano) }

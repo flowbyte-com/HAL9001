@@ -253,11 +253,12 @@ func buildTrialSpec(
 		Facts:           append([]string(nil), scenario.Facts...),
 		ForeignFacts:    append([]string(nil), scenario.ForeignFacts...),
 		FixtureProbe:    filepath.Join(trialDir, "fixtures", "canary.txt"),
-		MaxTokens:       256, MaxToolIterations: 3, ContextWindow: 32768,
+		MaxTokens:       256, MaxToolIterations: trialToolIterations(opts.Experiment), ContextWindow: 32768,
 		CodingExpectedFile:    scenario.CodingFile,
 		CodingExpectedContent: scenario.CodingContent,
 		TaskState:             ConditionTaskState(condition),
 		TaskStateBudget:       500,
+		TaskStateResidency:    ConditionTaskStateResidency(condition),
 	}
 	if spec.MemoryPolicy == "mpm" || spec.MemoryPolicy == "mpm_active" {
 		spec.MPMWorkspace = filepath.Join(trialDir, "mpm", "workspace")
@@ -280,6 +281,13 @@ func buildTrialSpec(
 	}
 	_ = index
 	return spec, nil
+}
+
+func trialToolIterations(experiment string) int {
+	if strings.EqualFold(experiment, "C") {
+		return 8
+	}
+	return 3
 }
 
 func runTrialSubprocess(runDir string, spec TrialSpec, runner []string, providerKind string) (TrialResult, error) {
@@ -343,6 +351,9 @@ func trialProcessEnv(spec TrialSpec, runDir string) []string {
 	if spec.TaskState {
 		base["DEEPCLAW_TASK_STATE"] = "1"
 		base["DEEPCLAW_TASK_STATE_BUDGET"] = fmt.Sprintf("%d", spec.TaskStateBudget)
+		if spec.TaskStateResidency != "" {
+			base["DEEPCLAW_TASK_STATE_RESIDENCY"] = spec.TaskStateResidency
+		}
 	}
 	env := make([]string, 0, len(base))
 	for key, value := range base {
@@ -397,7 +408,7 @@ func aggregateTrials(trials []TrialResult) []Aggregate {
 	for _, k := range keys {
 		group := groups[k]
 		agg := Aggregate{Condition: k.condition, Scenario: k.scenario, Trials: len(group)}
-		var prompt, completion, total, e2e, retrieval, taskEntries, taskActive, taskTokens []float64
+		var prompt, completion, total, e2e, retrieval, taskEntries, taskActive, taskTokens, taskPromptTokens []float64
 		for _, trial := range group {
 			if trial.Score.Correct {
 				agg.Correct++
@@ -439,6 +450,10 @@ func aggregateTrials(trials []TrialResult) []Aggregate {
 				if trial.Totals.TaskStateRenderedTokens > agg.MaxTaskStateTokens {
 					agg.MaxTaskStateTokens = trial.Totals.TaskStateRenderedTokens
 				}
+				taskPromptTokens = append(taskPromptTokens, float64(trial.Totals.TaskStatePromptTokens))
+				if trial.Totals.TaskStatePromptTokens > agg.MaxTaskStatePromptTokens {
+					agg.MaxTaskStatePromptTokens = trial.Totals.TaskStatePromptTokens
+				}
 			}
 		}
 		agg.MeanPromptTokens = meanPtr(prompt)
@@ -449,6 +464,7 @@ func aggregateTrials(trials []TrialResult) []Aggregate {
 		agg.MeanTaskStateEntries = meanPtr(taskEntries)
 		agg.MeanTaskStateActiveEntries = meanPtr(taskActive)
 		agg.MeanTaskStateTokens = meanPtr(taskTokens)
+		agg.MeanTaskStatePromptTokens = meanPtr(taskPromptTokens)
 		out = append(out, agg)
 	}
 	return out

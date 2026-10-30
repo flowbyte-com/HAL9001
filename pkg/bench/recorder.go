@@ -159,6 +159,7 @@ func (p *RecordingProvider) begin(
 	retrieved, ids, retrCount, retrTokens := extractRetrieval(messages)
 
 	activeChars, activeTokens := retrievalBlockSizes(retrieved, "active")
+	taskText, taskChars, taskTokens, taskEntries := taskStateBlockSizes(messages)
 	request := RequestRecord{
 		RequestID:               requestID,
 		TurnID:                  turnID,
@@ -180,6 +181,10 @@ func (p *RecordingProvider) begin(
 		RetrievalTokensEstimate: retrTokens,
 		ActiveMemoryChars:       activeChars,
 		ActiveMemoryTokens:      activeTokens,
+		TaskStateChars:          taskChars,
+		TaskStateTokens:         taskTokens,
+		TaskStateRenderedCount:  taskEntries,
+		TaskStateText:           taskText,
 	}
 
 	raw := RawRecord{
@@ -330,6 +335,31 @@ func retrievalBlockSizes(blocks []RetrievedBlock, kind string) (int, int) {
 		}
 	}
 	return chars, tokens
+}
+
+// taskStateBlockSizes measures the task.state prompt part without relying on
+// log lines. It returns characters, estimated tokens and the number of rendered
+// entry lines.
+func taskStateBlockSizes(messages []providers.Message) (string, int, int, int) {
+	const marker = "source: task.state):"
+	for _, msg := range messages {
+		idx := strings.Index(msg.Content, marker)
+		if idx < 0 {
+			continue
+		}
+		block := msg.Content[idx+len(marker):]
+		if end := strings.Index(block, "\n\nQuestion: "); end >= 0 {
+			block = block[:end]
+		}
+		entries := 0
+		for _, line := range strings.Split(block, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "- ") {
+				entries++
+			}
+		}
+		return strings.TrimSpace(block), len(block), (len(block) + 3) / 4, entries
+	}
+	return "", 0, 0, 0
 }
 
 func extractRetrieval(messages []providers.Message) ([]RetrievedBlock, []string, int, int) {

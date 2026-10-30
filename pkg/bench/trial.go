@@ -181,6 +181,9 @@ func trialEnv(spec *TrialSpec) map[string]string {
 	if spec.TaskState {
 		env["DEEPCLAW_TASK_STATE"] = "1"
 		env["DEEPCLAW_TASK_STATE_BUDGET"] = fmt.Sprintf("%d", spec.TaskStateBudget)
+		if spec.TaskStateResidency != "" {
+			env["DEEPCLAW_TASK_STATE_RESIDENCY"] = spec.TaskStateResidency
+		}
 	}
 	return env
 }
@@ -199,6 +202,7 @@ func applyTrialEnv(spec *TrialSpec) {
 	for _, key := range []string{
 		"DEEPCLAW_MPM_UNSANDBOXED", "DEEPCLAW_ACTIVE_MEMORY",
 		"DEEPCLAW_TASK_STATE", "DEEPCLAW_TASK_STATE_BUDGET",
+		"DEEPCLAW_TASK_STATE_RESIDENCY",
 	} {
 		if _, ok := trialEnv(spec)[key]; !ok {
 			_ = os.Unsetenv(key)
@@ -478,6 +482,17 @@ func RunTrial(spec TrialSpec) TrialResult {
 			HistoryCleared: cleared, Restarted: turn.RestartBefore, Compacted: compacted,
 			Requests: len(recorder.Requests()) - requestCursor,
 		}
+		turnRequests := recorder.Requests()
+		if requestCursor < len(turnRequests) {
+			for _, request := range turnRequests[requestCursor:] {
+				turnResult.TaskStatePromptChars += request.TaskStateChars
+				turnResult.TaskStatePromptTokens += request.TaskStateTokens
+				turnResult.TaskStateRendered += request.TaskStateRenderedCount
+				if request.TaskStateText != "" {
+					turnResult.TaskStatePromptText += request.TaskStateText + "\n"
+				}
+			}
+		}
 		if snapshot := collector.snapshot(); len(snapshot) >= toolsBefore {
 			turnResult.ToolCalls = append([]ToolCallRecord(nil), snapshot[toolsBefore:]...)
 		}
@@ -559,11 +574,12 @@ func settingsFromInstance(spec TrialSpec, instance *agent.AgentInstance, modelID
 		Isolation: spec.Isolation, MPMProject: spec.MPMProject,
 		SessionKey: spec.SessionKey, MaxTokens: spec.MaxTokens,
 		MaxIterations: spec.MaxToolIterations, ContextWindow: spec.ContextWindow,
-		ActiveMemory:    spec.MemoryPolicy == "mpm_active" || spec.TaskState,
-		TaskState:       spec.TaskState,
-		TaskStateBudget: spec.TaskStateBudget,
-		ToolNames:       sortedCopy(instance.Tools.List()),
-		ToolSchemaBytes: len(data), ToolSchemaSHA: sha256Hex(data),
+		ActiveMemory:       spec.MemoryPolicy == "mpm_active" || spec.TaskState,
+		TaskState:          spec.TaskState,
+		TaskStateBudget:    spec.TaskStateBudget,
+		TaskStateResidency: spec.TaskStateResidency,
+		ToolNames:          sortedCopy(instance.Tools.List()),
+		ToolSchemaBytes:    len(data), ToolSchemaSHA: sha256Hex(data),
 	}
 }
 
@@ -891,6 +907,10 @@ func totalsFor(result TrialResult) TrialTotals {
 		}
 	}
 	totals.ToolCalls = len(result.ToolCalls)
+	for _, turn := range result.Turns {
+		totals.TaskStatePromptChars += turn.TaskStatePromptChars
+		totals.TaskStatePromptTokens += turn.TaskStatePromptTokens
+	}
 	if result.TaskStateFinal != nil && result.TaskStateFinal.Available {
 		totals.TaskStateFinalEntries = result.TaskStateFinal.Entries
 		totals.TaskStateFinalActiveEntries = result.TaskStateFinal.ActiveEntries

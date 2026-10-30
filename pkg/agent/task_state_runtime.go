@@ -138,7 +138,7 @@ func (a *AgentInstance) taskStatePromptPart(
 	if strings.TrimSpace(currentMessage) != "" {
 		visible += "\n" + currentMessage
 	}
-	text := strings.TrimSpace(state.Render(visible, a.TaskStateBudget))
+	text := strings.TrimSpace(state.RenderWithMode(visible, a.TaskStateBudget, a.TaskStateResidency))
 	if text == "" {
 		return PromptPart{}, false
 	}
