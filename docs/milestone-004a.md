@@ -196,10 +196,12 @@ are upper bounds):
 
 Matched per-request prompt delta (treatment minus control, 12 requests):
 mean **+109.5 tokens**, sample standard deviation **88.6**, min **-3**, max
-**+191**. Cumulative prompt increase: **+1314 tokens / +21.8%**. Early requests
-are slightly smaller in the treatment because its active-memory objective
-differs; the large deltas begin after compaction when the failure is no longer
-in history.
+**+191**. Cumulative prompt increase: **+1314 tokens / +21.8%**. The 2-3 token
+negative deltas on the first three requests are a harness artifact: the trial
+directory path embeds the condition name and is repeated in the system prompt.
+Task state was fully suppressed on those requests because the same facts were
+still visible in history. Large positive deltas begin after compaction, when
+the failure is no longer in history.
 
 The final 258-token snapshot is the un-suppressed worst case. The largest block
 actually placed in a model prompt was about 191 estimated tokens, because facts
