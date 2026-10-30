@@ -51,7 +51,7 @@ func TestRetrieverFiltersProjectAndBudget(t *testing.T) {
 
 	retriever, err := NewRetriever(Config{
 		Executable:   fakeBin,
-		Workspace:     workspace,
+		Workspace:    workspace,
 		HomeDir:      filepath.Join(dir, "home"),
 		ProjectID:    "deepclaw",
 		BudgetTokens: 40,
