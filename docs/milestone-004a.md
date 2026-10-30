@@ -4,7 +4,7 @@ Status: **implemented and validated deterministically.** No live-model
 reasoning claim is made. The 004A comparison uses the 003F mock harness.
 
 - Base commit: `12b462168910e864f27187b147ace8249d696924`
-- Run checkout: `ef2b224c3f65652b8a53e95dd3fccd13daef8b2a` (clean at run time)
+- Run checkout: `ef2b224c3f65652b8a53e95dd3fccd13daef8b2a` (clean at run time; later commits add tests and documentation only)
 - Benchmark binary: `.lab/bin/bench`
 - Binary SHA-256: `deff9ced8f2cf77df8ef2ae6b8adfc4cc00d260fea1e3725eb2c07051d96c702`
 - Go: `go1.27.3`
