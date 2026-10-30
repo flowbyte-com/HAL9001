@@ -235,10 +235,11 @@ func (cb *ContextBuilder) BuildSystemPromptParts() []PromptPart {
 }
 
 type systemPromptBuildOptions struct {
-	IncludeSkillCatalog bool
-	IncludeToolUseRule  bool
-	AllowedSkills       []string
-	AllowedTools        []string
+	IncludeSkillCatalog       bool
+	IncludeToolUseRule        bool
+	AllowedSkills             []string
+	AllowedTools              []string
+	ToolsVisibilityRestricted bool
 }
 
 func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) []PromptPart {
@@ -289,12 +290,18 @@ func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) 
 	}
 	if skillsSummary != "" {
 		skillIntro := "The following skills extend your capabilities."
-		readFileAllowed := promptAllowsTool(
-			PromptBuildRequest{AllowedTools: opts.AllowedTools},
-			"read_file",
-		)
-		if opts.IncludeToolUseRule && readFileAllowed {
-			skillIntro += " To use a workspace skill, read its SKILL.md file using the read_file tool; plugin skills are read with their bundled resource tool instead."
+		promptReq := PromptBuildRequest{
+			AllowedTools:              opts.AllowedTools,
+			ToolsVisibilityRestricted: opts.ToolsVisibilityRestricted,
+		}
+		readTool := ""
+		if promptAllowsTool(promptReq, "read_file") {
+			readTool = "read_file"
+		} else if promptAllowsTool(promptReq, "read") {
+			readTool = "read"
+		}
+		if opts.IncludeToolUseRule && readTool != "" {
+			skillIntro += fmt.Sprintf(" To use a workspace skill, read its SKILL.md file using the %s tool; plugin skills are read with their bundled resource tool instead.", readTool)
 		}
 		add(PromptPart{
 			ID:     "capability.skill_catalog",
@@ -405,7 +412,8 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 	useDefaultCache := !req.SuppressSkillContext &&
 		!req.SuppressToolUseRule &&
 		len(req.AllowedSkills) == 0 &&
-		len(req.AllowedTools) == 0
+		len(req.AllowedTools) == 0 &&
+		!req.ToolsVisibilityRestricted
 	if useDefaultCache {
 		staticPrompt := cb.BuildSystemPromptWithCache()
 		return staticPrompt, []providers.ContentBlock{
@@ -420,10 +428,11 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 	}
 
 	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
-		IncludeSkillCatalog: !req.SuppressSkillContext,
-		IncludeToolUseRule:  !req.SuppressToolUseRule,
-		AllowedSkills:       req.AllowedSkills,
-		AllowedTools:        req.AllowedTools,
+		IncludeSkillCatalog:       !req.SuppressSkillContext,
+		IncludeToolUseRule:        !req.SuppressToolUseRule,
+		AllowedSkills:             req.AllowedSkills,
+		AllowedTools:              req.AllowedTools,
+		ToolsVisibilityRestricted: req.ToolsVisibilityRestricted,
 	})
 	staticPrompt := renderPromptPartsLegacy(parts)
 	blocks := make([]providers.ContentBlock, 0, len(parts))

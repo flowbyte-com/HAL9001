@@ -204,7 +204,7 @@ func promptSourceComponent(value string) string {
 
 func promptAllowsTool(req PromptBuildRequest, name string) bool {
 	if len(req.AllowedTools) == 0 {
-		return true
+		return !req.ToolsVisibilityRestricted
 	}
 	allowed := cleanAllowedSet(req.AllowedTools)
 	_, ok := allowed[strings.ToLower(strings.TrimSpace(name))]
@@ -213,7 +213,7 @@ func promptAllowsTool(req PromptBuildRequest, name string) bool {
 
 func promptAllowsToolPrefix(req PromptBuildRequest, prefix string) bool {
 	if len(req.AllowedTools) == 0 {
-		return true
+		return !req.ToolsVisibilityRestricted
 	}
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
 	if prefix == "" {

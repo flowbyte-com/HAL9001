@@ -131,7 +131,11 @@ type PromptBuildRequest struct {
 	SuppressToolUseRule         bool
 	AllowedSkills               []string
 	AllowedTools                []string
-	ToolUseFallback             bool
+	// ToolsVisibilityRestricted means AllowedTools is an authoritative
+	// provider-visible contract: prompt contributors must not mention tools
+	// outside it. An empty AllowedTools with this flag hides all tool mentions.
+	ToolsVisibilityRestricted bool
+	ToolUseFallback           bool
 }
 
 type PromptContributor interface {

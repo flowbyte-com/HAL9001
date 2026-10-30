@@ -134,6 +134,7 @@ func (al *AgentLoop) publishPlugin(
 		if !ok {
 			continue
 		}
+		profileActive := agent.Tools.HasVisibilityProfile()
 		register := func(tool tools.Tool, hidden bool) bool {
 			added, err := agent.Tools.RegisterUnique(tool, hidden)
 			if err != nil {
@@ -144,7 +145,9 @@ func (al *AgentLoop) publishPlugin(
 			}
 			return added
 		}
-		if capabilities.HasResources {
+		// Hidden profile tools must not bring prompt instructions that refer to
+		// a resource tool the model cannot see.
+		if capabilities.HasResources && !profileActive {
 			resource := &plugins.ResourceTool{ID: capabilities.ID, Root: capabilities.Root, Lifetime: ctx}
 			register(resource, false)
 			if len(capabilities.Skills) > 0 {

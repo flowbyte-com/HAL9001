@@ -343,6 +343,11 @@ func registerMCPServerPromptContributor(
 	if agent == nil || agent.ContextBuilder == nil || toolCount <= 0 {
 		return
 	}
+	// A visibility profile is an explicit tool contract. MCP tools may remain
+	// installed but must not be advertised in the prompt when they are hidden.
+	if agent.Tools != nil && agent.Tools.HasVisibilityProfile() {
+		return
+	}
 	if err := agent.ContextBuilder.RegisterPromptContributor(mcpServerPromptContributor{
 		serverName: serverName,
 		toolCount:  toolCount,

@@ -50,6 +50,15 @@ func promptBuildRequestForTurn(
 	if ts.profile.Enabled && ts.profile.ToolsMode == config.TurnProfileModeCustom {
 		req.AllowedTools = append([]string(nil), ts.profile.AllowedTools...)
 	}
+	if ts.agent != nil && ts.agent.Tools != nil && ts.agent.Tools.HasVisibilityProfile() {
+		visible := ts.agent.Tools.VisibleToolNames()
+		req.ToolsVisibilityRestricted = true
+		if len(req.AllowedTools) == 0 {
+			req.AllowedTools = visible
+		} else {
+			req.AllowedTools = intersectToolNames(req.AllowedTools, visible)
+		}
+	}
 	if retrieved := strings.TrimSpace(ts.mpmRetrievedContext); retrieved != "" {
 		req.RetrievedContext = []PromptPart{{
 			ID:      "context.retrieved.mpm",
@@ -63,6 +72,23 @@ func promptBuildRequestForTurn(
 		}}
 	}
 	return req
+}
+
+func intersectToolNames(allowed, visible []string) []string {
+	if len(allowed) == 0 || len(visible) == 0 {
+		return nil
+	}
+	visibleSet := make(map[string]struct{}, len(visible))
+	for _, name := range visible {
+		visibleSet[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
+	}
+	out := make([]string, 0, len(allowed))
+	for _, name := range allowed {
+		if _, ok := visibleSet[strings.ToLower(strings.TrimSpace(name))]; ok {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func turnProfileNativeSearchCallable(
