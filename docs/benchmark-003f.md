@@ -213,10 +213,12 @@ into the agent workspace except for `MEMORY.md` in the eager condition.
 | `coding_edit` | replace `BROKEN` in `editme.txt` | expected exact content | file matches |
 
 MPM retrieval in the current implementation uses lexical FTS with implicit
-AND across every term. The fixture questions intentionally use search-style
-wording that is fully represented in the stored fact (`atlas project vault
-access phrase`, `which words unlock the atlas vault`). This makes retrieval
-deterministic without changing production retrieval.
+AND across every term. The fixture questions intentionally use content terms
+that also occur in the stored fact, so retrieval is deterministic without
+changing production retrieval. The paraphrase question reorders those terms
+(`which words unlock the atlas vault`) instead of repeating the fact sentence
+verbatim. This is still a lexical-overlap paraphrase, not a synonym-only
+semantic paraphrase; the current retriever cannot support the latter.
 
 The stale fixture seeds the old record first and the current record second.
 The result records the retrieved IDs for both records; scoring requires the
