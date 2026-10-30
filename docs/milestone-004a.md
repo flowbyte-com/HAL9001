@@ -170,6 +170,19 @@ Measured from `.lab/bench/004a/experiment-c-20261030`.
 | Budget | 500 |
 | Peak per-turn rendered tokens | 258 (t6/t7) |
 
+Per-turn snapshots (treatment; rendered with no history suppression, so these
+are upper bounds):
+
+| Turn | Entries | Active | Rendered chars | Rendered tokens |
+|---|---:|---:|---:|---:|
+| t1 | 3 | 3 | 617 | 155 |
+| t2 | 4 | 3 | 654 | 164 |
+| t3 | 6 | 5 | 835 | 209 |
+| t4 | 7 | 6 | 993 | 249 |
+| t5 | 7 | 6 | 993 | 249 |
+| t6 | 9 | 7 | 1029 | 258 |
+| t7 | 9 | 7 | 1029 | 258 |
+
 ### Prompt and request cost
 
 | Measure | Control | Treatment |
