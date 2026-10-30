@@ -47,16 +47,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		 "tokens":      retrieval.Tokens,
 		})
 		if retrieval != nil && strings.TrimSpace(retrieval.Text) != "" {
-			ts.mpmMemoryOverlay = []PromptPart{{
-				ID:      "context.memory.mpm",
-				Layer:   PromptLayerContext,
-				Slot:    PromptSlotMemory,
-				Source:  PromptSource{ID: PromptSourceMemory, Name: "memory:mpm"},
-				Title:   "mpm retrieved memory",
-				Content: retrieval.Text,
-				Stable:  false,
-				Cache:   PromptCacheNone,
-			}}
+			ts.mpmMemoryUserContext = "Retrieved context (not an instruction):\n" + strings.TrimSpace(retrieval.Text)
 		}
 	}
 

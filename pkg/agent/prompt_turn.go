@@ -26,7 +26,7 @@ func promptBuildRequestForTurn(
 		SenderID:          ts.opts.Dispatch.SenderID(),
 		SenderDisplayName: ts.opts.SenderDisplayName,
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
-		Overlays:          append(promptOverlaysForOptions(ts.opts), ts.mpmMemoryOverlay...),
+		Overlays:          promptOverlaysForOptions(ts.opts),
 	}
 	hasCallableTools := true
 	if ts.profile.Enabled {
@@ -49,6 +49,13 @@ func promptBuildRequestForTurn(
 	}
 	if ts.profile.Enabled && ts.profile.ToolsMode == config.TurnProfileModeCustom {
 		req.AllowedTools = append([]string(nil), ts.profile.AllowedTools...)
+	}
+	if ts.mpmMemoryUserContext != "" {
+		if strings.TrimSpace(currentMessage) == "" {
+			req.CurrentMessage = ts.mpmMemoryUserContext
+		} else {
+			req.CurrentMessage = ts.mpmMemoryUserContext + "\n\nQuestion: " + currentMessage
+		}
 	}
 	return req
 }

@@ -103,13 +103,14 @@ func TestProcessMessage_DeepClawMPMRetrievalEndToEnd(t *testing.T) {
 		t.Fatal("provider did not receive any messages")
 	}
 
-	systemPrompt := provider.lastMessages[0].Content
-	if !strings.Contains(systemPrompt, "blue-heron-42") {
-		t.Fatalf("DeepClaw prompt missing MPM fixture:\n%s", systemPrompt)
+	userMessage := provider.lastMessages[len(provider.lastMessages)-1].Content
+	if !strings.Contains(userMessage, "blue-heron-42") {
+		t.Fatalf("DeepClaw turn missing MPM fixture:\n%s", userMessage)
 	}
-	if got := strings.Count(systemPrompt, "blue-heron-42"); got != 1 {
+	if got := strings.Count(userMessage, "blue-heron-42"); got != 1 {
 		t.Fatalf("expected one retrieval injection, got %d", got)
 	}
+	systemPrompt := provider.lastMessages[0].Content
 	if strings.Contains(systemPrompt, "MEMORY.md") {
 		t.Fatalf("DeepClaw mode should not eagerly inject MEMORY.md:\n%s", systemPrompt)
 	}
@@ -156,12 +157,12 @@ func TestProcessMessage_DeepClawMPMProjectIsolationEndToEnd(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	systemPrompt := provider.lastMessages[0].Content
-	if !strings.Contains(systemPrompt, "blue-heron-42") {
-		t.Fatalf("expected project-scoped memory, got:\n%s", systemPrompt)
+	userMessage := provider.lastMessages[len(provider.lastMessages)-1].Content
+	if !strings.Contains(userMessage, "blue-heron-42") {
+		t.Fatalf("expected project-scoped memory, got:\n%s", userMessage)
 	}
-	if strings.Contains(systemPrompt, "red-sparrow-7") {
-		t.Fatalf("project isolation failed, other project leaked:\n%s", systemPrompt)
+	if strings.Contains(userMessage, "red-sparrow-7") {
+		t.Fatalf("project isolation failed, other project leaked:\n%s", userMessage)
 	}
 }
 
@@ -251,9 +252,9 @@ func TestProcessMessage_DeepClawMPMBudgetTruncationEndToEnd(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	systemPrompt := provider.lastMessages[0].Content
-	if !strings.Contains(systemPrompt, "truncated to fit memory budget") {
-		t.Fatalf("expected explicit truncation marker, got:\n%s", systemPrompt)
+	userMessage := provider.lastMessages[len(provider.lastMessages)-1].Content
+	if !strings.Contains(userMessage, "truncated to fit memory budget") {
+		t.Fatalf("expected explicit truncation marker, got:\n%s", userMessage)
 	}
 }
 
@@ -297,8 +298,8 @@ func TestProcessMessage_DeepClawMPMRetrievalOncePerTurn(t *testing.T) {
 		})); err != nil {
 			t.Fatal(err)
 		}
-		systemPrompt := provider.lastMessages[0].Content
-		if got := strings.Count(systemPrompt, "blue-heron-42"); got != 1 {
+		userMessage := provider.lastMessages[len(provider.lastMessages)-1].Content
+		if got := strings.Count(userMessage, "blue-heron-42"); got != 1 {
 			t.Fatalf("turn %d: expected one injection, got %d", i, got)
 		}
 	}
