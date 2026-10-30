@@ -458,6 +458,11 @@ func RunTrial(spec TrialSpec) TrialResult {
 
 	// Persist session state before postflight reads it.
 	closeLoop()
+	// Drain the event subscription before taking the tool snapshot. Bus close
+	// closes the subscription input; Done waits until queued tool events have
+	// been handled, so a fast final response cannot drop an observed outcome.
+	_ = eventBus.Close()
+	<-sub.Done()
 	result.Requests = recorder.Requests()
 	// Executed tool calls and outcomes come from runtime events. The provider
 	// records are retained inside Requests as attempted calls; only fall back to
