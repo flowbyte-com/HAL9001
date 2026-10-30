@@ -1,6 +1,8 @@
 package bench
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -106,6 +108,40 @@ func TestTaskStateExperimentC(t *testing.T) {
 		!strings.Contains(treatmentFollowUp, TaskStateDiagnostic) {
 		t.Fatalf("treatment follow-up did not carry attributed evidence: %s", treatmentFollowUp)
 	}
+
+	// Task state must never be promoted into MPM. The diagnostic may exist in
+	// the protected sidecar, but not in the trial's MPM workspace or home.
+	spec := trialSpec(t, treatment)
+	for _, root := range []string{spec.MPMWorkspace, spec.MPMHome} {
+		if found := filesContaining(t, root, TaskStateDiagnostic); len(found) > 0 {
+			t.Fatalf("task observation was written into MPM state: %v", found)
+		}
+	}
+}
+
+func filesContaining(t *testing.T, root, needle string) []string {
+	t.Helper()
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	var found []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() || info.Size() > 2<<20 {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		if strings.Contains(string(data), needle) {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan %s: %v", root, err)
+	}
+	return found
 }
 
 // rawPromptForQuestion returns the messages of the first request whose last
