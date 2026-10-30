@@ -12,6 +12,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/isolation"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/session"
 )
@@ -46,6 +47,12 @@ func newProjectIsolationHarnessWithContextManager(
 	contextManager string,
 ) *projectIsolationHarness {
 	t.Helper()
+	isolation.ResetProtectedPaths()
+	isolation.Configure(config.DefaultConfig())
+	t.Cleanup(func() {
+		isolation.ResetProtectedPaths()
+		isolation.Configure(config.DefaultConfig())
+	})
 	if err := os.MkdirAll(mpmWorkspace, 0o755); err != nil {
 		t.Fatal(err)
 	}

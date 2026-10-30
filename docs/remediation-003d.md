@@ -321,8 +321,9 @@ Updated e2e expectation (`pkg/agent/agent_mpm_e2e_test.go`):
   old abort-on-retrieval-failure expectation with degraded continuation and no
   memory block.
 
-`seedMPMFixture` now resets global isolation state in `t.Cleanup`, because the
-registry and configuration are process-wide.
+The MPM-related agent test harnesses (`seedMPMFixture` and the provenance and
+project-isolation harnesses) now reset global isolation state in `t.Cleanup`,
+because the registry and configuration are process-wide.
 
 ## Supported and unsupported host configurations
 

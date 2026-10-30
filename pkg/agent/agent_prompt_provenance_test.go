@@ -13,6 +13,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/isolation"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -111,6 +112,12 @@ func newProvenanceHarness(
 	agentWorkspace, mpmWorkspace, mpmHome, project, executable string,
 ) *provenanceHarness {
 	t.Helper()
+	isolation.ResetProtectedPaths()
+	isolation.Configure(config.DefaultConfig())
+	t.Cleanup(func() {
+		isolation.ResetProtectedPaths()
+		isolation.Configure(config.DefaultConfig())
+	})
 	if executable == "" {
 		executable = mpmTestBinary(t)
 	}
