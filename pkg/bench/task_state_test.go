@@ -94,4 +94,44 @@ func TestTaskStateExperimentC(t *testing.T) {
 		!strings.Contains(treatmentRaw, "Failure [tool_reported]") {
 		t.Fatal("treatment prompt did not attribute the retained evidence")
 	}
+
+	// The controlling fact must be absent from the control's ordinary history
+	// at the post-compaction follow-up, not merely absent from its answer.
+	controlFollowUp := rawPromptForQuestion(t, control.RawPath, "We restarted the process")
+	if strings.Contains(controlFollowUp, TaskStateDiagnostic) {
+		t.Fatalf("control history still contained the failure at the follow-up: %s", controlFollowUp)
+	}
+	treatmentFollowUp := rawPromptForQuestion(t, treatment.RawPath, "We restarted the process")
+	if !strings.Contains(treatmentFollowUp, "source: task.state") ||
+		!strings.Contains(treatmentFollowUp, TaskStateDiagnostic) {
+		t.Fatalf("treatment follow-up did not carry attributed evidence: %s", treatmentFollowUp)
+	}
+}
+
+// rawPromptForQuestion returns the messages of the first request whose last
+// user message contains the question. Retrieved context is attached to that
+// message, so this selects the follow-up turn rather than later history.
+func rawPromptForQuestion(t *testing.T, rawPath, question string) string {
+	t.Helper()
+	var out strings.Builder
+	for _, record := range readRawRecords(t, rawPath) {
+		matched := false
+		for i := len(record.Messages) - 1; i >= 0; i-- {
+			if record.Messages[i].Role != "user" {
+				continue
+			}
+			matched = strings.Contains(record.Messages[i].Content, question)
+			break
+		}
+		if !matched {
+			continue
+		}
+		for _, message := range record.Messages {
+			out.WriteString(message.Content)
+			out.WriteByte('\n')
+		}
+		return out.String()
+	}
+	t.Fatalf("no request carried question %q in %s", question, rawPath)
+	return ""
 }
