@@ -1025,6 +1025,15 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 
 	history := sanitizeHistoryForProvider(req.History)
 
+	// Retrieved context is request-only material. Attach it to the real user
+	// turn (never as its own message) so compaction/retry rebuilds keep the
+	// question, inject memory once, and never present memory as user-authored.
+	history, currentMessage := attachRetrievedContext(
+		history,
+		req.CurrentMessage,
+		renderRetrievedContext(req.RetrievedContext),
+	)
+
 	// Single system message containing all context — compatible with all providers.
 	// SystemParts enables cache-aware adapters to set per-block cache_control;
 	// Content is the concatenated fallback for adapters that don't read SystemParts.
@@ -1042,8 +1051,8 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	// Add current user message. Media-only turns must still be preserved so
 	// multimodal providers receive the uploaded image even when the user sends
 	// no accompanying text.
-	if strings.TrimSpace(req.CurrentMessage) != "" || len(req.Media) > 0 {
-		messages = append(messages, userPromptMessage(req.CurrentMessage, req.Media))
+	if strings.TrimSpace(currentMessage) != "" || len(req.Media) > 0 {
+		messages = append(messages, userPromptMessage(currentMessage, req.Media))
 	}
 	if len(messages) == 0 {
 		messages = append(messages, userPromptMessage("", nil))
@@ -1114,6 +1123,13 @@ func sanitizeHistoryForProvider(history []providers.Message) []providers.Message
 			sanitized = append(sanitized, msg)
 
 		default:
+			// Legacy DeepClaw stored retrieved memory inside the user message.
+			// Keep only the user-authored question when that old shape is
+			// detected; the stored file itself is left untouched.
+			msg, keep := quarantineLegacyRetrievedContext(msg)
+			if !keep {
+				continue
+			}
 			sanitized = append(sanitized, msg)
 		}
 	}

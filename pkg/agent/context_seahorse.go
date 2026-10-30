@@ -395,10 +395,19 @@ func (m *seahorseContextManager) bootstrapSession(ctx context.Context, sessionKe
 		return
 	}
 
-	// Convert provider messages to seahorse messages
-	msgs := make([]seahorse.Message, len(history))
-	for i, h := range history {
-		msgs[i] = providerToSeahorseMessage(h)
+	// Convert provider messages to seahorse messages. Pre-003C combined
+	// user/memory messages are quarantined so the engine does not index
+	// retrieved text as user-authored content.
+	msgs := make([]seahorse.Message, 0, len(history))
+	for _, h := range history {
+		sanitized, keep := quarantineLegacyRetrievedContext(h)
+		if !keep {
+			continue
+		}
+		msgs = append(msgs, providerToSeahorseMessage(sanitized))
+	}
+	if len(msgs) == 0 {
+		return
 	}
 
 	if err := m.engine.Bootstrap(ctx, sessionKey, msgs); err != nil {

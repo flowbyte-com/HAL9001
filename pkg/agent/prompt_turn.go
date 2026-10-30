@@ -50,12 +50,17 @@ func promptBuildRequestForTurn(
 	if ts.profile.Enabled && ts.profile.ToolsMode == config.TurnProfileModeCustom {
 		req.AllowedTools = append([]string(nil), ts.profile.AllowedTools...)
 	}
-	if ts.mpmMemoryUserContext != "" {
-		if strings.TrimSpace(currentMessage) == "" {
-			req.CurrentMessage = ts.mpmMemoryUserContext
-		} else {
-			req.CurrentMessage = ts.mpmMemoryUserContext + "\n\nQuestion: " + currentMessage
-		}
+	if retrieved := strings.TrimSpace(ts.mpmRetrievedContext); retrieved != "" {
+		req.RetrievedContext = []PromptPart{{
+			ID:      "context.retrieved.mpm",
+			Layer:   PromptLayerContext,
+			Slot:    PromptSlotMemory,
+			Source:  PromptSource{ID: PromptSourceMPMRetrieval, Name: "mpm.retrieval"},
+			Title:   "retrieved MPM context",
+			Content: retrieved,
+			Stable:  false,
+			Cache:   PromptCacheNone,
+		}}
 	}
 	return req
 }

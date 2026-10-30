@@ -235,9 +235,12 @@ type turnState struct {
 
 	restorePointHistory []providers.Message
 	restorePointSummary string
-	// mpmMemoryUserContext carries turn-scoped retrieved MPM memory for injection
-	// near the user turn.
-	mpmMemoryUserContext string
+	// mpmRetrievedContext is the one retrieved-memory snapshot for this turn.
+	// It is lower-trust request-only material: the prompt builder attaches it
+	// near the user turn, but it is never persisted as user-authored history.
+	// Keeping the snapshot on the turn makes compaction and retry reuse the
+	// same records instead of retrieving again.
+	mpmRetrievedContext string
 	// restoreSummaryPinned freezes restorePointSummary once the session summary
 	// holds part of this turn, so a rollback does not keep the aborted work.
 	restoreSummaryPinned bool

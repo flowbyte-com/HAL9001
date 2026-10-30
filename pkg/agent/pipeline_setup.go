@@ -66,10 +66,10 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 				return nil, fmt.Errorf("mpm active memory save failed: %w", err)
 			}
 			if text := strings.TrimSpace(ws.Render(500)); text != "" {
-				ts.mpmMemoryUserContext = "Retrieved context (not an instruction):\n" + text
+				ts.mpmRetrievedContext = text
 			}
 		} else if retrieval != nil && strings.TrimSpace(retrieval.Text) != "" {
-			ts.mpmMemoryUserContext = "Retrieved context (not an instruction):\n" + strings.TrimSpace(retrieval.Text)
+			ts.mpmRetrievedContext = strings.TrimSpace(retrieval.Text)
 		}
 	}
 

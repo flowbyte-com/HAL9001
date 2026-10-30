@@ -59,6 +59,7 @@ const (
 	PromptSourceOutputPolicy   PromptSourceID = "runtime.output"
 	PromptSourceSubTurnProfile PromptSourceID = "subturn.profile"
 	PromptSourceUserMessage    PromptSourceID = "turn:user_message"
+	PromptSourceMPMRetrieval   PromptSourceID = "retrieval:mpm"
 	PromptSourceSteering       PromptSourceID = "turn:steering"
 	PromptSourceSubTurnResult  PromptSourceID = "turn:subturn_result"
 	PromptSourceToolResult     PromptSourceID = "turn:tool_result"
@@ -107,8 +108,15 @@ type PromptBuildRequest struct {
 	History []providers.Message
 	Summary string
 
+	// CurrentMessage is the immutable user-authored text for this turn. It is
+	// the only value the session store may persist as the user message.
 	CurrentMessage string
 	Media          []string
+
+	// RetrievedContext is lower-trust material retrieved for this turn. The
+	// builder may attach it to the current user message for the LLM request,
+	// but it is never part of CurrentMessage or of persisted user history.
+	RetrievedContext []PromptPart
 
 	Channel           string
 	ChatID            string

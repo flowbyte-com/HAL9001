@@ -116,6 +116,10 @@ func (p *Pipeline) reassembleActiveTurn(
 		protected: protected,
 		build: func(trimmedStable []providers.Message) []providers.Message {
 			fullHistory := append(append([]providers.Message(nil), trimmedStable...), protected...)
+			// The active turn's user message is already the user-authored tail
+			// of fullHistory. The builder therefore attaches the turn's
+			// retrieved context to that message in place; passing the question
+			// again as CurrentMessage would duplicate it.
 			req := promptBuildRequestForTurn(ts, fullHistory, exec.summary, "", nil, p.Cfg)
 			req.ActiveSkills = append([]string(nil), contextualSkills...)
 			rebuilt := ts.agent.ContextBuilder.BuildMessagesFromPrompt(req)

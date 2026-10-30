@@ -342,6 +342,12 @@ func (m *legacyContextManager) summarizeSession(
 		if msg.Role != "user" && msg.Role != "assistant" {
 			continue
 		}
+		// Legacy combined user/memory messages must not be summarized as if
+		// the user had authored the retrieved text.
+		msg, keep := quarantineLegacyRetrievedContext(msg)
+		if !keep {
+			continue
+		}
 		msgTokens := len(msg.Content) / 2
 		if msgTokens > maxMessageTokens {
 			omitted = true

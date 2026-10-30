@@ -178,6 +178,11 @@ func turnTranscript(msgs []providers.Message) []providers.Message {
 	toolNames := make(map[string]string)
 	out := make([]providers.Message, 0, len(msgs))
 	for _, msg := range msgs {
+		var keep bool
+		msg, keep = quarantineLegacyRetrievedContext(msg)
+		if !keep {
+			continue
+		}
 		var sb strings.Builder
 		switch msg.Role {
 		case "tool":
