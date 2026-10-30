@@ -327,6 +327,17 @@ func RunTrial(spec TrialSpec) TrialResult {
 	if err := ValidateSessionKey(spec.SessionKey); err != nil {
 		return fail(err)
 	}
+	if err := validateProviderConfigLocation(spec); err != nil {
+		result.Preflight = append(result.Preflight, Check{
+			Name: "provider_config_outside_agent_paths", Passed: false, Detail: err.Error(),
+		})
+		result = fail(err)
+		result.Status = "fail"
+		_ = os.MkdirAll(filepath.Dir(spec.RawPath), 0o755)
+		_ = os.MkdirAll(filepath.Dir(spec.ResultPath), 0o755)
+		_ = writeJSON(spec.ResultPath, redactValue(result))
+		return result
+	}
 	applyTrialEnv(&spec)
 	logger.SetLevel(logger.DEBUG)
 	logger.DisableConsole()
@@ -517,6 +528,41 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// validateProviderConfigLocation rejects a provider configuration that the
+// agent could read with an ordinary file tool or shell command. The trusted
+// process may read it; the workspace, PicoClaw home and trial tree are mounted
+// or reachable by agent-controlled execution.
+func validateProviderConfigLocation(spec TrialSpec) error {
+	if strings.TrimSpace(spec.ProviderConfigPath) == "" {
+		return nil
+	}
+	configPath, err := filepath.Abs(spec.ProviderConfigPath)
+	if err != nil {
+		return fmt.Errorf("provider config path: %w", err)
+	}
+	for _, forbidden := range []string{spec.AgentWorkspace, spec.PicoclawHome, spec.TrialDir} {
+		if strings.TrimSpace(forbidden) == "" {
+			continue
+		}
+		base, err := filepath.Abs(forbidden)
+		if err != nil {
+			return err
+		}
+		if pathWithin(base, configPath) {
+			return fmt.Errorf("provider config %q is inside agent-visible path %q", configPath, base)
+		}
+	}
+	return nil
+}
+
+func pathWithin(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
 func preflightChecks(spec TrialSpec, instance *agent.AgentInstance, modelID string) []Check {
 	checks := []Check{
 		{Name: "trial_dirs_absolute", Passed: true, Detail: spec.TrialDir},
@@ -526,6 +572,7 @@ func preflightChecks(spec TrialSpec, instance *agent.AgentInstance, modelID stri
 		{Name: "no_pre_existing_session", Passed: len(sessionFiles(spec.AgentWorkspace)) == 0},
 		{Name: "no_pre_existing_active_memory", Passed: !hasFiles(filepath.Join(spec.AgentWorkspace, ".deepclaw", "active-memory"))},
 		{Name: "provider_model_recorded", Passed: strings.TrimSpace(modelID) != ""},
+		{Name: "provider_config_outside_agent_paths", Passed: validateProviderConfigLocation(spec) == nil},
 	}
 	names := sortedCopy(instance.Tools.List())
 	four := strings.Join(names, ",") == "bash,edit,read,write"
