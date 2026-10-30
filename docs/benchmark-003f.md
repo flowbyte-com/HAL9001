@@ -4,7 +4,7 @@ Status: harness complete and validated with a deterministic mock provider.
 Live-provider pilot attempted and blocked by an expired credential; no live
 measurements were produced.
 
-Code: `ee2839d4e2b1e1e0c7c3f1dc3ef4dcf458045a40` (`main`, clean at run time)
+Code: `c60766a725e9c1510cb1eff5e6425d289fac065b` (`main`, clean at run time)
 Baseline for this milestone: `69d9f15af26b1abddd9f29daf2c5a15435e41a2e`
 
 ## 1. Purpose and non-goals
@@ -305,11 +305,11 @@ All preserved 003F runs used:
 
 | Field | Value |
 |---|---|
-| Git commit | `ee2839d4e2b1e1e0c7c3f1dc3ef4dcf458045a40` |
+| Git commit | `c60766a725e9c1510cb1eff5e6425d289fac065b` |
 | Git dirty | `false` |
 | Go | `go1.27.3` |
 | Binary | `.lab/bin/bench` |
-| SHA-256 | `de66386958719b47e8aa13bbdf5409dc0eaca3696f6485a5d3019d93f4c51930` |
+| SHA-256 | `9af7976b50f4e4865e515e4e5f84e54ad5182c0a63c9d061c6be7278c570afd4` |
 | Host | Linux amd64, 12 logical CPUs, bubblewrap 0.11.1 |
 | MPM binary | `.lab/bin/mpm` |
 
