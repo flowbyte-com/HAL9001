@@ -235,6 +235,9 @@ type turnState struct {
 
 	restorePointHistory []providers.Message
 	restorePointSummary string
+	// mpmMemoryOverlay carries turn-scoped retrieved MPM memory. It is populated
+	// once in SetupTurn and reused across prompt rebuilds within the turn.
+	mpmMemoryOverlay []PromptPart
 	// restoreSummaryPinned freezes restorePointSummary once the session summary
 	// holds part of this turn, so a rollback does not keep the aborted work.
 	restoreSummaryPinned bool

@@ -75,3 +75,4 @@ docker/data
 
 .omc/
 .worktrees/
+/.lab/

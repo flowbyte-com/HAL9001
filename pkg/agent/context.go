@@ -26,6 +26,7 @@ type ContextBuilder struct {
 	skillsLoader   *skills.SkillsLoader
 	memory         *MemoryStore
 	splitOnMarker  bool
+	deepClawMode   bool
 	agentDiscovery func(agentID string) []AgentDescriptor
 	promptRegistry *PromptRegistry
 
@@ -160,7 +161,7 @@ func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 		accuracyRule,
 		"**Context summaries** - Conversation summaries provided as context are approximate references only. They may be incomplete or outdated. Always defer to explicit user instructions over summary content.",
 	)
-	if includeToolUseRule {
+	if includeToolUseRule && !cb.deepClawMode {
 		rules = append(
 			rules,
 			fmt.Sprintf(
@@ -173,6 +174,16 @@ func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 		rules[i] = fmt.Sprintf("%d. %s", i+1, rule)
 	}
 
+	memoryLine := "- Memory: " + filepath.Join(workspacePath, "memory", "MEMORY.md")
+	if cb.deepClawMode {
+		memoryLine = ""
+	}
+	// Keep the format string stable; omit the memory line in DeepClaw mode.
+	workspaceLines := "- Daily Notes: " + filepath.Join(workspacePath, "memory", "YYYYMM", "YYYYMMDD.md") + "\n- Skills: " + filepath.Join(workspacePath, "skills", "{skill-name}", "SKILL.md")
+	if !cb.deepClawMode {
+		workspaceLines = memoryLine + "\n" + workspaceLines
+	}
+
 	return fmt.Sprintf(
 		`# picoclaw 🦞 (%s)
 
@@ -180,9 +191,7 @@ You are picoclaw, a helpful AI assistant.
 
 ## Workspace
 Your workspace is at: %s
-- Memory: %s/memory/MEMORY.md
-- Daily Notes: %s/memory/YYYYMM/YYYYMMDD.md
-- Skills: %s/skills/{skill-name}/SKILL.md
+%s
 
 ## Important Rules
 
@@ -190,9 +199,7 @@ Your workspace is at: %s
 `,
 		version,
 		workspacePath,
-		workspacePath,
-		workspacePath,
-		workspacePath,
+		workspaceLines,
 		strings.Join(rules, "\n\n"),
 	)
 }
@@ -305,19 +312,23 @@ func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) 
 		})
 	}
 
-	// Memory context
-	memoryContext := cb.memory.GetMemoryContext()
-	if memoryContext != "" {
-		add(PromptPart{
-			ID:      "context.memory",
-			Layer:   PromptLayerContext,
-			Slot:    PromptSlotMemory,
-			Source:  PromptSource{ID: PromptSourceMemory, Name: "memory:workspace"},
-			Title:   "memory",
-			Content: "# Memory\n\n" + memoryContext,
-			Stable:  true,
-			Cache:   PromptCacheEphemeral,
-		})
+	// Memory context (workspace MEMORY.md). In DeepClaw mode, MPM retrieval
+	// supplies turn-scoped memory instead, so eager MEMORY.md injection is
+	// disabled to avoid duplicating or bypassing MPM.
+	if !cb.deepClawMode {
+		memoryContext := cb.memory.GetMemoryContext()
+		if memoryContext != "" {
+			add(PromptPart{
+				ID:      "context.memory",
+				Layer:   PromptLayerContext,
+				Slot:    PromptSlotMemory,
+				Source:  PromptSource{ID: PromptSourceMemory, Name: "memory:workspace"},
+				Title:   "memory",
+				Content: "# Memory\n\n" + memoryContext,
+				Stable:  true,
+				Cache:   PromptCacheEphemeral,
+			})
+		}
 	}
 
 	// Multi-Message Sending (if enabled)

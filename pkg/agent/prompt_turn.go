@@ -26,7 +26,7 @@ func promptBuildRequestForTurn(
 		SenderID:          ts.opts.Dispatch.SenderID(),
 		SenderDisplayName: ts.opts.SenderDisplayName,
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
-		Overlays:          promptOverlaysForOptions(ts.opts),
+		Overlays:          append(promptOverlaysForOptions(ts.opts), ts.mpmMemoryOverlay...),
 	}
 	hasCallableTools := true
 	if ts.profile.Enabled {

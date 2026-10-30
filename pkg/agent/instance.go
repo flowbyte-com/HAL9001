@@ -15,6 +15,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/memory"
+	"github.com/sipeed/picoclaw/pkg/mpm"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -43,6 +44,7 @@ type AgentInstance struct {
 	Sessions                session.SessionStore
 	ContextBuilder          *ContextBuilder
 	Tools                   *tools.ToolRegistry
+	MPMRetriever            *mpm.Retriever
 	Definition              AgentContextDefinition
 	Subagents               *config.SubagentsConfig
 	SkillsFilter            []string
@@ -189,6 +191,15 @@ func NewAgentInstance(
 			mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseRegex,
 		).
 		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
+
+	mpmRetriever, err := mpm.NewRetrieverFromEnv()
+	if err != nil {
+		logger.WarnCF("agent", "Failed to initialize MPM retriever; DeepClaw memory disabled",
+			map[string]any{"error": err.Error()})
+	}
+	if mpmRetriever != nil {
+		contextBuilder.deepClawMode = true
+	}
 
 	agentID := routing.DefaultAgentID
 	agentName := ""
@@ -352,6 +363,7 @@ func NewAgentInstance(
 		Provider:                provider,
 		Sessions:                sessions,
 		ContextBuilder:          contextBuilder,
+	MPMRetriever:            mpmRetriever,
 		Tools:                   toolsRegistry,
 		Definition:              definition,
 		Subagents:               subagents,

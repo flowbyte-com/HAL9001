@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -32,6 +33,25 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		}
 	}
 	ts.captureRestorePoint(history, summary)
+
+	if ts.agent != nil && ts.agent.MPMRetriever != nil && strings.TrimSpace(ts.userMessage) != "" {
+		retrieval, err := ts.agent.MPMRetriever.Retrieve(ctx, ts.userMessage)
+		if err != nil {
+			return nil, fmt.Errorf("mpm retrieval failed: %w", err)
+		}
+		if retrieval != nil && strings.TrimSpace(retrieval.Text) != "" {
+			ts.mpmMemoryOverlay = []PromptPart{{
+				ID:      "context.memory.mpm",
+				Layer:   PromptLayerContext,
+				Slot:    PromptSlotMemory,
+				Source:  PromptSource{ID: PromptSourceMemory, Name: "memory:mpm"},
+				Title:   "mpm retrieved memory",
+				Content: retrieval.Text,
+				Stable:  false,
+				Cache:   PromptCacheNone,
+			}}
+		}
+	}
 
 	contextualSkills := ts.activeSkills
 	if ts.agent.ContextBuilder != nil {
