@@ -45,6 +45,7 @@ type AgentInstance struct {
 	ContextBuilder          *ContextBuilder
 	Tools                   *tools.ToolRegistry
 	MPMRetriever            *mpm.Retriever
+	ActiveMemory            *ActiveMemoryStore
 	Definition              AgentContextDefinition
 	Subagents               *config.SubagentsConfig
 	SkillsFilter            []string
@@ -199,6 +200,11 @@ func NewAgentInstance(
 	}
 	if mpmRetriever != nil {
 		contextBuilder.deepClawMode = true
+	}
+
+	var activeMemory *ActiveMemoryStore
+	if os.Getenv("DEEPCLAW_ACTIVE_MEMORY") == "1" {
+		activeMemory = NewActiveMemoryStore(workspace)
 	}
 
 	agentID := routing.DefaultAgentID
@@ -364,6 +370,7 @@ func NewAgentInstance(
 		Sessions:                sessions,
 		ContextBuilder:          contextBuilder,
 	MPMRetriever:            mpmRetriever,
+	ActiveMemory:             activeMemory,
 		Tools:                   toolsRegistry,
 		Definition:              definition,
 		Subagents:               subagents,
