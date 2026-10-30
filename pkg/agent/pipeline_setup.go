@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -35,10 +36,16 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	ts.captureRestorePoint(history, summary)
 
 	if ts.agent != nil && ts.agent.MPMRetriever != nil && strings.TrimSpace(ts.userMessage) != "" {
+		retrievalStart := time.Now()
 		retrieval, err := ts.agent.MPMRetriever.Retrieve(ctx, ts.userMessage)
 		if err != nil {
 			return nil, fmt.Errorf("mpm retrieval failed: %w", err)
 		}
+		logger.DebugCF("agent", "MPM retrieval", map[string]any{
+			"duration_ms": time.Since(retrievalStart).Milliseconds(),
+		 "records":     len(retrieval.Records),
+		 "tokens":      retrieval.Tokens,
+		})
 		if retrieval != nil && strings.TrimSpace(retrieval.Text) != "" {
 			ts.mpmMemoryOverlay = []PromptPart{{
 				ID:      "context.memory.mpm",
