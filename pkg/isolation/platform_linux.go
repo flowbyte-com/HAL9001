@@ -71,6 +71,10 @@ func applyPlatformIsolation(cmd *exec.Cmd, isolation config.IsolationConfig, roo
 		}
 	}
 	plan = appendLinuxArgumentMounts(plan, originalArgs[1:])
+	// Protected paths are masked last so they override any broader writable
+	// mount, including the instance root, the working directory, or a path
+	// exposed through an absolute command argument.
+	plan = appendLinuxProtectedMountRules(plan)
 	logger.DebugCF("isolation", "linux isolation mount plan",
 		map[string]any{
 			"root":        root,
@@ -206,8 +210,14 @@ func buildLinuxBwrapArgs(
 			bwrapArgs = append(bwrapArgs, flag)
 		}
 	}
-	bwrapArgs = append(bwrapArgs, "--proc", "/proc", "--dev", "/dev")
+	// A private PID namespace keeps /proc/<host-pid>/root from becoming a
+	// mount-namespace escape on hosts with permissive ptrace settings.
+	bwrapArgs = append(bwrapArgs, "--unshare-pid", "--proc", "/proc", "--dev", "/dev")
 	for _, rule := range plan {
+		if rule.Mode == "mask" {
+			bwrapArgs = append(bwrapArgs, "--tmpfs", rule.Target)
+			continue
+		}
 		flag, err := linuxBindFlag(rule)
 		if err != nil {
 			return nil, err
@@ -259,6 +269,29 @@ func resolveLinuxCommandPath(originalPath, execDir string) (string, error) {
 		}
 	}
 	return filepath.Clean(filepath.Join(base, originalPath)), nil
+}
+
+// appendLinuxProtectedMountRules masks protected directories with an empty
+// tmpfs and binds protected files read-only. Rules are appended after every
+// other mount so a later permissive bind cannot re-expose the path.
+func appendLinuxProtectedMountRules(plan []MountRule) []MountRule {
+	for _, protected := range ProtectedPaths() {
+		if info, err := os.Lstat(protected); err != nil || info.Mode()&os.ModeSymlink != 0 {
+			// bubblewrap refuses to mount over a symlink destination. The
+			// resolved target is registered separately by ProtectPaths.
+			continue
+		}
+		info, err := os.Stat(protected)
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			plan = append(plan, MountRule{Target: protected, Mode: "mask"})
+			continue
+		}
+		plan = append(plan, MountRule{Source: protected, Target: protected, Mode: "ro"})
+	}
+	return plan
 }
 
 func appendLinuxArgumentMounts(plan []MountRule, args []string) []MountRule {

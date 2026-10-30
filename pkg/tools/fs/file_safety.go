@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/isolation"
 )
 
 // protectedReadFs denies reads from secret stores and delegates writes to a
@@ -163,8 +164,17 @@ func checkSensitiveWritePath(path, workspace string, restrict bool) error {
 		return fmt.Errorf("write denied: could not safely resolve path: %w", err)
 	}
 	for _, candidate := range []string{abs, resolved} {
-		if candidate != "" && (isSensitiveWritePath(candidate) || isProtectedSystemWritePath(candidate) ||
-			isWorkspaceSessionPath(candidate, workspace)) {
+		if candidate == "" {
+			continue
+		}
+		// DeepClaw registers its MPM workspace, home and executable here. The
+		// file tools run in-process, outside the shell sandbox, so they need
+		// the same denial as the isolated subprocess view.
+		if isolation.IsProtectedPath(candidate) {
+			return fmt.Errorf("write denied: path is protected by DeepClaw MPM isolation")
+		}
+		if isSensitiveWritePath(candidate) || isProtectedSystemWritePath(candidate) ||
+			isWorkspaceSessionPath(candidate, workspace) {
 			return fmt.Errorf("write denied: path targets protected credential, system, or session data")
 		}
 	}

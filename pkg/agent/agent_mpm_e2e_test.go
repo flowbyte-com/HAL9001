@@ -11,6 +11,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/isolation"
 )
 
 func mpmTestBinary(t *testing.T) string {
@@ -35,6 +36,10 @@ func mpmTestBinary(t *testing.T) string {
 
 func seedMPMFixture(t *testing.T, bin, workspace, home, project, fact string) {
 	t.Helper()
+	t.Cleanup(func() {
+		isolation.ResetProtectedPaths()
+		isolation.Configure(config.DefaultConfig())
+	})
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +171,11 @@ func TestProcessMessage_DeepClawMPMProjectIsolationEndToEnd(t *testing.T) {
 	}
 }
 
-func TestProcessMessage_DeepClawMPMRetrievalFailureEndToEnd(t *testing.T) {
+func TestProcessMessage_DeepClawMPMRetrievalFailureDegradesEndToEnd(t *testing.T) {
+	t.Cleanup(func() {
+		isolation.ResetProtectedPaths()
+		isolation.Configure(config.DefaultConfig())
+	})
 	tmpDir := t.TempDir()
 	agentWorkspace := filepath.Join(tmpDir, "agent-workspace")
 	mpmWorkspace := filepath.Join(tmpDir, "mpm-workspace")
@@ -200,16 +209,21 @@ func TestProcessMessage_DeepClawMPMRetrievalFailureEndToEnd(t *testing.T) {
 	provider := &recordingProvider{}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	_, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
+	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
 		Channel: "pico",
 		ChatID:  "chat-1",
 		Content: "secret code",
 	}))
-	if err == nil {
-		t.Fatal("expected DeepClaw retrieval failure, got nil")
+	if err != nil {
+		t.Fatalf("a retrieval failure must not abort the turn: %v", err)
 	}
-	if !strings.Contains(err.Error(), "mpm") {
-		t.Fatalf("expected mpm-related error, got %v", err)
+	if response != "Mock response" {
+		t.Fatalf("response = %q, want Mock response", response)
+	}
+	for _, msg := range provider.lastMessages {
+		if strings.Contains(msg.Content, "Retrieved context") || strings.Contains(msg.Content, "retrieval:mpm") {
+			t.Fatalf("failed retrieval still produced a memory block: %q", msg.Content)
+		}
 	}
 }
 

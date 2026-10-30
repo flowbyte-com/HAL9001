@@ -45,13 +45,20 @@ type AgentInstance struct {
 	ContextBuilder          *ContextBuilder
 	Tools                   *tools.ToolRegistry
 	MPMRetriever            *mpm.Retriever
-	ActiveMemory            *ActiveMemoryStore
-	Definition              AgentContextDefinition
-	Subagents               *config.SubagentsConfig
-	SkillsFilter            []string
-	MCPServerAllowlist      map[string]struct{}
-	Candidates              []providers.FallbackCandidate
-	ImageCandidates         []providers.FallbackCandidate
+	// MPMDegradedReason is non-empty when DeepClaw mode was requested but MPM
+	// could not be initialized. Eager workspace memory stays disabled in that
+	// state; the turn runs without retrieved context.
+	MPMDegradedReason string
+	// MPMUnsandboxed is true only in the explicit trusted-development mode
+	// where the operator accepted that the shell can write MPM.
+	MPMUnsandboxed     bool
+	ActiveMemory       *ActiveMemoryStore
+	Definition         AgentContextDefinition
+	Subagents          *config.SubagentsConfig
+	SkillsFilter       []string
+	MCPServerAllowlist map[string]struct{}
+	Candidates         []providers.FallbackCandidate
+	ImageCandidates    []providers.FallbackCandidate
 
 	// Router is non-nil when model routing is configured and the light model
 	// was successfully resolved. It scores each incoming message and decides
@@ -193,10 +200,14 @@ func NewAgentInstance(
 		).
 		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
 
-	mpmRetriever, err := mpm.NewRetrieverFromEnv()
-	if err != nil {
-		logger.WarnCF("agent", "Failed to initialize MPM retriever; DeepClaw memory disabled",
-			map[string]any{"error": err.Error()})
+	mpmRequested := strings.TrimSpace(os.Getenv("DEEPCLAW_MPM_ENABLED")) == "1"
+	mpmRetriever, mpmInitErr := mpm.NewRetrieverFromEnv()
+	mpmDegradedReason := ""
+	mpmUnsandboxed := false
+	if mpmInitErr != nil {
+		mpmDegradedReason = mpmInitErr.Error()
+		logger.ErrorCF("agent", "MPM initialization failed; DeepClaw memory is disabled",
+			map[string]any{"error": mpmInitErr.Error()})
 	}
 	deepClawProjectID := ""
 	if mpmRetriever != nil {
@@ -206,6 +217,30 @@ func NewAgentInstance(
 		// the context manager's own store) to the project. Routing and
 		// steering keep using the original session key.
 		sessions = newProjectScopedSessionStore(sessions, deepClawProjectID)
+
+		var isolationErr error
+		mpmUnsandboxed, isolationErr = configureDeepClawMPMIsolation(cfg, mpmRetriever.Config())
+		if isolationErr != nil {
+			removeExecForFailedIsolation(toolsRegistry, isolationErr)
+		}
+	} else if mpmRequested {
+		// DeepClaw was requested but produced no retriever. Keep DeepClaw mode
+		// on so the ContextBuilder does not silently fall back to eager
+		// workspace MEMORY.md, and record the degraded state explicitly.
+		contextBuilder.deepClawMode = true
+		if mpmDegradedReason == "" {
+			mpmDegradedReason = "MPM requested but no retriever was created"
+		}
+		logger.ErrorCF("agent", "MPM requested but unavailable; running without retrieved memory "+
+			"and without eager workspace memory", map[string]any{"error": mpmDegradedReason})
+
+		// The configured store may still exist and be writable even though the
+		// retriever could not start. Protect it anyway, or fail closed.
+		var isolationErr error
+		mpmUnsandboxed, isolationErr = configureDeepClawMPMIsolation(cfg, deepClawMPMConfigFromEnv())
+		if isolationErr != nil {
+			removeExecForFailedIsolation(toolsRegistry, isolationErr)
+		}
 	}
 
 	var activeMemory *ActiveMemoryStore
@@ -376,6 +411,8 @@ func NewAgentInstance(
 		Sessions:                sessions,
 		ContextBuilder:          contextBuilder,
 		MPMRetriever:            mpmRetriever,
+		MPMDegradedReason:       mpmDegradedReason,
+		MPMUnsandboxed:          mpmUnsandboxed,
 		ActiveMemory:            activeMemory,
 		Tools:                   toolsRegistry,
 		Definition:              definition,

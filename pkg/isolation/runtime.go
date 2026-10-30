@@ -44,12 +44,102 @@ var (
 	currentIsolation = config.DefaultConfig().Isolation
 	isolationGen     uint64
 
+	// protectedMu guards protectedPaths: host paths that child processes must
+	// not be able to read or write. DeepClaw registers its MPM workspace and
+	// executable here so the shell sandbox masks them.
+	protectedMu    sync.RWMutex
+	protectedPaths []string
+
 	// preflightCache memoizes the expensive Preflight work (instance dir
 	// creation and expose-path validation) so it is not repeated for every
 	// child process. It is invalidated whenever Configure changes the config.
 	preflightMu    sync.Mutex
 	preflightCache preflightResult
 )
+
+// ProtectPaths registers host paths that must be inaccessible to isolated child
+// processes. Directories are masked with an empty tmpfs; regular files are
+// bind-mounted read-only. The paths are absolute host paths.
+func ProtectPaths(paths ...string) error {
+	protectedMu.Lock()
+	defer protectedMu.Unlock()
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("protected path must be absolute: %q", path)
+		}
+		clean := filepath.Clean(path)
+		duplicate := false
+		for _, existing := range protectedPaths {
+			if existing == clean {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			protectedPaths = append(protectedPaths, clean)
+		}
+		if resolved, err := filepath.EvalSymlinks(clean); err == nil && resolved != clean {
+			duplicate = false
+			for _, existing := range protectedPaths {
+				if existing == resolved {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				protectedPaths = append(protectedPaths, resolved)
+			}
+		}
+	}
+	return nil
+}
+
+// ProtectedPaths returns a copy of the registered protected host paths.
+func ProtectedPaths() []string {
+	protectedMu.RLock()
+	defer protectedMu.RUnlock()
+	return append([]string(nil), protectedPaths...)
+}
+
+// ResetProtectedPaths clears the registry. It is intended for tests and for a
+// full runtime reconfiguration.
+func ResetProtectedPaths() {
+	protectedMu.Lock()
+	defer protectedMu.Unlock()
+	protectedPaths = nil
+}
+
+// IsProtectedPath reports whether path is one of the registered protected
+// paths or lives below a protected directory. Symlink aliases are resolved.
+func IsProtectedPath(path string) bool {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		if abs, err := filepath.Abs(clean); err == nil {
+			clean = abs
+		}
+	}
+	candidates := []string{clean}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil && resolved != clean {
+		candidates = append(candidates, resolved)
+	}
+	protectedMu.RLock()
+	defer protectedMu.RUnlock()
+	for _, protected := range protectedPaths {
+		for _, candidate := range candidates {
+			if candidate == protected {
+				return true
+			}
+			if rel, err := filepath.Rel(protected, candidate); err == nil &&
+				rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 type preflightResult struct {
 	done bool
@@ -163,6 +253,16 @@ func ApplyUserEnv(cmd *exec.Cmd, root string) {
 		envMap["XDG_CONFIG_HOME"] = userEnv.Config
 		envMap["XDG_CACHE_HOME"] = userEnv.Cache
 		envMap["XDG_STATE_HOME"] = userEnv.State
+	}
+
+	// MPM configuration is a capability: it names the executable, workspace and
+	// home that the trusted retriever uses. Child processes do not need it, and
+	// forwarding it would let an isolated shell find the protected store even
+	// when the mount plan masks it.
+	for key := range envMap {
+		if strings.HasPrefix(key, "DEEPCLAW_MPM_") || strings.HasPrefix(key, "MPM_") {
+			delete(envMap, key)
+		}
 	}
 
 	env := make([]string, 0, len(envMap))
@@ -378,6 +478,25 @@ func IsSupported() bool {
 	return isSupportedOn(runtime.GOOS)
 }
 
+// SupportsProtectedPaths reports whether the current platform can enforce
+// protected host paths for isolated child processes. Only the Linux bubblewrap
+// backend implements masking today.
+func SupportsProtectedPaths() error {
+	switch runtime.GOOS {
+	case "linux":
+		if _, err := exec.LookPath("bwrap"); err != nil {
+			return fmt.Errorf("protected host paths require bubblewrap: %w", err)
+		}
+		return nil
+	case "darwin":
+		return fmt.Errorf("protected host paths are not implemented for the macOS isolation backend")
+	case "windows":
+		return fmt.Errorf("protected host paths are not implemented for the Windows isolation backend")
+	default:
+		return fmt.Errorf("protected host paths are not supported on %s", runtime.GOOS)
+	}
+}
+
 func isSupportedOn(goos string) bool {
 	switch goos {
 	case "linux", "windows", "darwin":
@@ -428,6 +547,11 @@ func preflight(isolation config.IsolationConfig) error {
 	}
 	if err := ValidateExposePaths(isolation.ExposePaths); err != nil {
 		return err
+	}
+	if len(ProtectedPaths()) > 0 {
+		if err := SupportsProtectedPaths(); err != nil {
+			return err
+		}
 	}
 	if runtime.GOOS == "linux" {
 		for _, rule := range BuildLinuxMountPlan(root, isolation.ExposePaths) {

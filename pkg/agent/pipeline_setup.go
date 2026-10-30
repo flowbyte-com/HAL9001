@@ -37,15 +37,24 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 
 	if ts.agent != nil && ts.agent.MPMRetriever != nil && strings.TrimSpace(ts.userMessage) != "" {
 		retrievalStart := time.Now()
-		retrieval, err := ts.agent.MPMRetriever.Retrieve(ctx, ts.userMessage)
-		if err != nil {
-			return nil, fmt.Errorf("mpm retrieval failed: %w", err)
+		retrieval, retrieveErr := ts.agent.MPMRetriever.Retrieve(ctx, ts.userMessage)
+		if retrieveErr != nil {
+			// Retrieved memory is advisory, read-only context. A retrieval
+			// failure degrades this turn to no fresh context instead of
+			// aborting the user's work; the error is explicit in the log.
+			logger.WarnCF("agent", "MPM retrieval failed; continuing without retrieved context",
+				map[string]any{
+					"session_key": ts.sessionKey,
+					"error":       retrieveErr.Error(),
+				})
+			retrieval = nil
+		} else {
+			logger.DebugCF("agent", "MPM retrieval", map[string]any{
+				"duration_ms": time.Since(retrievalStart).Milliseconds(),
+				"records":     len(retrieval.Records),
+				"tokens":      retrieval.Tokens,
+			})
 		}
-		logger.DebugCF("agent", "MPM retrieval", map[string]any{
-			"duration_ms": time.Since(retrievalStart).Milliseconds(),
-			"records":     len(retrieval.Records),
-			"tokens":      retrieval.Tokens,
-		})
 		if ts.agent.ActiveMemory != nil {
 			prev, loadErr := ts.agent.ActiveMemory.Load(ts.sessionKey)
 			if loadErr != nil {
