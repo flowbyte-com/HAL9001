@@ -458,6 +458,11 @@ func (s *TaskState) addEntry(kind, key, content, origin, verification string, ev
 			if entry.Superseded || entry.Key != key {
 				continue
 			}
+			// A model proposal never overrides a user-confirmed instruction,
+			// decision or next action. It is recorded alongside it.
+			if origin == TaskOriginModel && entry.Verification == TaskVerificationUserConfirmed {
+				continue
+			}
 			entry.Superseded = true
 			entry.SupersededBy = "pending"
 			entry.UpdatedAt = now

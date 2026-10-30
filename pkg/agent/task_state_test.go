@@ -141,6 +141,40 @@ func TestTaskStateDifferentCommandDoesNotSupersedeFailure(t *testing.T) {
 	}
 }
 
+func TestTaskStateDecisionDistinguishesUserAndModel(t *testing.T) {
+	store := newTaskStateStore(t, "atlas")
+	state := applyTaskState(t, store, "sk_v1_test", func(state *TaskState) {
+		state.ApplyUserMessage("Decision: use listenPort.\nNext: update the parser field.", "t1")
+		state.RecordAssistant("Proposed decision: keep the JSON tag for compatibility.", "t2")
+	})
+	var confirmed, proposed int
+	for _, entry := range state.Entries {
+		if entry.Kind != TaskEntryKindDecision {
+			continue
+		}
+		switch entry.Verification {
+		case TaskVerificationUserConfirmed:
+			confirmed++
+			if entry.Origin != TaskOriginUser {
+				t.Fatalf("user decision origin = %q", entry.Origin)
+			}
+			if entry.Superseded {
+				t.Fatalf("model proposal superseded the user decision: %+v", entry)
+			}
+		case TaskVerificationProposed:
+			proposed++
+			if entry.Origin != TaskOriginModel {
+				t.Fatalf("model decision origin = %q", entry.Origin)
+			}
+		default:
+			t.Fatalf("unexpected decision verification: %+v", entry)
+		}
+	}
+	if confirmed != 1 || proposed < 1 {
+		t.Fatalf("decisions = confirmed:%d proposed:%d, want 1 and >=1", confirmed, proposed)
+	}
+}
+
 func TestTaskStateAssistantDiagnosisStaysProposed(t *testing.T) {
 	store := newTaskStateStore(t, "atlas")
 	applyTaskState(t, store, "sk_v1_test", func(state *TaskState) {
