@@ -49,3 +49,31 @@ Enable with environment variables documented in pkg/mpm NewRetrieverFromEnv.
   pipeline/context code, and run go test for pkg/mpm and pkg/agent.
 - Evidence: both packages pass; adapter test covers project isolation and
   budget truncation.
+
+## libolm investigation
+
+- `go build ./...` without build tags fails in
+  `maunium.net/go/mautrix/crypto/libolm` because
+  `registerlibolm.go` is compiled under `!goolm` and includes `olm/olm.h`.
+- The repository Makefile uses `-tags goolm,stdjson` by default, selecting
+  `registergoolm.go` and avoiding the libolm header.
+- No system packages were installed. Use `make build` / `make test` or pass
+  `-tags 'goolm,stdjson'`.
+
+## Benchmark methodology (prepared)
+
+Compare three modes with the same provider/model and inputs:
+1. No memory: MPM disabled and no MEMORY.md.
+2. Eager MEMORY.md: MPM disabled with the fixture written to MEMORY.md.
+3. DeepClaw: MPM enabled with project-scoped fixture.
+
+Record:
+- Task accuracy and memory recall against expected fixture values.
+- Provider-reported prompt/completion/cache-read/cache-creation tokens.
+- End-to-end latency, retrieval latency, LLM calls, tool calls.
+- Injected memory size in bytes/tokens.
+- Retrieval overhead and truncation behavior.
+
+Distinguish measured provider usage from local character/token estimates. No
+live-provider benchmark has been run in this checkpoint; the harness is limited
+to deterministic mock-provider tests so far.

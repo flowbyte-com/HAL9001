@@ -297,6 +297,9 @@ func formatRecords(records []Record, budget int) (string, bool) {
 		b.WriteString(line)
 	}
 	if strings.TrimSpace(b.String()) == "## Retrieved MPM memories" {
+		if truncated {
+			return "## Retrieved MPM memories\n\n[truncated to fit memory budget]\n", true
+		}
 		return "", false
 	}
 	if truncated {
