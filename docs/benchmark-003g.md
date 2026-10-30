@@ -88,7 +88,9 @@ Your API key is invalid, blocked or out of funds.
 3. The credential must have an `exp` later than the planned run window. If the
    provider issues a refresh token, configure a project-local auth store inside
    the trusted benchmark environment; the current config uses a direct
-   `api_keys` access token and has no refresh mechanism.
+   `api_keys` access token and has no refresh mechanism. Trial environments are
+   replaced, so ambient shell API-key variables are intentionally not
+   inherited by the benchmark process.
 4. Re-run the bounded pilot with the explicit `--out .lab/bench/003g` path, for
    example:
 
