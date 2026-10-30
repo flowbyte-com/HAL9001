@@ -14,6 +14,10 @@ import (
 // access to fixture files or other trials.
 type mockProvider struct {
 	spec TrialSpec
+	// t1Stage and t6Stage sequence the deterministic "write script/test then
+	// rerun" turns. The provider is recreated per trial and called sequentially.
+	t1Stage int
+	t6Stage int
 }
 
 func NewMockProvider(spec TrialSpec) providers.LLMProvider {
@@ -36,6 +40,17 @@ func (m *mockProvider) Chat(
 ) (*providers.LLMResponse, error) {
 	lastUser := lastUserContent(messages)
 	joined := joinMessageContent(messages)
+
+	// The legacy context manager asks the same provider for a summary. Answer
+	// neutrally so the compacted history cannot carry the failure diagnostic.
+	if strings.HasPrefix(strings.TrimSpace(lastUser), "Provide a concise summary") ||
+		strings.Contains(lastUser, "Merge these two conversation summaries") {
+		return m.respond("The user worked on parser test changes; earlier conversation details were compacted.", messages), nil
+	}
+
+	if m.spec.Scenario == "task_state_script" {
+		return m.taskStateScriptResponse(messages, lastUser, joined), nil
+	}
 
 	if m.spec.Scenario == "abstention" {
 		return m.respond("I don't know; no matching vault phrase is recorded.", messages), nil
@@ -79,6 +94,85 @@ func (m *mockProvider) Chat(
 		return m.respond("The atlas project vault access phrase is "+m.spec.ExpectedAnswer+".", messages), nil
 	}
 	return m.respond("I don't know; that information is not available in the current context.", messages), nil
+}
+
+// taskStateBlock returns the rendered task-state block from a request, if any.
+// The prompt builder wraps each part as
+// "Retrieved context (... source: task.state):\n<content>" and appends the
+// question after a separator, so the block ends at "\n\nQuestion: ".
+func taskStateBlock(messages []providers.Message) string {
+	const marker = "source: task.state):"
+	for _, message := range messages {
+		idx := strings.Index(message.Content, marker)
+		if idx < 0 {
+			continue
+		}
+		rest := message.Content[idx+len(marker):]
+		if end := strings.Index(rest, "\n\nQuestion: "); end >= 0 {
+			rest = rest[:end]
+		}
+		return strings.TrimSpace(rest)
+	}
+	return ""
+}
+
+func (m *mockProvider) taskStateScriptResponse(
+	messages []providers.Message,
+	lastUser, joined string,
+) *providers.LLMResponse {
+	block := taskStateBlock(messages)
+
+	switch {
+	case strings.Contains(lastUser, "Run the failing parser test"):
+		switch m.t1Stage {
+		case 0:
+			m.t1Stage = 1
+			return m.toolCall(m.toolName("write"), map[string]any{
+				"path": "parser_check.sh", "content": TaskStateCheckScript, "overwrite": true,
+			}, messages)
+		case 1:
+			m.t1Stage = 2
+			return m.toolCall(m.toolName("bash"), map[string]any{"command": TaskStateTestCommand}, messages)
+		default:
+			return m.respond("The failing test reported: parse.go:12: undefined: parsePort.", messages)
+		}
+	case strings.Contains(lastUser, "Correction: use listenPort"):
+		return m.respond("Understood: use listenPort and keep the JSON tag unchanged.", messages)
+	case strings.Contains(lastUser, "Continue with the parser investigation"):
+		return m.respond("Proposed diagnosis: the parser reads the deprecated port field.\nNext: inspect parse.go.", messages)
+	case strings.Contains(lastUser, "Continue after compaction"):
+		return m.respond("Compaction complete.", messages)
+	case strings.Contains(lastUser, "What did the failing test report"):
+		if strings.Contains(block, TaskStateDiagnostic) || strings.Contains(joined, TaskStateDiagnostic) {
+			return m.respond("The failing test reported: parse.go:12: undefined: parsePort.", messages)
+		}
+		return m.respond("I don't know; that detail is no longer in the conversation.", messages)
+	case strings.Contains(lastUser, "Run the parser test again"):
+		switch m.t6Stage {
+		case 0:
+			m.t6Stage = 1
+			return m.toolCall(m.toolName("write"), map[string]any{
+				"path": "fixed.flag", "content": "fixed\n", "overwrite": true,
+			}, messages)
+		case 1:
+			m.t6Stage = 2
+			return m.toolCall(m.toolName("bash"), map[string]any{"command": TaskStateTestCommand}, messages)
+		default:
+			return m.respond("The parser test now passes.", messages)
+		}
+	case strings.Contains(lastUser, "Is the parser test still failing"):
+		if block != "" {
+			if strings.Contains(block, "Failure") && strings.Contains(block, TaskStateDiagnostic) {
+				return m.respond("Yes, it is still failing.", messages)
+			}
+			return m.respond("No, the test now passes.", messages)
+		}
+		if strings.Contains(joined, "PASS") {
+			return m.respond("No, the test now passes.", messages)
+		}
+		return m.respond("I don't know whether it is still failing.", messages)
+	}
+	return m.respond("Done.", messages)
 }
 
 func (m *mockProvider) codingResponse(messages []providers.Message, lastUser string) *providers.LLMResponse {

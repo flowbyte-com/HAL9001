@@ -35,6 +35,11 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	}
 	ts.captureRestorePoint(history, summary)
 
+	// Deterministic task-state capture happens before prompt assembly so the
+	// current turn's own instructions are not echoed back as memory.
+	ts.agent.captureUserTaskState(ts.sessionKey, ts.userMessage, ts.turnID)
+	ts.agent.observeTaskSummary(ts.sessionKey, summary, ts.turnID)
+
 	if ts.agent != nil && ts.agent.MPMRetriever != nil && strings.TrimSpace(ts.userMessage) != "" {
 		retrievalStart := time.Now()
 		retrieval, retrieveErr := ts.agent.MPMRetriever.Retrieve(ctx, ts.userMessage)
@@ -111,6 +116,8 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 					"session_key": ts.sessionKey,
 					"error":       err.Error(),
 				})
+			} else {
+				ts.agent.recordTaskCompaction(ts.sessionKey, string(ContextCompressReasonProactive), ts.turnID)
 			}
 			ts.refreshRestorePointFromSession(ts.agent)
 			if resp, err := p.ContextManager.Assemble(ctx, &AssembleRequest{

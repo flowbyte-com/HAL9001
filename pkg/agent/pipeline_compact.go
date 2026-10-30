@@ -57,6 +57,7 @@ func (p *Pipeline) CompactBeforeLLM(ctx context.Context, ts *turnState, exec *tu
 			}
 			return
 		}
+		ts.agent.recordTaskCompaction(ts.sessionKey, string(ContextCompressReasonThreshold), ts.turnID)
 
 		rebuilt := p.reassembleActiveTurn(ctx, ts, exec, skillContextTriggerThresholdRebuild)
 		if !rebuilt.assembled {

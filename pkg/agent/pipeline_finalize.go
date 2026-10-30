@@ -23,6 +23,10 @@ func (p *Pipeline) Finalize(
 ) (turnResult, error) {
 	al := p.al
 
+	// Only explicitly labelled model proposals are captured, and they remain
+	// proposed rather than verified findings.
+	ts.agent.captureAssistantTaskState(ts.sessionKey, finalContent, ts.turnID)
+
 	// When allResponsesHandled=true, ExecuteTools already finalized
 	// (added handledToolResponseSummary, saved session, set phase to Completed).
 	// But still check for hard abort - if requested, abort the turn.

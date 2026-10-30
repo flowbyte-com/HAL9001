@@ -59,8 +59,8 @@ func DefaultMPMBinary() string {
 
 func normalizeExperiment(experiment string) (string, error) {
 	value := strings.ToUpper(strings.TrimSpace(experiment))
-	if value != "A" && value != "B" {
-		return "", fmt.Errorf("experiment must be A or B, got %q", experiment)
+	if value != "A" && value != "B" && value != "C" {
+		return "", fmt.Errorf("experiment must be A, B or C, got %q", experiment)
 	}
 	return value, nil
 }
@@ -256,6 +256,8 @@ func buildTrialSpec(
 		MaxTokens:       256, MaxToolIterations: 3, ContextWindow: 32768,
 		CodingExpectedFile:    scenario.CodingFile,
 		CodingExpectedContent: scenario.CodingContent,
+		TaskState:             ConditionTaskState(condition),
+		TaskStateBudget:       500,
 	}
 	if spec.MemoryPolicy == "mpm" || spec.MemoryPolicy == "mpm_active" {
 		spec.MPMWorkspace = filepath.Join(trialDir, "mpm", "workspace")
@@ -338,6 +340,10 @@ func trialProcessEnv(spec TrialSpec, runDir string) []string {
 			base["DEEPCLAW_ACTIVE_MEMORY"] = "1"
 		}
 	}
+	if spec.TaskState {
+		base["DEEPCLAW_TASK_STATE"] = "1"
+		base["DEEPCLAW_TASK_STATE_BUDGET"] = fmt.Sprintf("%d", spec.TaskStateBudget)
+	}
 	env := make([]string, 0, len(base))
 	for key, value := range base {
 		env = append(env, key+"="+value)
@@ -391,7 +397,7 @@ func aggregateTrials(trials []TrialResult) []Aggregate {
 	for _, k := range keys {
 		group := groups[k]
 		agg := Aggregate{Condition: k.condition, Scenario: k.scenario, Trials: len(group)}
-		var prompt, completion, total, e2e, retrieval []float64
+		var prompt, completion, total, e2e, retrieval, taskEntries, taskActive, taskTokens []float64
 		for _, trial := range group {
 			if trial.Score.Correct {
 				agg.Correct++
@@ -426,12 +432,23 @@ func aggregateTrials(trials []TrialResult) []Aggregate {
 			if trial.Totals.RetrievalLatencyMS > 0 {
 				retrieval = append(retrieval, float64(trial.Totals.RetrievalLatencyMS))
 			}
+			if trial.TaskStateFinal != nil && trial.TaskStateFinal.Available {
+				taskEntries = append(taskEntries, float64(trial.Totals.TaskStateFinalEntries))
+				taskActive = append(taskActive, float64(trial.Totals.TaskStateFinalActiveEntries))
+				taskTokens = append(taskTokens, float64(trial.Totals.TaskStateRenderedTokens))
+				if trial.Totals.TaskStateRenderedTokens > agg.MaxTaskStateTokens {
+					agg.MaxTaskStateTokens = trial.Totals.TaskStateRenderedTokens
+				}
+			}
 		}
 		agg.MeanPromptTokens = meanPtr(prompt)
 		agg.MeanCompletionTokens = meanPtr(completion)
 		agg.MeanTotalTokens = meanPtr(total)
 		agg.MeanE2EMS = meanPtr(e2e)
 		agg.MeanRetrievalMS = meanPtr(retrieval)
+		agg.MeanTaskStateEntries = meanPtr(taskEntries)
+		agg.MeanTaskStateActiveEntries = meanPtr(taskActive)
+		agg.MeanTaskStateTokens = meanPtr(taskTokens)
 		out = append(out, agg)
 	}
 	return out

@@ -178,6 +178,10 @@ func trialEnv(spec *TrialSpec) map[string]string {
 			env["DEEPCLAW_ACTIVE_MEMORY"] = "1"
 		}
 	}
+	if spec.TaskState {
+		env["DEEPCLAW_TASK_STATE"] = "1"
+		env["DEEPCLAW_TASK_STATE_BUDGET"] = fmt.Sprintf("%d", spec.TaskStateBudget)
+	}
 	return env
 }
 
@@ -194,6 +198,7 @@ func applyTrialEnv(spec *TrialSpec) {
 	}
 	for _, key := range []string{
 		"DEEPCLAW_MPM_UNSANDBOXED", "DEEPCLAW_ACTIVE_MEMORY",
+		"DEEPCLAW_TASK_STATE", "DEEPCLAW_TASK_STATE_BUDGET",
 	} {
 		if _, ok := trialEnv(spec)[key]; !ok {
 			_ = os.Unsetenv(key)
@@ -431,6 +436,22 @@ func RunTrial(spec TrialSpec) TrialResult {
 		}
 		historyBefore := sessionHistoryLen(ctx, instance, spec.SessionKey)
 		summaryBefore := sessionSummaryLen(ctx, instance, spec.SessionKey)
+		compacted := false
+		if turn.CompactBefore {
+			beforeCompact := sessionSummaryLen(ctx, instance, spec.SessionKey)
+			if _, err := loop.ProcessDirectWithChannel(ctx, "/compact", spec.SessionKey, "cli", "direct"); err != nil {
+				return fail(fmt.Errorf("turn %s compact: %w", turn.ID, err))
+			}
+			compacted = sessionSummaryLen(ctx, instance, spec.SessionKey) > beforeCompact
+			if !compacted {
+				return fail(fmt.Errorf("turn %s compact produced no summary", turn.ID))
+			}
+			// Compaction requests belong to the run total, not to the turn's
+			// own request count.
+			requestCursor = len(recorder.Requests())
+			historyBefore = sessionHistoryLen(ctx, instance, spec.SessionKey)
+			summaryBefore = sessionSummaryLen(ctx, instance, spec.SessionKey)
+		}
 		cleared := false
 		if turn.ClearHistoryBefore {
 			if err := instance.Sessions.SetHistory(ctx, spec.SessionKey, nil); err != nil {
@@ -443,6 +464,7 @@ func RunTrial(spec TrialSpec) TrialResult {
 			historyBefore = 0
 			summaryBefore = 0
 		}
+		toolsBefore := len(collector.snapshot())
 		turnStart := time.Now()
 		turnCtx := WithTurnID(ctx, turn.ID)
 		response, turnErr := loop.ProcessDirectWithChannel(
@@ -453,8 +475,14 @@ func RunTrial(spec TrialSpec) TrialResult {
 			DurationMS:    time.Since(turnStart).Milliseconds(),
 			HistoryBefore: historyBefore, HistoryAfter: sessionHistoryLen(ctx, instance, spec.SessionKey),
 			SummaryCharsBefore: summaryBefore, SummaryCharsAfter: sessionSummaryLen(ctx, instance, spec.SessionKey),
-			HistoryCleared: cleared, Restarted: turn.RestartBefore,
+			HistoryCleared: cleared, Restarted: turn.RestartBefore, Compacted: compacted,
 			Requests: len(recorder.Requests()) - requestCursor,
+		}
+		if snapshot := collector.snapshot(); len(snapshot) >= toolsBefore {
+			turnResult.ToolCalls = append([]ToolCallRecord(nil), snapshot[toolsBefore:]...)
+		}
+		if spec.TaskState {
+			turnResult.TaskState = taskStateSnapshot(instance, spec.SessionKey, spec.TaskStateBudget)
 		}
 		requestCursor = len(recorder.Requests())
 		if turnErr != nil {
@@ -486,7 +514,20 @@ func RunTrial(spec TrialSpec) TrialResult {
 	result.SessionFilesObserved = sessionFiles(spec.AgentWorkspace)
 	result.AnswerFoundInWorkspace = len(unexpectedWorkspaceMarkers(spec)) > 0
 	result.Postflight = postflightChecks(spec, instance)
+	if spec.TaskState {
+		result.TaskStateFinal = taskStateSnapshot(instance, spec.SessionKey, spec.TaskStateBudget)
+	}
 	result.Score = scoreTrial(spec, result.Turns, result.AnswerFoundInWorkspace)
+	if spec.Experiment == "C" {
+		result.TurnScores = scoreTaskStateTrial(spec, result)
+		result.Score = Score{Notes: []string{"deterministic task-state mechanism test; not a live-model reasoning result"}}
+		result.Score.Correct = true
+		for _, turnScore := range result.TurnScores {
+			if !turnScore.Passed {
+				result.Score.Correct = false
+			}
+		}
+	}
 	result.Totals = totalsFor(result)
 	attachRetrievalLatency(&result, spec.LogPath)
 
@@ -518,8 +559,11 @@ func settingsFromInstance(spec TrialSpec, instance *agent.AgentInstance, modelID
 		Isolation: spec.Isolation, MPMProject: spec.MPMProject,
 		SessionKey: spec.SessionKey, MaxTokens: spec.MaxTokens,
 		MaxIterations: spec.MaxToolIterations, ContextWindow: spec.ContextWindow,
-		ActiveMemory: spec.MemoryPolicy == "mpm_active",
-		ToolNames:    sortedCopy(instance.Tools.List()), ToolSchemaBytes: len(data), ToolSchemaSHA: sha256Hex(data),
+		ActiveMemory:    spec.MemoryPolicy == "mpm_active" || spec.TaskState,
+		TaskState:       spec.TaskState,
+		TaskStateBudget: spec.TaskStateBudget,
+		ToolNames:       sortedCopy(instance.Tools.List()),
+		ToolSchemaBytes: len(data), ToolSchemaSHA: sha256Hex(data),
 	}
 }
 
@@ -574,6 +618,23 @@ func preflightChecks(spec TrialSpec, instance *agent.AgentInstance, modelID stri
 		{Name: "provider_model_recorded", Passed: strings.TrimSpace(modelID) != ""},
 		{Name: "provider_config_outside_agent_paths", Passed: validateProviderConfigLocation(spec) == nil},
 	}
+	if spec.TaskState {
+		dir := ""
+		if instance.ActiveMemory != nil {
+			dir = instance.ActiveMemory.Dir()
+		}
+		protected := false
+		for _, path := range isolation.ProtectedPaths() {
+			if path == dir && dir != "" {
+				protected = true
+			}
+		}
+		checks = append(checks,
+			Check{Name: "task_state_outside_workspace", Passed: dir != "" && !pathWithin(spec.AgentWorkspace, dir), Detail: dir},
+			Check{Name: "task_state_protected", Passed: protected, Detail: dir},
+			Check{Name: "task_state_no_pre_existing_sidecar", Passed: !hasFiles(dir), Detail: dir},
+		)
+	}
 	names := sortedCopy(instance.Tools.List())
 	four := strings.Join(names, ",") == "bash,edit,read,write"
 	if spec.ToolProfile == "coding" {
@@ -620,6 +681,13 @@ func postflightChecks(spec TrialSpec, instance *agent.AgentInstance) []Check {
 	if spec.MemoryPolicy == "mpm" || spec.MemoryPolicy == "mpm_active" {
 		found := workspaceMarkerFiles(spec.AgentWorkspace, fixtureMarkers(spec))
 		checks = append(checks, Check{Name: "mpm_answer_not_in_workspace", Passed: len(found) == 0, Detail: strings.Join(found, ",")})
+	}
+	if spec.TaskState {
+		checks = append(checks, Check{
+			Name:   "task_state_not_in_workspace",
+			Passed: !hasFiles(filepath.Join(spec.AgentWorkspace, ".deepclaw", "active-memory")),
+			Detail: filepath.Join(spec.AgentWorkspace, ".deepclaw", "active-memory"),
+		})
 	}
 	return checks
 }
@@ -823,6 +891,12 @@ func totalsFor(result TrialResult) TrialTotals {
 		}
 	}
 	totals.ToolCalls = len(result.ToolCalls)
+	if result.TaskStateFinal != nil && result.TaskStateFinal.Available {
+		totals.TaskStateFinalEntries = result.TaskStateFinal.Entries
+		totals.TaskStateFinalActiveEntries = result.TaskStateFinal.ActiveEntries
+		totals.TaskStateRenderedChars = result.TaskStateFinal.RenderedChars
+		totals.TaskStateRenderedTokens = result.TaskStateFinal.RenderedTokens
+	}
 	return totals
 }
 

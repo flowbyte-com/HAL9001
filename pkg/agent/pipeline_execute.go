@@ -716,6 +716,12 @@ toolLoop:
 			contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
 		}
 
+		// Record deterministic tool evidence before the result joins history.
+		ts.agent.recordTaskTool(
+			ts.sessionKey, ts.turnID, toolName, toolCallID,
+			toolArgs, contentForLLM, toolResult.IsError,
+		)
+
 		var toolResultMedia []string
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
 			toolResultMedia = append(toolResultMedia, toolResult.Media...)

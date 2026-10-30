@@ -48,6 +48,9 @@ type TrialSpec struct {
 
 	Turns []TurnSpec `json:"turns"`
 
+	TaskState       bool `json:"task_state,omitempty"`
+	TaskStateBudget int  `json:"task_state_budget,omitempty"`
+
 	MaxTokens         int `json:"max_tokens"`
 	MaxToolIterations int `json:"max_tool_iterations"`
 	ContextWindow     int `json:"context_window"`
@@ -61,6 +64,9 @@ type TurnSpec struct {
 	Prompt             string `json:"prompt"`
 	ClearHistoryBefore bool   `json:"clear_history_before,omitempty"`
 	RestartBefore      bool   `json:"restart_before,omitempty"`
+	// CompactBefore runs an explicit /compact command through the production
+	// command path before the turn is sent.
+	CompactBefore bool `json:"compact_before,omitempty"`
 }
 
 type Check struct {
@@ -92,6 +98,8 @@ type Settings struct {
 	MaxIterations   int      `json:"max_tool_iterations"`
 	ContextWindow   int      `json:"context_window"`
 	ActiveMemory    bool     `json:"active_memory"`
+	TaskState       bool     `json:"task_state"`
+	TaskStateBudget int      `json:"task_state_budget,omitempty"`
 	ToolNames       []string `json:"tool_names"`
 	ToolSchemaBytes int      `json:"tool_schema_bytes"`
 	ToolSchemaSHA   string   `json:"tool_schema_sha256"`
@@ -176,7 +184,13 @@ type TurnResult struct {
 	SummaryCharsAfter  int  `json:"summary_chars_after"`
 	HistoryCleared     bool `json:"history_cleared,omitempty"`
 	Restarted          bool `json:"restarted,omitempty"`
+	Compacted          bool `json:"compacted,omitempty"`
 	Requests           int  `json:"llm_requests"`
+
+	// TaskState is the sidecar snapshot after the turn, when task state is
+	// enabled. It is evidence for the mechanism, not a model-quality score.
+	TaskState *TaskStateSnapshot `json:"task_state,omitempty"`
+	ToolCalls []ToolCallRecord   `json:"tool_calls,omitempty"`
 }
 
 type Score struct {
@@ -188,6 +202,30 @@ type Score struct {
 	CodeLike      string   `json:"code_like,omitempty"`
 	Notes         []string `json:"notes,omitempty"`
 	CodingMatch   bool     `json:"coding_match,omitempty"`
+}
+
+// TaskStateSnapshot is a deterministic view of the session sidecar after a
+// turn. RenderedText is what a prompt with no visible history could carry.
+type TaskStateSnapshot struct {
+	Available           bool     `json:"available"`
+	Entries             int      `json:"entries"`
+	ActiveEntries       int      `json:"active_entries"`
+	Objective           string   `json:"objective,omitempty"`
+	ObjectiveStatus     string   `json:"objective_status,omitempty"`
+	ActiveKinds         []string `json:"active_kinds,omitempty"`
+	ActiveVerifications []string `json:"active_verifications,omitempty"`
+	ActiveKeys          []string `json:"active_keys,omitempty"`
+	RenderedChars       int      `json:"rendered_chars"`
+	RenderedTokens      int      `json:"rendered_tokens_estimate"`
+	RenderedText        string   `json:"rendered_text,omitempty"`
+}
+
+// TurnScore records the deterministic per-turn expectation for Experiment C.
+type TurnScore struct {
+	TurnID   string  `json:"turn_id"`
+	Passed   bool    `json:"passed"`
+	Checks   []Check `json:"checks"`
+	Response string  `json:"response,omitempty"`
 }
 
 type TrialResult struct {
@@ -211,6 +249,9 @@ type TrialResult struct {
 	Requests   []RequestRecord  `json:"requests"`
 	ToolCalls  []ToolCallRecord `json:"tool_calls"`
 	Score      Score            `json:"score"`
+	TurnScores []TurnScore      `json:"turn_scores,omitempty"`
+
+	TaskStateFinal *TaskStateSnapshot `json:"task_state_final,omitempty"`
 
 	SessionKeysObserved    []string `json:"session_keys_observed"`
 	SessionFilesObserved   []string `json:"session_files_observed"`
@@ -234,6 +275,12 @@ type TrialTotals struct {
 	UsageMissingRequests  int   `json:"usage_missing_requests"`
 	RetrievalLatencyMS    int   `json:"retrieval_latency_ms"`
 	E2EMS                 int64 `json:"e2e_ms"`
+
+	// 004A task-state overhead. Zero when task state is disabled.
+	TaskStateFinalEntries       int `json:"task_state_final_entries,omitempty"`
+	TaskStateFinalActiveEntries int `json:"task_state_final_active_entries,omitempty"`
+	TaskStateRenderedChars      int `json:"task_state_rendered_chars,omitempty"`
+	TaskStateRenderedTokens     int `json:"task_state_rendered_tokens_estimate,omitempty"`
 }
 
 type RawRecord struct {
@@ -295,6 +342,11 @@ type Aggregate struct {
 	MeanE2EMS            *float64 `json:"mean_e2e_ms"`
 	MeanRetrievalMS      *float64 `json:"mean_retrieval_ms"`
 	UsageMissingTrials   int      `json:"usage_missing_trials"`
+
+	MeanTaskStateEntries       *float64 `json:"mean_task_state_entries"`
+	MeanTaskStateActiveEntries *float64 `json:"mean_task_state_active_entries"`
+	MeanTaskStateTokens        *float64 `json:"mean_task_state_rendered_tokens"`
+	MaxTaskStateTokens         int      `json:"max_task_state_rendered_tokens"`
 }
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339Nano) }

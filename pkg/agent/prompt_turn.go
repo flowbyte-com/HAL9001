@@ -71,6 +71,11 @@ func promptBuildRequestForTurn(
 			Cache:   PromptCacheNone,
 		}}
 	}
+	if ts.agent != nil {
+		if part, ok := ts.agent.taskStatePromptPart(ts.sessionKey, history, summary, currentMessage); ok {
+			req.RetrievedContext = append(req.RetrievedContext, part)
+		}
+	}
 	return req
 }
 

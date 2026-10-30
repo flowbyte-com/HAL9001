@@ -36,11 +36,12 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `deepclaw benchmark harness
 
-  bench run   --experiment A|B [options]
+  bench run   --experiment A|B|C [options]
   bench trial --spec /path/to/trial-spec.json
 
 Run options:
-  --experiment A|B          A = memory policy, B = coding tool profile (required)
+  --experiment A|B|C        A = memory policy, B = coding tool profile,
+                            C = task-state mechanism (required)
   --trials N                independent trials per condition/scenario (default 1)
   --provider mock|live      provider kind (default mock)
   --provider-config PATH    PicoClaw config for a live provider

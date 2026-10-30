@@ -51,8 +51,12 @@ type AgentInstance struct {
 	MPMDegradedReason string
 	// MPMUnsandboxed is true only in the explicit trusted-development mode
 	// where the operator accepted that the shell can write MPM.
-	MPMUnsandboxed     bool
-	ActiveMemory       *ActiveMemoryStore
+	MPMUnsandboxed bool
+	ActiveMemory   *ActiveMemoryStore
+	// TaskStateEnabled gates the 004A evidence-backed short-term task state.
+	// TaskStateBudget is the enforced estimated-token budget for its rendering.
+	TaskStateEnabled   bool
+	TaskStateBudget    int
 	Definition         AgentContextDefinition
 	Subagents          *config.SubagentsConfig
 	SkillsFilter       []string
@@ -247,7 +251,29 @@ func NewAgentInstance(
 	}
 
 	var activeMemory *ActiveMemoryStore
-	if os.Getenv("DEEPCLAW_ACTIVE_MEMORY") == "1" {
+	taskStateEnabled := TaskStateEnabled()
+	taskStateBudget := TaskStateBudget()
+	if taskStateEnabled {
+		// Task state must not be forgeable by the agent's own shell or file
+		// tools, so its sidecar lives outside the workspace and is registered
+		// with the isolation runtime (which masks it from sandboxed shell).
+		taskProjectID := TaskStateProjectID(os.Getenv("DEEPCLAW_MPM_PROJECT"), workspace)
+		if deepClawProjectID != "" {
+			taskProjectID = deepClawProjectID
+		}
+		activeMemory = NewActiveMemoryStoreAt(
+			filepath.Join(config.GetHome(), ".deepclaw", "active-memory"),
+			taskProjectID,
+		)
+		if err := isolation.ProtectPaths(activeMemory.Dir()); err != nil {
+			logger.ErrorCF("agent", "Task state isolation unavailable; disabling task state",
+				map[string]any{"error": err.Error(), "dir": activeMemory.Dir()})
+			activeMemory = nil
+			taskStateEnabled = false
+		} else {
+			deepClawProjectID = taskProjectID
+		}
+	} else if os.Getenv("DEEPCLAW_ACTIVE_MEMORY") == "1" {
 		activeMemory = NewActiveMemoryStore(workspace, deepClawProjectID)
 	}
 
@@ -417,6 +443,8 @@ func NewAgentInstance(
 		MPMDegradedReason:       mpmDegradedReason,
 		MPMUnsandboxed:          mpmUnsandboxed,
 		ActiveMemory:            activeMemory,
+		TaskStateEnabled:        taskStateEnabled,
+		TaskStateBudget:         taskStateBudget,
 		Tools:                   toolsRegistry,
 		Definition:              definition,
 		Subagents:               subagents,

@@ -20,12 +20,15 @@ type ActiveMemoryRecord struct {
 	Score   float64  `json:"score"`
 }
 
-// ActiveWorkingSet is a small, session-scoped task view.
+// ActiveWorkingSet is a small, session-scoped task view. TaskState carries the
+// evidence-backed short-term task state added in 004A; it is deliberately
+// separate from the resident MPM retrieval cache in Records.
 type ActiveWorkingSet struct {
 	SessionKey string               `json:"session_key"`
 	ProjectID  string               `json:"project_id"`
 	Objective  string               `json:"objective"`
 	Records    []ActiveMemoryRecord `json:"records"`
+	TaskState  *TaskState           `json:"task_state,omitempty"`
 	UpdatedAt  time.Time            `json:"updated_at"`
 }
 
@@ -34,6 +37,9 @@ type ActiveMemoryStore struct {
 	dir       string
 	projectID string
 	mu        sync.Mutex
+	// stateMu serializes read-modify-write updates of one session's sidecar so
+	// concurrent tool callbacks cannot lose task-state entries.
+	stateMu sync.Mutex
 }
 
 // NewActiveMemoryStore creates a project-aware store. The project argument is
@@ -41,13 +47,36 @@ type ActiveMemoryStore struct {
 // is empty, the store keeps the legacy unscoped path and Load/Save cannot
 // establish ownership, so DeepClaw callers must pass it.
 func NewActiveMemoryStore(workspace string, projectIDs ...string) *ActiveMemoryStore {
-	dir := filepath.Join(workspace, ".deepclaw", "active-memory")
-	_ = os.MkdirAll(dir, 0o700)
 	projectID := ""
 	if len(projectIDs) > 0 {
 		projectID = strings.TrimSpace(projectIDs[0])
 	}
-	return &ActiveMemoryStore{dir: dir, projectID: projectID}
+	return NewActiveMemoryStoreAt(filepath.Join(workspace, ".deepclaw", "active-memory"), projectID)
+}
+
+// NewActiveMemoryStoreAt creates a store rooted at an explicit directory. 004A
+// uses it to place task state under PicoClaw home, outside the agent-visible
+// workspace, where isolation can protect it from shell and file tools.
+func NewActiveMemoryStoreAt(dir, projectID string) *ActiveMemoryStore {
+	_ = os.MkdirAll(dir, 0o700)
+	return &ActiveMemoryStore{dir: filepath.Clean(dir), projectID: strings.TrimSpace(projectID)}
+}
+
+// Dir returns the absolute directory that holds this store's sidecars.
+func (s *ActiveMemoryStore) Dir() string {
+	if s == nil {
+		return ""
+	}
+	return s.dir
+}
+
+// StatePath returns the sidecar path for a session. It is used to protect the
+// file from agent-controlled shell and file tools.
+func (s *ActiveMemoryStore) StatePath(sessionKey string) string {
+	if s == nil {
+		return ""
+	}
+	return s.path(sessionKey)
 }
 
 func (s *ActiveMemoryStore) path(sessionKey string) string {
@@ -88,10 +117,22 @@ func (s *ActiveMemoryStore) Load(sessionKey string) (*ActiveWorkingSet, error) {
 		return nil, nil
 	}
 	ws.Records = filterActiveRecordsByProject(ws.Records, s.projectID)
+	if ws.TaskState != nil && !ws.TaskState.ValidFor(s.projectID, sessionKey) {
+		ws.TaskState = nil
+	}
 	return &ws, nil
 }
 
 func (s *ActiveMemoryStore) Save(ws *ActiveWorkingSet) error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.saveLocked(ws)
+}
+
+// saveLocked writes the sidecar while the caller holds stateMu. Writes go to a
+// temporary file and are renamed into place so a concurrent reader never sees a
+// partially written task state.
+func (s *ActiveMemoryStore) saveLocked(ws *ActiveWorkingSet) error {
 	if ws == nil {
 		return nil
 	}
@@ -111,10 +152,84 @@ func (s *ActiveMemoryStore) Save(ws *ActiveWorkingSet) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path(ws.SessionKey), data, 0o600)
+	path := s.path(ws.SessionKey)
+	tmp, err := os.CreateTemp(s.dir, ".active-memory-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// UpdateTaskState loads the sidecar, applies fn to the session's task state and
+// saves it atomically with respect to other task-state updates. The state is
+// created when absent and discarded at load time when it belongs to another
+// project or session.
+func (s *ActiveMemoryStore) UpdateTaskState(sessionKey string, fn func(*TaskState)) (*TaskState, error) {
+	if s == nil || strings.TrimSpace(sessionKey) == "" {
+		return nil, nil
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
+	ws, err := s.Load(sessionKey)
+	if err != nil {
+		return nil, err
+	}
+	created := false
+	if ws == nil {
+		ws = &ActiveWorkingSet{SessionKey: sessionKey, ProjectID: s.projectID}
+		created = true
+	}
+	if ws.TaskState == nil || !ws.TaskState.ValidFor(s.projectID, sessionKey) {
+		ws.TaskState = NewTaskState(s.projectID, sessionKey)
+		created = true
+	}
+	if fn != nil {
+		fn(ws.TaskState)
+	}
+	ws.TaskState.SessionKey = sessionKey
+	ws.TaskState.ProjectID = s.projectID
+	ws.SessionKey = sessionKey
+	ws.ProjectID = s.projectID
+	ws.UpdatedAt = time.Now().UTC()
+	if created && len(ws.Records) == 0 && ws.Objective == "" &&
+		len(ws.TaskState.Entries) == 0 && strings.TrimSpace(ws.TaskState.Objective) == "" {
+		return ws.TaskState, nil
+	}
+	if err := s.saveLocked(ws); err != nil {
+		return nil, err
+	}
+	return ws.TaskState, nil
+}
+
+// TaskState returns a snapshot of the session's task state, or nil.
+func (s *ActiveMemoryStore) TaskState(sessionKey string) (*TaskState, error) {
+	if s == nil {
+		return nil, nil
+	}
+	ws, err := s.Load(sessionKey)
+	if err != nil || ws == nil {
+		return nil, err
+	}
+	return ws.TaskState, nil
 }
 
 func (s *ActiveMemoryStore) Delete(sessionKey string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_ = os.Remove(s.path(sessionKey))
@@ -199,6 +314,10 @@ func MergeActiveWorkingSet(prev *ActiveWorkingSet, retrieval *mpm.Retrieval, obj
 		if ws.Objective == "" {
 			ws.Objective = prev.Objective
 		}
+		// Task state is owned by the same sidecar. A retrieval-cache merge must
+		// carry it forward or every MPM turn would silently erase captured
+		// evidence.
+		ws.TaskState = prev.TaskState
 	}
 	seen := map[string]bool{}
 	var records []ActiveMemoryRecord
