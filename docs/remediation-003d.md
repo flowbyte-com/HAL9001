@@ -87,8 +87,9 @@ All reproduction used disposable fixtures under
 
 ### Before remediation (`a4758830`)
 
-A scratch checkout at `/tmp/opencode/dc-003d-before` (git archive of
-`a4758830`) was used for baseline tests so the committed tree stayed clean. The
+A scratch checkout at `.lab/003d-baseline-src` (git archive of `a4758830`) was
+used for baseline tests so the committed tree stayed clean. All baseline
+fixtures live under `.lab/tmp`. The
 baseline shell test seeded a disposable workspace, then drove the ordinary
 `ExecTool`:
 
