@@ -4,8 +4,9 @@ Status: **implemented and validated deterministically.** No live-model
 reasoning claim is made. The 004A comparison uses the 003F mock harness.
 
 - Base commit: `12b462168910e864f27187b147ace8249d696924`
+- Run checkout: `ef2b224c3f65652b8a53e95dd3fccd13daef8b2a` (clean at run time)
 - Benchmark binary: `.lab/bin/bench`
-- Binary SHA-256: `229c17420b616cab7f525cf192d0d39d3efcc611d51211f82a7f26118257e780`
+- Binary SHA-256: `deff9ced8f2cf77df8ef2ae6b8adfc4cc00d260fea1e3725eb2c07051d96c702`
 - Go: `go1.27.3`
 - Run: `.lab/bench/004a/experiment-c-20261030`
 - 6 trials (3 per condition), 6 pass, 0 fail, 0 error
@@ -195,9 +196,9 @@ still visible in history are omitted.
 
 | Measure | Control | Treatment |
 |---|---:|---:|
-| E2E per trial (ms) | 345, 315, 296 | 297, 335, 321 |
-| Mean E2E (ms) | 318.7 | 317.7 |
-| Sample stdev (ms) | 24.7 | 19.2 |
+| E2E per trial (ms) | 362, 323, 350 | 291, 282, 337 |
+| Mean E2E (ms) | 345.0 | 303.3 |
+| Sample stdev (ms) | 20.0 | 29.5 |
 | Correct trials | 3/3 | 3/3 |
 | Prompt-token stdev | 0.0 | 0.0 |
 
@@ -255,6 +256,7 @@ Added tests:
 .lab/bench/004a/experiment-c-20261030/trials/*/result.json
 .lab/bench/004a/experiment-c-20261030/trials/*/raw/requests.jsonl
 .lab/bench/004a/experiment-c-20261030/trials/*/logs/trial.log
+.lab/bench/004a/validation/go-test.txt
 ```
 
 Earlier smoke runs (`c-smoke*`) are retained intentionally as development
