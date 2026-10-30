@@ -127,6 +127,9 @@ func NewAgentInstance(
 	allowReadPaths := buildAllowReadPatterns(cfg)
 	allowWritePaths := compilePatterns(cfg.Tools.AllowWritePaths)
 	agentToolAllowlist := resolveAgentToolAllowlist(definition)
+	if codingProfileEnabled() {
+		agentToolAllowlist = expandCodingProfileAllowlist(agentToolAllowlist)
+	}
 	agentMCPServerAllowlist := resolveAgentMCPServerAllowlist(definition)
 
 	toolsRegistry := tools.NewToolRegistry()

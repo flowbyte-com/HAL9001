@@ -76,6 +76,11 @@ func unknownAgentToolNames(
 	}
 
 	known := registeredRuntimeToolNames(registry)
+	if codingProfileEnabled() {
+		for alias := range codingProfileRuntimeName {
+			known[alias] = struct{}{}
+		}
+	}
 	unknown := make(map[string]struct{})
 	for _, raw := range definition.Agent.Frontmatter.Tools {
 		name := strings.ToLower(strings.TrimSpace(raw))

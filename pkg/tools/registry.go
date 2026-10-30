@@ -27,6 +27,7 @@ type ToolRegistry struct {
 	version              atomic.Uint64 // bumped whenever the visible tool set or its schemas may change
 	mediaStore           media.MediaStore
 	allowlist            map[string]struct{}
+	visibleTools         map[string]struct{}
 	workspace            string
 	maxInlineResultRunes int
 
@@ -107,6 +108,72 @@ func (r *ToolRegistry) SetAllowlist(names []string) {
 	r.allowlist = allowlist
 }
 
+// SetVisibleTools installs an explicit provider-visible profile. When set, only
+// the named tools are callable and provider-visible; other registered tools
+// remain installed but are hidden. A nil slice removes the profile; an
+// empty-but-non-nil slice hides every tool. Registration-time allowlists still
+// apply, so a visibility profile never widens access.
+func (r *ToolRegistry) SetVisibleTools(names []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if names == nil {
+		r.visibleTools = nil
+		r.version.Add(1)
+		return
+	}
+	visible := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		trimmed := strings.ToLower(strings.TrimSpace(name))
+		if trimmed == "" {
+			continue
+		}
+		visible[trimmed] = struct{}{}
+	}
+	r.visibleTools = visible
+	r.version.Add(1)
+}
+
+// HasVisibilityProfile reports whether an explicit visible-tool profile is set.
+func (r *ToolRegistry) HasVisibilityProfile() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.visibleTools != nil
+}
+
+// IsVisible reports whether name may be presented or executed. Without a
+// visibility profile every registered tool is visible.
+func (r *ToolRegistry) IsVisible(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.visibleToolLocked(name)
+}
+
+// VisibleToolNames returns the registered tools allowed by the visibility
+// profile, sorted. Without a profile it returns all registered tools.
+func (r *ToolRegistry) VisibleToolNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sortedVisibleToolNamesLocked()
+}
+
+func (r *ToolRegistry) visibleToolLocked(name string) bool {
+	if r.visibleTools == nil {
+		return true
+	}
+	_, ok := r.visibleTools[strings.ToLower(strings.TrimSpace(name))]
+	return ok
+}
+
+// RegisterProfileTool registers a tool that belongs to an explicit visibility
+// profile. The registry allowlist is not consulted for the profile name because
+// callers derive these tools from underlying tools that already passed the
+// allowlist. A visibility profile is not implied; SetVisibleTools must follow.
+func (r *ToolRegistry) RegisterProfileTool(tool Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.storeEntryLocked(tool.Name(), tool, true)
+}
+
 func (r *ToolRegistry) Register(tool Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -118,6 +185,13 @@ func (r *ToolRegistry) Register(tool Tool) {
 			map[string]any{"name": name},
 		)
 		return
+	}
+	if r.visibleTools != nil {
+		if _, visible := r.visibleTools[strings.ToLower(strings.TrimSpace(name))]; visible {
+			logger.WarnCF("tools", "Skipped late registration over a profile-visible tool",
+				map[string]any{"name": name})
+			return
+		}
 	}
 	if _, exists := r.tools[name]; exists {
 		logger.WarnCF("tools", "Tool registration overwrites existing tool",
@@ -139,6 +213,13 @@ func (r *ToolRegistry) RegisterHidden(tool Tool) {
 			map[string]any{"name": name},
 		)
 		return
+	}
+	if r.visibleTools != nil {
+		if _, visible := r.visibleTools[strings.ToLower(strings.TrimSpace(name))]; visible {
+			logger.WarnCF("tools", "Skipped late hidden registration over a profile-visible tool",
+				map[string]any{"name": name})
+			return
+		}
 	}
 	if _, exists := r.tools[name]; exists {
 		logger.WarnCF("tools", "Hidden tool registration overwrites existing tool",
@@ -308,6 +389,9 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	if !ok {
 		return nil, false
 	}
+	if !r.visibleToolLocked(name) {
+		return nil, false
+	}
 	// Hidden tools with expired TTL are not callable.
 	if !entry.IsCore && entry.TTL <= 0 {
 		return nil, false
@@ -463,11 +547,24 @@ func (r *ToolRegistry) sortedToolNames() []string {
 	return names
 }
 
+// sortedVisibleToolNamesLocked returns only registered tools allowed by the
+// visibility profile. The caller must hold r.mu.
+func (r *ToolRegistry) sortedVisibleToolNamesLocked() []string {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		if r.visibleToolLocked(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (r *ToolRegistry) GetDefinitions() []map[string]any {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	sorted := r.sortedToolNames()
+	sorted := r.sortedVisibleToolNamesLocked()
 	definitions := make([]map[string]any, 0, len(sorted))
 	for _, name := range sorted {
 		entry := r.tools[name]
@@ -521,7 +618,7 @@ func (r *ToolRegistry) cachedProviderDefs() ([]providers.ToolDefinition, bool) {
 // buildProviderDefsLocked converts the visible tools to provider definitions.
 // The caller must hold r.mu for reading.
 func (r *ToolRegistry) buildProviderDefsLocked() []providers.ToolDefinition {
-	sorted := r.sortedToolNames()
+	sorted := r.sortedVisibleToolNamesLocked()
 	definitions := make([]providers.ToolDefinition, 0, len(sorted))
 	for _, name := range sorted {
 		entry := r.tools[name]
@@ -584,7 +681,7 @@ func (r *ToolRegistry) List() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	return r.sortedToolNames()
+	return r.sortedVisibleToolNamesLocked()
 }
 
 // Clone creates an independent copy of the registry containing the same tool
@@ -608,6 +705,12 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 			clone.allowlist[name] = struct{}{}
 		}
 	}
+	if r.visibleTools != nil {
+		clone.visibleTools = make(map[string]struct{}, len(r.visibleTools))
+		for name := range r.visibleTools {
+			clone.visibleTools[name] = struct{}{}
+		}
+	}
 	for name, entry := range r.tools {
 		clone.tools[name] = &ToolEntry{
 			Tool:   entry.Tool,
@@ -629,7 +732,7 @@ func (r *ToolRegistry) CloneWithout(name string) *ToolRegistry {
 func (r *ToolRegistry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return len(r.tools)
+	return len(r.sortedVisibleToolNamesLocked())
 }
 
 // GetSummaries returns human-readable summaries of all registered tools.
@@ -638,7 +741,7 @@ func (r *ToolRegistry) GetSummaries() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	sorted := r.sortedToolNames()
+	sorted := r.sortedVisibleToolNamesLocked()
 	summaries := make([]string, 0, len(sorted))
 	for _, name := range sorted {
 		entry := r.tools[name]

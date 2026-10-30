@@ -12,7 +12,8 @@ import (
 // EditFileTool edits a file by replacing old_text with new_text.
 // The old_text must exist exactly in the file.
 type EditFileTool struct {
-	fs fileSystem
+	fs          fileSystem
+	displayName string
 }
 
 // NewEditFileTool creates a new EditFileTool with optional directory restriction.
@@ -25,7 +26,16 @@ func NewEditFileTool(workspace string, restrict bool, allowPaths ...[]*regexp.Re
 }
 
 func (t *EditFileTool) Name() string {
+	if t.displayName != "" {
+		return t.displayName
+	}
 	return "edit_file"
+}
+
+// SetDisplayName lets a coding-profile adapter present this tool under a
+// shorter name without duplicating its implementation.
+func (t *EditFileTool) SetDisplayName(name string) {
+	t.displayName = strings.TrimSpace(name)
 }
 
 func (t *EditFileTool) Description() string {

@@ -410,3 +410,59 @@ func TestProtectedShellAfterRestart(t *testing.T) {
 		t.Fatal("after restart the shell created an MPM record")
 	}
 }
+
+// TestCodingBashRoutesThroughProtectedExecution proves that the minimal
+// coding `bash` adapter delegates to the existing ExecTool and therefore keeps
+// the 003D isolation boundary instead of calling os/exec directly.
+func TestCodingBashRoutesThroughProtectedExecution(t *testing.T) {
+	const canary = "ESCAPE-CODING-BASH-003E"
+	fixture := newMPMEscapeFixture(t, "coding-bash", "coding bash provisioning fact")
+	enableProtectedIsolation(t, fixture)
+	inner := newAttackExecTool(t, fixture.projectDir())
+	bash := NewCodingBashTool(inner)
+
+	workspaceHash := hashTree(t, fixture.workspace)
+	sentinelBefore, err := os.ReadFile(fixture.sentinelPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(command string) *ToolResult {
+		return bash.Execute(context.Background(), map[string]any{
+			"command": command,
+			"timeout": float64(60),
+		})
+	}
+
+	payload := `{"action":"save","params":{"fact":"` + canary + `","tags":["project:coding-bash"]}}`
+	result := run(fmt.Sprintf(`%q call mpm_memory --payload %q`, fixture.bin, payload))
+	if !result.IsError {
+		t.Logf("direct MPM invocation returned: %s", result.ForLLM)
+	}
+
+	script := writeEscapeScript(t, fixture.projectDir())
+	result = run(fmt.Sprintf(`python3 %q %q %q %q`,
+		script, fixture.workspace, fixture.bin, canary+"-interp"))
+	if strings.Contains(result.ForLLM, "sqlite-ok") {
+		t.Fatalf("coding bash modified a database inside the protected store: %s", result.ForLLM)
+	}
+
+	sentinelAfter, err := os.ReadFile(fixture.sentinelPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(sentinelBefore) != string(sentinelAfter) {
+		t.Fatal("coding bash modified the protected MPM workspace")
+	}
+	if got := hashTree(t, fixture.workspace); got != workspaceHash {
+		t.Fatalf("protected MPM workspace changed: %s -> %s", workspaceHash, got)
+	}
+	if strings.Contains(fixture.query(t, canary), canary) {
+		t.Fatal("coding bash created an MPM record")
+	}
+
+	// Ordinary foreground execution still works through the adapter.
+	result = run(`printf coding-bash-routes-ok`)
+	if result.IsError || !strings.Contains(result.ForLLM, "coding-bash-routes-ok") {
+		t.Fatalf("ordinary coding bash command failed: %+v", result)
+	}
+}

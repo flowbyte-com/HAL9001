@@ -305,8 +305,9 @@ func isWithinWorkspace(candidate, workspace string) bool {
 }
 
 type ReadFileTool struct {
-	fs      fileSystem
-	maxSize int64
+	fs          fileSystem
+	maxSize     int64
+	displayName string
 }
 
 type ReadFileLinesTool struct {
@@ -314,6 +315,7 @@ type ReadFileLinesTool struct {
 	maxSize       int64
 	maxLines      int
 	maxLineLength int
+	displayName   string
 }
 
 func NewReadFileTool(
@@ -371,11 +373,27 @@ func NewReadFileLinesTool(
 }
 
 func (t *ReadFileTool) Name() string {
+	if t.displayName != "" {
+		return t.displayName
+	}
 	return "read_file"
 }
 
 func (t *ReadFileLinesTool) Name() string {
+	if t.displayName != "" {
+		return t.displayName
+	}
 	return "read_file"
+}
+
+// SetDisplayName lets a coding-profile adapter present this tool under a
+// shorter name without duplicating its implementation.
+func (t *ReadFileTool) SetDisplayName(name string) {
+	t.displayName = strings.TrimSpace(name)
+}
+
+func (t *ReadFileLinesTool) SetDisplayName(name string) {
+	t.displayName = strings.TrimSpace(name)
 }
 
 func (t *ReadFileTool) Description() string {
@@ -555,8 +573,8 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 
 	if hasMore {
 		header += fmt.Sprintf(
-			"\n[TRUNCATED - file has more content. Call read_file again with offset=%d to continue.]",
-			readEnd,
+			"\n[TRUNCATED - file has more content. Call %s again with offset=%d to continue.]",
+			t.Name(), readEnd,
 		)
 	} else {
 		header += "\n[END OF FILE - no further content.]"
@@ -633,7 +651,7 @@ func (t *ReadFileLinesTool) Execute(ctx context.Context, args map[string]any) *T
 	}
 	sample = sample[:sampleN]
 	if isBinaryReadFileData(sample) {
-		return ErrorResult("file appears to be binary; switch read_file mode to 'bytes' for byte-based inspection")
+		return ErrorResult("file appears to be binary; use the byte-oriented read mode if available")
 	}
 
 	reader := bufio.NewReaderSize(io.MultiReader(bytes.NewReader(sample), file), 32*1024)
@@ -793,20 +811,20 @@ func (t *ReadFileLinesTool) Execute(ctx context.Context, args map[string]any) *T
 	case byteBudgetTruncated:
 		if limit > 0 {
 			header += fmt.Sprintf(
-				"\n[TRUNCATED - byte budget reached. Call read_file again with start_line=%d and max_lines=%d to continue at the next line.]",
-				startLine+linesRead,
+				"\n[TRUNCATED - byte budget reached. Call %s again with start_line=%d and max_lines=%d to continue at the next line.]",
+				t.Name(), startLine+linesRead,
 				limit,
 			)
 		} else {
 			header += fmt.Sprintf(
-				"\n[TRUNCATED - byte budget reached. Call read_file again with start_line=%d to continue at the next line.]",
-				startLine+linesRead,
+				"\n[TRUNCATED - byte budget reached. Call %s again with start_line=%d to continue at the next line.]",
+				t.Name(), startLine+linesRead,
 			)
 		}
 	case !reachedEOF && limit > 0 && linesRead >= limit:
 		header += fmt.Sprintf(
-			"\n[PARTIAL - more content remains. Call read_file again with start_line=%d and max_lines=%d to continue.]",
-			startLine+linesRead,
+			"\n[PARTIAL - more content remains. Call %s again with start_line=%d and max_lines=%d to continue.]",
+			t.Name(), startLine+linesRead,
 			limit,
 		)
 	default:
@@ -963,8 +981,9 @@ func readerHasMoreContent(reader *bufio.Reader) (bool, error) {
 }
 
 type WriteFileTool struct {
-	fs       fileSystem
-	altTools []string
+	fs          fileSystem
+	altTools    []string
+	displayName string
 }
 
 func NewWriteFileTool(
@@ -996,7 +1015,7 @@ func (t *WriteFileTool) SetAlternativeTools(names []string) {
 		present[name] = true
 	}
 	ordered := make([]string, 0, 2)
-	for _, name := range []string{"append_file", "edit_file"} {
+	for _, name := range []string{"append_file", "edit_file", "edit"} {
 		if present[name] {
 			ordered = append(ordered, name)
 		}
@@ -1009,7 +1028,16 @@ func (t *WriteFileTool) altToolsPhrase() string {
 }
 
 func (t *WriteFileTool) Name() string {
+	if t.displayName != "" {
+		return t.displayName
+	}
 	return "write_file"
+}
+
+// SetDisplayName lets a coding-profile adapter present this tool under a
+// shorter name in descriptions and error messages.
+func (t *WriteFileTool) SetDisplayName(name string) {
+	t.displayName = strings.TrimSpace(name)
 }
 
 func (t *WriteFileTool) Description() string {
@@ -1027,8 +1055,8 @@ func (t *WriteFileTool) Parameters() map[string]any {
 	overwriteDesc := "Set to true to replace an existing file in full. This discards the file's current contents."
 	if phrase := t.altToolsPhrase(); phrase != "" {
 		overwriteDesc = fmt.Sprintf(
-			"Set to true to replace an existing file in full. This discards the file's current contents — to preserve them, use %s instead of write_file.",
-			phrase,
+			"Set to true to replace an existing file in full. This discards the file's current contents — to preserve them, use %s instead of %s.",
+			phrase, t.Name(),
 		)
 	}
 	return map[string]any{

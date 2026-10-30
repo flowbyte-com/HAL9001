@@ -1211,11 +1211,8 @@ func TestReadFileLinesTool_BinaryFileRejected(t *testing.T) {
 	if !result.IsError {
 		t.Fatalf("expected binary file rejection in line mode, got: %s", result.ForLLM)
 	}
-	if !strings.Contains(result.ForLLM, "switch read_file mode to 'bytes'") {
+	if !strings.Contains(result.ForLLM, "byte-oriented read mode") {
 		t.Fatalf("expected binary file rejection message, got: %s", result.ForLLM)
-	}
-	if !strings.Contains(result.ForLLM, "mode to 'bytes'") {
-		t.Fatalf("expected suggestion to switch read_file mode, got: %s", result.ForLLM)
 	}
 }
 
