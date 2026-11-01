@@ -1,0 +1,99 @@
+{
+  "id": "compaction_ledger",
+  "title": "Compaction in the middle of a partially completed fix",
+  "desired_behavior": "Balance nets credits and debits; validation allows empty descriptions and normal debits but rejects entries below -1,000,000 cents.",
+  "interruption": "compaction",
+  "no_compaction": false,
+  "context_window": 8192,
+  "max_tool_iterations": 20,
+  "max_tokens": 1024,
+  "summarize_token_percent": 60,
+  "turns": [
+    {
+      "id": "t1",
+      "prompt": "Fix the failing ledger tests. Start with the balance calculation: diagnose it, fix it, and get the balance test passing. Leave the validation failure for the next step and report what still fails after you run `./check.sh`."
+    },
+    {
+      "id": "t2",
+      "prompt": "Run the checks again and confirm exactly which failure remains."
+    },
+    {
+      "id": "t3",
+      "prompt": "Continue and finish the ledger fix. Use what you already found.",
+      "compact_before": true
+    }
+  ],
+  "criteria": [
+    {
+      "id": "build",
+      "kind": "build",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "public_tests",
+      "kind": "public_tests",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "balance_mixed",
+      "kind": "test",
+      "test": "TestBalanceMixedHidden",
+      "points": 2,
+      "mandatory": true
+    },
+    {
+      "id": "balance_debits",
+      "kind": "test",
+      "test": "TestBalanceAllDebitsHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "balance_empty",
+      "kind": "test",
+      "test": "TestBalanceEmptyHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "validate_empty",
+      "kind": "test",
+      "test": "TestValidateEmptyDescriptionHidden",
+      "points": 2,
+      "mandatory": true
+    },
+    {
+      "id": "validate_debit",
+      "kind": "test",
+      "test": "TestValidateNormalDebitHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "validate_huge",
+      "kind": "test",
+      "test": "TestValidateHugeDebitHidden",
+      "points": 1,
+      "mandatory": true
+    }
+  ],
+  "constraints": {
+    "protected_files": [
+      "ledger_test.go",
+      "go.mod",
+      "README.md"
+    ],
+    "forbidden_files": [
+      "go.work",
+      "go.work.sum"
+    ],
+    "wrong_fix_patterns": [],
+    "forbid_nested_go_mod": true
+  },
+  "evidence_reuse_tests": [
+    "TestBalanceMixedHidden",
+    "TestValidateEmptyDescriptionHidden"
+  ]
+}

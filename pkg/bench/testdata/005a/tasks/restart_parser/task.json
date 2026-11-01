@@ -1,0 +1,88 @@
+{
+  "id": "restart_parser",
+  "title": "Process restart with unfinished parser work",
+  "desired_behavior": "ParseInt trims surrounding whitespace and accepts signs; ParseList trims items and drops empty entries.",
+  "interruption": "restart",
+  "no_compaction": true,
+  "context_window": 32768,
+  "max_tool_iterations": 20,
+  "max_tokens": 1024,
+  "summarize_token_percent": 75,
+  "turns": [
+    {
+      "id": "t1",
+      "prompt": "Fix the failing parser tests. Start with `ParseInt`: make it accept surrounding whitespace, then run `./check.sh` and report what still fails."
+    },
+    {
+      "id": "t2",
+      "prompt": "We restarted the process. Continue the parser work and finish the remaining failure.",
+      "restart_before": true
+    }
+  ],
+  "criteria": [
+    {
+      "id": "build",
+      "kind": "build",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "public_tests",
+      "kind": "public_tests",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "int_whitespace",
+      "kind": "test",
+      "test": "TestParseIntWhitespaceHidden",
+      "points": 2,
+      "mandatory": true
+    },
+    {
+      "id": "int_sign",
+      "kind": "test",
+      "test": "TestParseIntSignHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "list_empty",
+      "kind": "test",
+      "test": "TestParseListEmptyHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "list_single",
+      "kind": "test",
+      "test": "TestParseListSingleHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "list_trailing",
+      "kind": "test",
+      "test": "TestParseListTrailingHidden",
+      "points": 2,
+      "mandatory": true
+    }
+  ],
+  "constraints": {
+    "protected_files": [
+      "parser_test.go",
+      "go.mod",
+      "README.md"
+    ],
+    "forbidden_files": [
+      "go.work",
+      "go.work.sum"
+    ],
+    "wrong_fix_patterns": [],
+    "forbid_nested_go_mod": true
+  },
+  "evidence_reuse_tests": [
+    "TestParseIntWhitespaceHidden",
+    "TestParseListTrailingHidden"
+  ]
+}

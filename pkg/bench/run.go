@@ -2,8 +2,11 @@ package bench
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +29,7 @@ type RunOptions struct {
 	Conditions         []string
 	Scenarios          []string
 	TrialRunner        []string // command prefix; defaults to the current executable
+	Seed               int64    // 005A paired-order seed; derived from RunID when zero
 }
 
 type RunManifest struct {
@@ -44,6 +48,9 @@ type RunManifest struct {
 	Isolation      bool       `json:"isolation"`
 	Notes          []string   `json:"notes,omitempty"`
 	Provenance     Provenance `json:"provenance"`
+	Seed           int64      `json:"seed,omitempty"`
+	Order          []string   `json:"order,omitempty"`
+	PairCount      int        `json:"pair_count,omitempty"`
 }
 
 func DefaultOutDir() string { return benchRoot() }
@@ -59,8 +66,8 @@ func DefaultMPMBinary() string {
 
 func normalizeExperiment(experiment string) (string, error) {
 	value := strings.ToUpper(strings.TrimSpace(experiment))
-	if value != "A" && value != "B" && value != "C" {
-		return "", fmt.Errorf("experiment must be A, B or C, got %q", experiment)
+	if value != "A" && value != "B" && value != "C" && value != "D" {
+		return "", fmt.Errorf("experiment must be A, B, C or D, got %q", experiment)
 	}
 	return value, nil
 }
@@ -143,18 +150,31 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 
 	started := time.Now()
 	provenance := loadProvenance()
+	plan, seed, pairCount, err := buildTrialPlan(opts, conditions, scenarios)
+	if err != nil {
+		return nil, err
+	}
 	manifest := RunManifest{
 		SchemaVersion: SchemaVersion, RunID: opts.RunID, Experiment: experiment,
 		StartedAt:    started.UTC().Format(time.RFC3339Nano),
 		ProviderKind: opts.ProviderKind, ProviderConfig: opts.ProviderConfigPath,
 		ModelRequested: opts.ModelName, MPMBinary: opts.MPMBinary,
 		TrialsPerCell: opts.Trials, Conditions: conditions, Scenarios: scenarios,
-		Isolation: true, Provenance: provenance,
+		Isolation: true, Provenance: provenance, Seed: seed, PairCount: pairCount,
 		Notes: []string{
 			"all conditions run in separate subprocesses with fresh HOME, XDG, workspace, session store and MPM state",
 			"subprocess isolation is enabled for every condition; MPM conditions additionally mask the MPM store",
 			"LLM request counts come from RecordingProvider.Chat calls, never from log lines",
 		},
+	}
+	if experiment == "D" {
+		manifest.Notes = append(manifest.Notes,
+			"005A: control and treatment use the same binary, four-tool coding profile, history and compaction settings",
+			"005A: MPM retrieval and the resident MPM cache are disabled in both conditions",
+			"005A: treatment enables the frozen 004C boundary task state; control sets DEEPCLAW_TASK_STATE=0",
+			"005A: control/treatment pair order and pair sequence are randomized from a recorded seed",
+			"005A: task success is independently scored from the resulting repository by hidden tests, never from the response",
+		)
 	}
 	if opts.ProviderKind == "mock" {
 		manifest.Notes = append(manifest.Notes, "mock provider is deterministic and exists only to validate the harness")
@@ -176,42 +196,43 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 		runner = []string{exe, "trial"}
 	}
 
-	for _, condition := range conditions {
-		for _, scenarioName := range scenarios {
-			scenario, err := Scenario(scenarioName)
-			if err != nil {
-				return nil, err
-			}
-			for index := 1; index <= opts.Trials; index++ {
-				trialID := NewTrialID(opts.RunID, condition, scenarioName, index)
-				spec, err := buildTrialSpec(opts, runDir, condition, scenario, trialID, index)
-				if err != nil {
-					return nil, fmt.Errorf("prepare %s: %w", trialID, err)
-				}
-				if err := PrepareTrial(&spec); err != nil {
-					return nil, fmt.Errorf("prepare fixture %s: %w", trialID, err)
-				}
-				result, err := runTrialSubprocess(runDir, spec, runner, opts.ProviderKind)
-				if err != nil {
-					result = TrialResult{
-						SchemaVersion: SchemaVersion, RunID: opts.RunID, TrialID: trialID,
-						Experiment: experiment, Condition: condition, Scenario: scenarioName,
-						Status: "error", Error: err.Error(),
-						StartedAt: nowRFC3339(), EndedAt: nowRFC3339(),
-						RawPath: spec.RawPath, LogPath: spec.LogPath,
-					}
-					_ = writeJSON(spec.ResultPath, redactValue(result))
-				}
-				redactFile(spec.LogPath)
-				redactFile(filepath.Join(spec.TrialDir, "process.log"))
-				summary.Trials = append(summary.Trials, result)
-			}
+	for _, item := range plan {
+		scenario, err := Scenario(item.Scenario)
+		if err != nil {
+			return nil, err
 		}
+		trialID := NewTrialID(opts.RunID, item.Condition, item.Scenario, item.Repetition)
+		spec, err := buildTrialSpecFromPlan(opts, runDir, item, scenario, trialID)
+		if err != nil {
+			return nil, fmt.Errorf("prepare %s: %w", trialID, err)
+		}
+		if err := PrepareTrial(&spec); err != nil {
+			return nil, fmt.Errorf("prepare fixture %s: %w", trialID, err)
+		}
+		manifest.Order = append(manifest.Order, trialID)
+		result, err := runTrialSubprocess(runDir, spec, runner, opts.ProviderKind)
+		if err != nil {
+			result = TrialResult{
+				SchemaVersion: SchemaVersion, RunID: opts.RunID, TrialID: trialID,
+				Experiment: experiment, Condition: item.Condition, Scenario: item.Scenario,
+				Status: "error", Error: err.Error(),
+				StartedAt: nowRFC3339(), EndedAt: nowRFC3339(),
+				RawPath: spec.RawPath, LogPath: spec.LogPath,
+				PairID: item.PairID, Repetition: item.Repetition, SequenceIndex: item.SequenceIndex,
+			}
+			_ = writeJSON(spec.ResultPath, redactValue(result))
+		}
+		redactFile(spec.LogPath)
+		redactFile(filepath.Join(spec.TrialDir, "process.log"))
+		summary.Trials = append(summary.Trials, result)
 	}
 
 	summary.EndedAt = nowRFC3339()
 	summary.Aggregates = aggregateTrials(summary.Trials)
 	summary.Validation = validationSummary(summary.Trials)
+	if experiment == "D" {
+		summary.CodingPairs, summary.Coding = summarizeCodingPairs(summary.Trials)
+	}
 	manifest.EndedAt = summary.EndedAt
 	if err := writeJSON(filepath.Join(runDir, "manifest.json"), redactValue(manifest)); err != nil {
 		return nil, err
@@ -223,17 +244,97 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 	return summary, nil
 }
 
-func buildTrialSpec(
+type trialPlanItem struct {
+	Condition     string
+	Scenario      string
+	PairID        string
+	Repetition    int
+	SequenceIndex int
+}
+
+// buildTrialPlan produces the execution order. Experiments A-C keep their
+// sequential condition-major order. Experiment D uses a randomized paired
+// design: each repetition of each task contributes one control and one
+// treatment trial, the two members are ordered randomly, and the pairs
+// themselves are shuffled. The seed is recorded so the order is reproducible.
+func buildTrialPlan(opts RunOptions, conditions, scenarios []string) ([]trialPlanItem, int64, int, error) {
+	if !strings.EqualFold(opts.Experiment, "D") {
+		var plan []trialPlanItem
+		sequence := 0
+		for _, condition := range conditions {
+			for _, scenario := range scenarios {
+				for index := 1; index <= opts.Trials; index++ {
+					plan = append(plan, trialPlanItem{
+						Condition: condition, Scenario: scenario,
+						Repetition: index, SequenceIndex: sequence,
+					})
+					sequence++
+				}
+			}
+		}
+		return plan, 0, 0, nil
+	}
+
+	seed := opts.Seed
+	if seed == 0 {
+		seed = seedFromRunID(opts.RunID)
+	}
+	rng := rand.New(rand.NewSource(seed))
+
+	type pair struct {
+		scenario   string
+		repetition int
+		pairID     string
+	}
+	var pairs []pair
+	for _, scenario := range scenarios {
+		for repetition := 1; repetition <= opts.Trials; repetition++ {
+			pairs = append(pairs, pair{
+				scenario:   scenario,
+				repetition: repetition,
+				pairID:     fmt.Sprintf("%s-r%02d", scenario, repetition),
+			})
+		}
+	}
+	rng.Shuffle(len(pairs), func(i, j int) { pairs[i], pairs[j] = pairs[j], pairs[i] })
+
+	var plan []trialPlanItem
+	sequence := 0
+	pairCount := 0
+	for _, p := range pairs {
+		members := append([]string(nil), conditions...)
+		// Do not mutate the caller's slice when shuffling pair members.
+		rng.Shuffle(len(members), func(i, j int) { members[i], members[j] = members[j], members[i] })
+		if len(members) >= 2 {
+			pairCount++
+		}
+		for _, condition := range members {
+			plan = append(plan, trialPlanItem{
+				Condition: condition, Scenario: p.scenario, PairID: p.pairID,
+				Repetition: p.repetition, SequenceIndex: sequence,
+			})
+			sequence++
+		}
+	}
+	return plan, seed, pairCount, nil
+}
+
+func seedFromRunID(runID string) int64 {
+	sum := sha256.Sum256([]byte("deepclaw-005a-order-v1\x00" + runID))
+	return int64(binary.BigEndian.Uint64(sum[:8]))
+}
+
+func buildTrialSpecFromPlan(
 	opts RunOptions,
-	runDir, condition string,
+	runDir string,
+	item trialPlanItem,
 	scenario ScenarioSpec,
 	trialID string,
-	index int,
 ) (TrialSpec, error) {
 	trialDir := filepath.Join(runDir, "trials", trialID)
 	spec := TrialSpec{
 		SchemaVersion: SchemaVersion, RunID: opts.RunID, TrialID: trialID,
-		Experiment: opts.Experiment, Condition: condition, Scenario: scenario.Name,
+		Experiment: opts.Experiment, Condition: item.Condition, Scenario: scenario.Name,
 		ProviderKind: opts.ProviderKind, ProviderConfigPath: opts.ProviderConfigPath,
 		ModelName: opts.ModelName, MPMBinary: opts.MPMBinary,
 		SessionKey: NewSessionKey(opts.RunID, trialID),
@@ -242,8 +343,8 @@ func buildTrialSpec(
 		LogPath:         filepath.Join(trialDir, "logs", "trial.log"),
 		RawPath:         filepath.Join(trialDir, "raw", "requests.jsonl"),
 		ResultPath:      filepath.Join(trialDir, "result.json"),
-		MemoryPolicy:    ConditionMemoryPolicy(condition),
-		ToolProfile:     ConditionToolProfile(condition),
+		MemoryPolicy:    ConditionMemoryPolicy(item.Condition),
+		ToolProfile:     ConditionToolProfile(item.Condition),
 		Isolation:       true,
 		MPMProject:      "atlas",
 		ForeignProject:  "zebra",
@@ -256,9 +357,28 @@ func buildTrialSpec(
 		MaxTokens:       256, MaxToolIterations: trialToolIterations(opts.Experiment), ContextWindow: 32768,
 		CodingExpectedFile:    scenario.CodingFile,
 		CodingExpectedContent: scenario.CodingContent,
-		TaskState:             ConditionTaskState(condition),
+		TaskState:             ConditionTaskState(item.Condition),
 		TaskStateBudget:       500,
-		TaskStateResidency:    ConditionTaskStateResidency(condition),
+		TaskStateResidency:    ConditionTaskStateResidency(item.Condition),
+		PairID:                item.PairID,
+		Repetition:            item.Repetition,
+		SequenceIndex:         item.SequenceIndex,
+	}
+	if strings.EqualFold(opts.Experiment, "D") {
+		spec.CodingTask = scenario.CodingTask
+		spec.MPMDisabled = true
+		spec.ResidentCacheDisabled = true
+		spec.ScoreCacheDir = filepath.Join(runDir, "gocache")
+		if scenario.MaxTokens > 0 {
+			spec.MaxTokens = scenario.MaxTokens
+		}
+		if scenario.MaxToolIterations > 0 {
+			spec.MaxToolIterations = scenario.MaxToolIterations
+		}
+		if scenario.ContextWindow > 0 {
+			spec.ContextWindow = scenario.ContextWindow
+		}
+		spec.SummarizeTokenPercent = scenario.SummarizeTokenPercent
 	}
 	if spec.MemoryPolicy == "mpm" || spec.MemoryPolicy == "mpm_active" {
 		spec.MPMWorkspace = filepath.Join(trialDir, "mpm", "workspace")
@@ -279,7 +399,6 @@ func buildTrialSpec(
 	if spec.ProviderKind == "mock" && spec.ModelName == "" {
 		spec.ModelName = "mock-003f"
 	}
-	_ = index
 	return spec, nil
 }
 
@@ -288,6 +407,20 @@ func trialToolIterations(experiment string) int {
 		return 8
 	}
 	return 3
+}
+
+// buildTrialSpec keeps the 003F test-facing signature. Experiment D callers
+// use buildTrialSpecFromPlan so the paired design metadata is preserved.
+func buildTrialSpec(
+	opts RunOptions,
+	runDir, condition string,
+	scenario ScenarioSpec,
+	trialID string,
+	index int,
+) (TrialSpec, error) {
+	return buildTrialSpecFromPlan(opts, runDir, trialPlanItem{
+		Condition: condition, Scenario: scenario.Name, Repetition: index,
+	}, scenario, trialID)
 }
 
 func runTrialSubprocess(runDir string, spec TrialSpec, runner []string, providerKind string) (TrialResult, error) {
@@ -332,10 +465,23 @@ func trialProcessEnv(spec TrialSpec, runDir string) []string {
 		"LANG":                      "C.UTF-8",
 		"LC_ALL":                    "C.UTF-8",
 		"TZ":                        "UTC",
-		"PATH":                      "/usr/local/bin:/usr/bin:/bin",
+		"PATH":                      trialPath(spec),
 		"DEEPCLAW_BENCH_ROOT":       runDir,
 		"DEEPCLAW_CODING_PROFILE":   boolEnv(spec.ToolProfile == "coding"),
 		"DEEPCLAW_BENCH_TRIAL_SPEC": filepath.Join(spec.TrialDir, "trial-spec.json"),
+	}
+	if spec.Experiment == "D" {
+		base["DEEPCLAW_TASK_STATE"] = boolEnv(spec.TaskState)
+		base["DEEPCLAW_MPM_ENABLED"] = "0"
+		base["DEEPCLAW_ACTIVE_MEMORY"] = "0"
+		base["GOPROXY"] = "off"
+		base["GOFLAGS"] = "-mod=readonly"
+		base["GOTOOLCHAIN"] = "local"
+		base["CGO_ENABLED"] = "0"
+		base["GO111MODULE"] = "on"
+		if spec.SummarizeTokenPercent > 0 {
+			base["PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TOKEN_PERCENT"] = fmt.Sprintf("%d", spec.SummarizeTokenPercent)
+		}
 	}
 	if spec.MemoryPolicy == "mpm" || spec.MemoryPolicy == "mpm_active" {
 		base["DEEPCLAW_MPM_ENABLED"] = "1"
@@ -361,6 +507,13 @@ func trialProcessEnv(spec TrialSpec, runDir string) []string {
 	}
 	sort.Strings(env)
 	return env
+}
+
+func trialPath(spec TrialSpec) string {
+	if spec.Experiment == "D" {
+		return "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"
+	}
+	return "/usr/local/bin:/usr/bin:/bin"
 }
 
 func firstLines(text string, n int) string {
@@ -408,7 +561,8 @@ func aggregateTrials(trials []TrialResult) []Aggregate {
 	for _, k := range keys {
 		group := groups[k]
 		agg := Aggregate{Condition: k.condition, Scenario: k.scenario, Trials: len(group)}
-		var prompt, completion, total, e2e, retrieval, taskEntries, taskActive, taskTokens, taskPromptTokens []float64
+		var prompt, completion, total, e2e, retrieval, taskEntries, taskActive, taskTokens, taskPromptTokens, taskStorage []float64
+		var partial, points, requests, toolCalls, repeatedReads, repeatedFailed, diagnosis []float64
 		for _, trial := range group {
 			if trial.Score.Correct {
 				agg.Correct++
@@ -420,6 +574,22 @@ func aggregateTrials(trials []TrialResult) []Aggregate {
 				agg.ForbiddenHits++
 			}
 			agg.LLMRequests += trial.Totals.LLMRequests
+			agg.MPMRetrievalCalls += trial.Totals.MPMRetrievalCalls
+			requests = append(requests, float64(trial.Totals.LLMRequests))
+			toolCalls = append(toolCalls, float64(trial.Totals.ToolCalls))
+			if trial.Coding != nil {
+				if trial.Coding.FullSuccess {
+					agg.FullSuccess++
+				}
+				if len(trial.Coding.ConstraintViolations) > 0 {
+					agg.ConstraintViolations++
+				}
+				partial = append(partial, trial.Coding.Partial)
+				points = append(points, float64(trial.Coding.PointsEarned))
+				repeatedReads = append(repeatedReads, float64(trial.Coding.Metrics.RepeatedReads))
+				repeatedFailed = append(repeatedFailed, float64(trial.Coding.Metrics.RepeatedFailedInvestigations))
+				diagnosis = append(diagnosis, float64(trial.Coding.Metrics.DiagnosisStatements))
+			}
 			reported := 0
 			for _, request := range trial.Requests {
 				if request.Usage.Reported {
@@ -454,6 +624,7 @@ func aggregateTrials(trials []TrialResult) []Aggregate {
 				if trial.Totals.TaskStatePromptTokens > agg.MaxTaskStatePromptTokens {
 					agg.MaxTaskStatePromptTokens = trial.Totals.TaskStatePromptTokens
 				}
+				taskStorage = append(taskStorage, float64(trial.Totals.TaskStateStorageBytes))
 			}
 		}
 		agg.MeanPromptTokens = meanPtr(prompt)
@@ -465,6 +636,14 @@ func aggregateTrials(trials []TrialResult) []Aggregate {
 		agg.MeanTaskStateActiveEntries = meanPtr(taskActive)
 		agg.MeanTaskStateTokens = meanPtr(taskTokens)
 		agg.MeanTaskStatePromptTokens = meanPtr(taskPromptTokens)
+		agg.MeanTaskStateStorageBytes = meanPtr(taskStorage)
+		agg.MeanPartial = meanPtr(partial)
+		agg.MeanPointsEarned = meanPtr(points)
+		agg.MeanRequests = meanPtr(requests)
+		agg.MeanToolCalls = meanPtr(toolCalls)
+		agg.MeanRepeatedReads = meanPtr(repeatedReads)
+		agg.MeanRepeatedFailed = meanPtr(repeatedFailed)
+		agg.MeanDiagnosis = meanPtr(diagnosis)
 		out = append(out, agg)
 	}
 	return out

@@ -21,10 +21,14 @@ type mockProvider struct {
 	// multiT1Stage/multiT2Stage sequence the two-failure scenario.
 	multiT1Stage int
 	multiT2Stage int
+	// codingStage sequences each 005A coding-task turn. The key is
+	// taskID|turnID, never the full prompt, because task-state decoration
+	// changes the rendered user message between iterations.
+	codingStage map[string]int
 }
 
 func NewMockProvider(spec TrialSpec) providers.LLMProvider {
-	return &mockProvider{spec: spec}
+	return &mockProvider{spec: spec, codingStage: map[string]int{}}
 }
 
 func (m *mockProvider) GetDefaultModel() string {
@@ -48,10 +52,17 @@ func (m *mockProvider) Chat(
 	// neutrally so the compacted history cannot carry the failure diagnostic.
 	if strings.HasPrefix(strings.TrimSpace(lastUser), "Provide a concise summary") ||
 		strings.Contains(lastUser, "Merge these two conversation summaries") {
+		if m.spec.Experiment == "D" {
+			return m.respond(faithfulMockSummary(messages), messages), nil
+		}
 		if m.spec.Scenario == "task_state_summary_source" {
 			return m.respond(TaskStateSummarySource, messages), nil
 		}
 		return m.respond("The user worked on parser test changes; earlier conversation details were compacted.", messages), nil
+	}
+
+	if m.spec.Experiment == "D" {
+		return m.codingTaskResponse(messages, lastUser), nil
 	}
 
 	if m.spec.Scenario == "task_state_script" {
@@ -389,3 +400,314 @@ func joinMessageContent(messages []providers.Message) string {
 }
 
 var _ = fmt.Sprintf
+
+// ---------------------------------------------------------------------------
+// 005A deterministic coding-task script.
+//
+// The mock is deliberately not a model: it replays a fixed, realistic tool
+// trajectory so the harness, scoring, isolation and measurement paths can be
+// validated. It must never be used to claim improved coding intelligence.
+
+type codingMockAction struct {
+	Tool string
+	Args map[string]any
+	Say  string
+}
+
+func mockRead(path string) codingMockAction {
+	return codingMockAction{Tool: "read", Args: map[string]any{"path": path}}
+}
+
+func mockWrite(path, content string) codingMockAction {
+	return codingMockAction{Tool: "write", Args: map[string]any{
+		"path": path, "content": content, "overwrite": true,
+	}}
+}
+
+func mockEdit(path, oldText, newText string) codingMockAction {
+	return codingMockAction{Tool: "edit", Args: map[string]any{
+		"path": path, "old_text": oldText, "new_text": newText,
+	}}
+}
+
+func mockBash(command string) codingMockAction {
+	return codingMockAction{Tool: "bash", Args: map[string]any{"command": command}}
+}
+
+func mockSay(text string) codingMockAction {
+	return codingMockAction{Say: text}
+}
+
+func (m *mockProvider) codingTaskResponse(messages []providers.Message, lastUser string) *providers.LLMResponse {
+	turn := codingMockTurn(m.spec.CodingTask, lastUser)
+	key := m.spec.CodingTask + "|" + turn
+	stage := m.codingStage[key]
+	actions := codingMockActions(m.spec.CodingTask, turn)
+	if stage >= len(actions) {
+		return m.respond("Done.", messages)
+	}
+	m.codingStage[key] = stage + 1
+	action := actions[stage]
+	if action.Say != "" {
+		return m.respond(action.Say, messages)
+	}
+	return m.toolCall(action.Tool, action.Args, messages)
+}
+
+func codingMockTurn(task, lastUser string) string {
+	switch task {
+	case "requirement_change":
+		if strings.Contains(lastUser, "Finance has changed the tie rule") {
+			return "t2"
+		}
+		return "t1"
+	case "compaction_ledger":
+		if strings.Contains(lastUser, "Continue and finish the ledger fix") {
+			return "t3"
+		}
+		if strings.Contains(lastUser, "Run the checks again") {
+			return "t2"
+		}
+		return "t1"
+	case "restart_parser":
+		if strings.Contains(lastUser, "We restarted the process") {
+			return "t2"
+		}
+		return "t1"
+	default:
+		return "t1"
+	}
+}
+
+func codingMockActions(task, turn string) []codingMockAction {
+	switch task {
+	case "multi_file_cart":
+		return []codingMockAction{
+			mockRead("discount.go"),
+			mockRead("money.go"),
+			mockWrite("discount.go", `package cart
+
+import "strings"
+
+// DiscountCents returns the discount in cents for a promotion code.
+func DiscountCents(subtotalCents int, code string) int {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "SAVE15":
+		return subtotalCents * 15 / 100
+	case "SAVE10":
+		return subtotalCents * 10 / 100
+	default:
+		return 0
+	}
+}
+`),
+			mockWrite("money.go", `package cart
+
+import "fmt"
+
+// FormatCents renders a cent amount as a dollar string.
+func FormatCents(cents int) string {
+	return fmt.Sprintf("$%d.%02d", cents/100, cents%100)
+}
+`),
+			mockBash("sh check.sh"),
+			mockSay("All cart checks pass now."),
+		}
+	case "misleading_failure":
+		return []codingMockAction{
+			mockBash("sh check.sh"),
+			mockRead("legacy_golden.txt"),
+			mockBash("sh diagnose.sh"),
+			mockRead("README.md"),
+			mockRead("rate.go"),
+			mockEdit("rate.go", "if weightGrams >= 1000 {", "if weightGrams > 1000 {"),
+			mockBash("sh check.sh"),
+			mockSay("The current README contract is implemented; all checks pass."),
+		}
+	case "requirement_change":
+		if turn == "t2" {
+			return []codingMockAction{
+				mockRead("invoice.go"),
+				mockWrite("invoice.go", `package billing
+
+import "math"
+
+// RoundCents rounds a currency amount to the nearest cent. Exact ties round to
+// the nearest even cent.
+func RoundCents(amount float64) int {
+	floor := math.Floor(amount)
+	diff := amount - floor
+	switch {
+	case diff > 0.5:
+		return int(floor) + 1
+	case diff < 0.5:
+		return int(floor)
+	case math.Mod(floor, 2) == 0:
+		return int(floor)
+	default:
+		return int(floor) + 1
+	}
+}
+`),
+				mockBash("sh check.sh"),
+				mockSay("Ties now round to even and non-tie behavior is unchanged."),
+			}
+		}
+		return []codingMockAction{
+			mockRead("invoice.go"),
+			mockWrite("invoice.go", `package billing
+
+import "math"
+
+// RoundCents rounds a currency amount to the nearest cent.
+func RoundCents(amount float64) int {
+	return int(math.Floor(amount + 0.5))
+}
+`),
+			mockBash("sh check.sh"),
+			mockSay("Non-tie rounding passes; exact ties currently round up."),
+		}
+	case "compaction_ledger":
+		if turn == "t3" {
+			return []codingMockAction{
+				mockRead("validate.go"),
+				mockWrite("validate.go", `package ledger
+
+import "errors"
+
+// Validate checks whether an entry may be posted.
+func Validate(entry Entry) error {
+	if entry.Cents < -1000000 {
+		return errors.New("amount too large")
+	}
+	return nil
+}
+`),
+				mockBash("sh check.sh"),
+				mockSay("The ledger fix is complete."),
+			}
+		}
+		if turn == "t2" {
+			return []codingMockAction{
+				mockBash("sh check.sh"),
+				mockSay("Only TestValidateAllowsEmptyDescription still fails."),
+			}
+		}
+		return []codingMockAction{
+			mockBash("sh check.sh"),
+			mockRead("balance.go"),
+			mockRead("validate.go"),
+			mockWrite("balance.go", `package ledger
+
+// Entry is one ledger line. Positive cents are credits, negative are debits.
+type Entry struct {
+	Description string
+	Cents       int
+}
+
+// Balance returns the net balance in cents.
+func Balance(entries []Entry) int {
+	total := 0
+	for _, entry := range entries {
+		total += entry.Cents
+	}
+	return total
+}
+`),
+			mockBash("sh check.sh"),
+			mockSay("Balance now includes debits; the validation test still fails."),
+		}
+	case "restart_parser":
+		if turn == "t2" {
+			return []codingMockAction{
+				mockRead("parse.go"),
+				mockWrite("parse.go", `package parser
+
+import "strings"
+
+// ParseList splits a comma-separated list.
+func ParseList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+`),
+				mockBash("sh check.sh"),
+				mockSay("Both parser failures are fixed."),
+			}
+		}
+		return []codingMockAction{
+			mockBash("sh check.sh"),
+			mockRead("token.go"),
+			mockRead("parse.go"),
+			mockWrite("token.go", `package parser
+
+import (
+	"strconv"
+	"strings"
+)
+
+// ParseInt parses a decimal integer.
+func ParseInt(s string) (int, error) {
+	return strconv.Atoi(strings.TrimSpace(s))
+}
+`),
+			mockBash("sh check.sh"),
+			mockSay("ParseInt is fixed; ParseList still fails."),
+		}
+	}
+	return nil
+}
+
+// faithfulMockSummary is an extractive summary used only by deterministic
+// mock trials. It preserves user requirements and tool evidence instead of
+// returning an artificially impoverished summary that would disadvantage the
+// control condition. Live trials use the production summarizer.
+func faithfulMockSummary(messages []providers.Message) string {
+	var b strings.Builder
+	b.WriteString("Deterministic benchmark summary of the conversation so far.\n")
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		switch message.Role {
+		case "system":
+			continue
+		case "user":
+			if strings.HasPrefix(content, "Provide a concise summary") ||
+				strings.Contains(content, "Merge these two conversation summaries") {
+				continue
+			}
+			b.WriteString("User: " + mockSummaryLine(content, 300) + "\n")
+		case "assistant":
+			b.WriteString("Assistant: " + mockSummaryLine(content, 240) + "\n")
+		case "tool":
+			b.WriteString("Tool result: " + mockSummaryLine(content, 500) + "\n")
+		}
+		if b.Len() > 6000 {
+			break
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func mockSummaryLine(value string, limit int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
+}

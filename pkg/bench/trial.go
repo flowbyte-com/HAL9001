@@ -53,6 +53,18 @@ func PrepareTrial(spec *TrialSpec) error {
 		}
 	}
 
+	if spec.Experiment == "D" {
+		if err := PrepareCodingTrial(spec); err != nil {
+			return err
+		}
+		probe := filepath.Join(spec.TrialDir, "fixtures", "canary.txt")
+		if err := os.WriteFile(probe, []byte("coding-canary-7f3\n"), 0o600); err != nil {
+			return err
+		}
+		spec.FixtureProbe = probe
+		return writeJSON(filepath.Join(spec.TrialDir, "trial-spec.json"), spec)
+	}
+
 	readme := "This workspace is intentionally unrelated to any benchmark question.\n"
 	if spec.Experiment == "B" {
 		switch spec.Scenario {
@@ -161,11 +173,24 @@ func trialEnv(spec *TrialSpec) map[string]string {
 		"PICOCLAW_LOG_FILE":       spec.LogPath,
 		"LANG":                    "C.UTF-8",
 		"TZ":                      "UTC",
-		"PATH":                    "/usr/local/bin:/usr/bin:/bin",
+		"PATH":                    trialPath(*spec),
 		"DEEPCLAW_CODING_PROFILE": boolEnv(spec.ToolProfile == "coding"),
 	}
 	if spec.ToolProfile != "coding" {
 		env["DEEPCLAW_CODING_PROFILE"] = "0"
+	}
+	if spec.Experiment == "D" {
+		env["DEEPCLAW_TASK_STATE"] = boolEnv(spec.TaskState)
+		env["DEEPCLAW_MPM_ENABLED"] = "0"
+		env["DEEPCLAW_ACTIVE_MEMORY"] = "0"
+		env["GOPROXY"] = "off"
+		env["GOFLAGS"] = "-mod=readonly"
+		env["GOTOOLCHAIN"] = "local"
+		env["CGO_ENABLED"] = "0"
+		env["GO111MODULE"] = "on"
+		if spec.SummarizeTokenPercent > 0 {
+			env["PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TOKEN_PERCENT"] = fmt.Sprintf("%d", spec.SummarizeTokenPercent)
+		}
 	}
 	if spec.MemoryPolicy == "mpm" || spec.MemoryPolicy == "mpm_active" {
 		env["DEEPCLAW_MPM_ENABLED"] = "1"
@@ -210,7 +235,7 @@ func applyTrialEnv(spec *TrialSpec) {
 	}
 	if spec.MemoryPolicy == "mpm" || spec.MemoryPolicy == "mpm_active" {
 		_ = os.Setenv("DEEPCLAW_MPM_ENABLED", "1")
-	} else {
+	} else if spec.Experiment != "D" {
 		for _, key := range []string{
 			"DEEPCLAW_MPM_ENABLED", "MPM_WORKSPACE", "DEEPCLAW_MPM_HOME",
 			"DEEPCLAW_MPM_EXECUTABLE", "DEEPCLAW_MPM_PROJECT", "DEEPCLAW_MPM_BUDGET",
@@ -258,6 +283,9 @@ func trialConfig(spec *TrialSpec) (*config.Config, error) {
 	if spec.ContextWindow > 0 {
 		cfg.Agents.Defaults.ContextWindow = spec.ContextWindow
 	}
+	if spec.SummarizeTokenPercent > 0 {
+		cfg.Agents.Defaults.SummarizeTokenPercent = spec.SummarizeTokenPercent
+	}
 	temp := 0.0
 	cfg.Agents.Defaults.Temperature = &temp
 	cfg.Agents.Defaults.MaxParallelTurns = 1
@@ -274,6 +302,9 @@ func trialConfig(spec *TrialSpec) (*config.Config, error) {
 	cfg.Tools.Exec.Enabled = true
 	cfg.Tools.Exec.AllowRemote = true
 	cfg.Tools.Exec.EnableDenyPatterns = true
+	if spec.Experiment == "D" && cfg.Tools.Exec.TimeoutSeconds < 300 {
+		cfg.Tools.Exec.TimeoutSeconds = 300
+	}
 	cfg.Tools.ReadFile.Enabled = true
 	cfg.Tools.WriteFile.Enabled = true
 	cfg.Tools.EditFile.Enabled = true
@@ -322,6 +353,8 @@ func RunTrial(spec TrialSpec) TrialResult {
 		Experiment: spec.Experiment, Condition: spec.Condition, Scenario: spec.Scenario,
 		Status: "error", StartedAt: started.UTC().Format(time.RFC3339Nano),
 		RawPath: spec.RawPath, LogPath: spec.LogPath, ResultPath: spec.ResultPath,
+		PairID: spec.PairID, Repetition: spec.Repetition, SequenceIndex: spec.SequenceIndex,
+		StartingCommit: spec.StartingCommit,
 	}
 	fail := func(err error) TrialResult {
 		result.Error = err.Error()
@@ -528,11 +561,30 @@ func RunTrial(spec TrialSpec) TrialResult {
 	result.SessionKeysObserved = sessionList(ctx, instance)
 	result.SessionFilesObserved = sessionFiles(spec.AgentWorkspace)
 	result.AnswerFoundInWorkspace = len(unexpectedWorkspaceMarkers(spec)) > 0
-	result.Postflight = postflightChecks(spec, instance)
+	result.ResidentCacheRecords = residentCacheRecords(instance, spec.SessionKey)
 	if spec.TaskState {
 		result.TaskStateFinal = taskStateSnapshot(instance, spec.SessionKey, spec.TaskStateBudget)
 	}
-	result.Score = scoreTrial(spec, result.Turns, result.AnswerFoundInWorkspace)
+	if spec.Experiment == "D" {
+		result.Score = Score{Notes: []string{"independently scored from the resulting repository; not a prompt diagnostic"}}
+		outcome, scoreErr := scoreCodingResult(spec, result, started)
+		if scoreErr != nil {
+			result.Error = "coding scoring: " + scoreErr.Error()
+		} else {
+			result.Coding = outcome
+			result.Score.FullSuccess = outcome.FullSuccess
+			result.Score.Partial = outcome.Partial
+			result.Score.PointsEarned = outcome.PointsEarned
+			result.Score.PointsTotal = outcome.PointsTotal
+			result.Score.Correct = outcome.FullSuccess
+			if len(outcome.ConstraintViolations) > 0 {
+				result.Score.Notes = append(result.Score.Notes,
+					"constraint violations: "+strings.Join(outcome.ConstraintViolations, ", "))
+			}
+		}
+	} else {
+		result.Score = scoreTrial(spec, result.Turns, result.AnswerFoundInWorkspace)
+	}
 	if spec.Experiment == "C" {
 		result.TurnScores = scoreTaskStateTrial(spec, result)
 		result.Score = Score{Notes: []string{"deterministic task-state mechanism test; not a live-model reasoning result"}}
@@ -543,8 +595,11 @@ func RunTrial(spec TrialSpec) TrialResult {
 			}
 		}
 	}
+	result.Postflight = postflightChecks(spec, instance)
+	result.Postflight = append(result.Postflight, codingPostflightChecks(spec, result)...)
 	result.Totals = totalsFor(result)
 	attachRetrievalLatency(&result, spec.LogPath)
+	result.Totals.MPMRetrievalCalls = countLogMessage(spec.LogPath, "MPM retrieval")
 
 	if result.Error != "" {
 		result.Status = "error"
@@ -580,6 +635,8 @@ func settingsFromInstance(spec TrialSpec, instance *agent.AgentInstance, modelID
 		TaskStateResidency: spec.TaskStateResidency,
 		ToolNames:          sortedCopy(instance.Tools.List()),
 		ToolSchemaBytes:    len(data), ToolSchemaSHA: sha256Hex(data),
+		CodingTask:       spec.CodingTask,
+		CodingFixtureSHA: spec.FixtureSHA,
 	}
 }
 
@@ -684,6 +741,40 @@ func preflightChecks(spec TrialSpec, instance *agent.AgentInstance, modelID stri
 		}
 		checks = append(checks, Check{Name: "mpm_fixture_scoped", Passed: passed, Detail: detail})
 	}
+	if spec.Experiment == "D" {
+		task, taskErr := LoadCodingTask(spec.CodingTask)
+		taskOK := taskErr == nil
+		detail := spec.CodingTask
+		if taskErr != nil {
+			detail = taskErr.Error()
+		}
+		checks = append(checks,
+			Check{Name: "coding_task_loaded", Passed: taskOK, Detail: detail},
+			Check{Name: "coding_starting_commit_recorded", Passed: spec.StartingCommit != "", Detail: spec.StartingCommit},
+			Check{Name: "coding_paired_design", Passed: spec.PairID != "", Detail: spec.PairID},
+			Check{Name: "coding_task_state_matches_condition", Passed: instance.TaskStateEnabled == spec.TaskState,
+				Detail: fmt.Sprintf("task_state=%t condition=%s", instance.TaskStateEnabled, spec.Condition)},
+			Check{Name: "coding_mpm_disabled", Passed: os.Getenv("DEEPCLAW_MPM_ENABLED") == "0" && spec.MPMWorkspace == "",
+				Detail: os.Getenv("DEEPCLAW_MPM_ENABLED")},
+			Check{Name: "coding_resident_cache_disabled",
+				Passed: os.Getenv("DEEPCLAW_ACTIVE_MEMORY") == "0" && residentCacheRecords(instance, spec.SessionKey) == 0,
+				Detail: os.Getenv("DEEPCLAW_ACTIVE_MEMORY")},
+		)
+		if taskOK {
+			sha, shaErr := CodingWorkspaceSHA(spec.AgentWorkspace)
+			checks = append(checks,
+				Check{Name: "coding_fixture_clean", Passed: shaErr == nil && sha == spec.FixtureSHA,
+					Detail: spec.FixtureSHA},
+				Check{Name: "coding_hidden_tests_absent", Passed: len(presentHiddenTests(spec.AgentWorkspace, task)) == 0,
+					Detail: strings.Join(presentHiddenTests(spec.AgentWorkspace, task), ",")},
+			)
+			if head, err := gitHead(spec.AgentWorkspace); err == nil {
+				checks = append(checks, Check{Name: "coding_known_starting_commit", Passed: head == spec.StartingCommit, Detail: head})
+			} else {
+				checks = append(checks, Check{Name: "coding_known_starting_commit", Passed: false, Detail: err.Error()})
+			}
+		}
+	}
 	return checks
 }
 
@@ -715,6 +806,72 @@ func firstFailedCheck(checks []Check) string {
 		}
 	}
 	return ""
+}
+
+// scoreCodingResult is the only bridge between an executed trial and the
+// condition-independent repository scorer. It passes no condition, task-state
+// setting or response text into ScoreCodingTask.
+func scoreCodingResult(spec TrialSpec, result TrialResult, started time.Time) (*CodingOutcome, error) {
+	task, err := LoadCodingTask(spec.CodingTask)
+	if err != nil {
+		return nil, err
+	}
+	workDir := filepath.Join(spec.TrialDir, "scoring")
+	outcome, err := ScoreCodingTask(task, spec.AgentWorkspace, workDir)
+	if err != nil {
+		return nil, err
+	}
+	outcome.StartingCommit = spec.StartingCommit
+	outcome.Metrics = ComputeCodingMetrics(result, task)
+	outcome.DurationMS = time.Since(started).Milliseconds()
+	if outcome.FullSuccess {
+		outcome.TimeToFullSuccessMS = outcome.DurationMS
+	}
+	if err := writeJSON(filepath.Join(workDir, "report.json"), outcome); err != nil {
+		return nil, err
+	}
+	return &outcome, nil
+}
+
+func codingPostflightChecks(spec TrialSpec, result TrialResult) []Check {
+	if spec.Experiment != "D" {
+		return nil
+	}
+	task, taskErr := LoadCodingTask(spec.CodingTask)
+	if taskErr != nil {
+		return []Check{{Name: "coding_task_reload", Passed: false, Detail: taskErr.Error()}}
+	}
+	checks := []Check{
+		{Name: "coding_scoring_completed", Passed: result.Coding != nil},
+		{Name: "coding_hidden_tests_absent", Passed: len(presentHiddenTests(spec.AgentWorkspace, task)) == 0,
+			Detail: strings.Join(presentHiddenTests(spec.AgentWorkspace, task), ",")},
+		{Name: "coding_mpm_retrieval_zero", Passed: countLogMessage(spec.LogPath, "MPM retrieval") == 0},
+		{Name: "coding_resident_cache_empty", Passed: result.ResidentCacheRecords == 0,
+			Detail: fmt.Sprintf("records=%d", result.ResidentCacheRecords)},
+		{Name: "coding_state_sidecar_outside_workspace",
+			Passed: !hasFiles(filepath.Join(spec.AgentWorkspace, ".deepclaw", "active-memory"))},
+		{Name: "coding_scoring_inside_trial_dir",
+			Passed: result.Coding == nil || pathWithin(spec.TrialDir, result.Coding.ScoringDir)},
+	}
+	switch task.Interruption {
+	case "compaction":
+		compacted := false
+		for _, turn := range result.Turns {
+			if turn.Compacted && turn.SummaryCharsAfter > 0 {
+				compacted = true
+			}
+		}
+		checks = append(checks, Check{Name: "coding_compaction_exercised", Passed: compacted})
+	case "restart":
+		restarted := false
+		for _, turn := range result.Turns {
+			if turn.Restarted {
+				restarted = true
+			}
+		}
+		checks = append(checks, Check{Name: "coding_restart_exercised", Passed: restarted})
+	}
+	return checks
 }
 
 func sessionHistoryLen(ctx context.Context, instance *agent.AgentInstance, key string) int {
@@ -911,11 +1068,14 @@ func totalsFor(result TrialResult) TrialTotals {
 		totals.TaskStatePromptChars += turn.TaskStatePromptChars
 		totals.TaskStatePromptTokens += turn.TaskStatePromptTokens
 	}
+	totals.CodingPointsEarned = result.Score.PointsEarned
+	totals.CodingPointsTotal = result.Score.PointsTotal
 	if result.TaskStateFinal != nil && result.TaskStateFinal.Available {
 		totals.TaskStateFinalEntries = result.TaskStateFinal.Entries
 		totals.TaskStateFinalActiveEntries = result.TaskStateFinal.ActiveEntries
 		totals.TaskStateRenderedChars = result.TaskStateFinal.RenderedChars
 		totals.TaskStateRenderedTokens = result.TaskStateFinal.RenderedTokens
+		totals.TaskStateStorageBytes = int(result.TaskStateFinal.StorageBytes)
 	}
 	return totals
 }

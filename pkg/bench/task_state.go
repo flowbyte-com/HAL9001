@@ -1,6 +1,8 @@
 package bench
 
 import (
+	"io/fs"
+	"path/filepath"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/agent"
@@ -43,7 +45,41 @@ func taskStateSnapshot(instance *agent.AgentInstance, sessionKey string, budget 
 	snapshot.RenderedChars = len(rendered)
 	snapshot.RenderedTokens = (len(rendered) + 3) / 4
 	snapshot.RenderedText = rendered
+	snapshot.StorageBytes = activeMemoryStorageBytes(instance.ActiveMemory.Dir())
+	snapshot.ResidentRecords = residentCacheRecords(instance, sessionKey)
 	return snapshot
+}
+
+// activeMemoryStorageBytes is the on-disk sidecar size for one project. It is
+// task-state storage overhead, not prompt residency.
+func activeMemoryStorageBytes(dir string) int64 {
+	if strings.TrimSpace(dir) == "" {
+		return 0
+	}
+	var total int64
+	_ = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry == nil || entry.IsDir() {
+			return nil
+		}
+		if info, infoErr := entry.Info(); infoErr == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// residentCacheRecords counts MPM resident records in the session sidecar. The
+// 005A primary experiment disables MPM, so both conditions must report zero.
+func residentCacheRecords(instance *agent.AgentInstance, sessionKey string) int {
+	if instance == nil || instance.ActiveMemory == nil {
+		return 0
+	}
+	set, err := instance.ActiveMemory.Load(sessionKey)
+	if err != nil || set == nil {
+		return 0
+	}
+	return len(set.Records)
 }
 
 func turnResultByID(turns []TurnResult, id string) *TurnResult {

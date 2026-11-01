@@ -1,0 +1,74 @@
+{
+  "id": "requirement_change",
+  "title": "User correction changes the rounding requirement",
+  "desired_behavior": "RoundCents uses banker's rounding (half to even) for exact ties, including negative amounts, while non-tie rounding is unchanged.",
+  "interruption": "",
+  "no_compaction": true,
+  "context_window": 32768,
+  "max_tool_iterations": 16,
+  "max_tokens": 1024,
+  "summarize_token_percent": 75,
+  "turns": [
+    {
+      "id": "t1",
+      "prompt": "Fix the failing invoice rounding tests. Make `RoundCents` round to the nearest cent and get `./check.sh` passing. Do not edit the public test file."
+    },
+    {
+      "id": "t2",
+      "prompt": "Finance has changed the tie rule: when an amount is exactly halfway between two cents, round to the nearest even cent (banker's rounding), not always up. Update `RoundCents` for the new rule and keep the non-tie behavior the same."
+    }
+  ],
+  "criteria": [
+    {
+      "id": "build",
+      "kind": "build",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "public_tests",
+      "kind": "public_tests",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "bankers_ties",
+      "kind": "test",
+      "test": "TestBankersTiesHidden",
+      "points": 3,
+      "mandatory": true
+    },
+    {
+      "id": "bankers_negative",
+      "kind": "test",
+      "test": "TestBankersNegativeHidden",
+      "points": 2,
+      "mandatory": true
+    },
+    {
+      "id": "nontie_unaffected",
+      "kind": "test",
+      "test": "TestNonTieUnaffectedHidden",
+      "points": 1,
+      "mandatory": true
+    }
+  ],
+  "constraints": {
+    "protected_files": [
+      "invoice_test.go",
+      "go.mod",
+      "README.md"
+    ],
+    "forbidden_files": [
+      "go.work",
+      "go.work.sum"
+    ],
+    "wrong_fix_patterns": [
+      "\\+\\s*0\\.5"
+    ],
+    "forbid_nested_go_mod": true
+  },
+  "evidence_reuse_tests": [
+    "TestBankersTiesHidden"
+  ]
+}

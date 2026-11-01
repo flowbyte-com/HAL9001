@@ -1,0 +1,78 @@
+{
+  "id": "misleading_failure",
+  "title": "Misleading failing-test investigation",
+  "desired_behavior": "The current README rate table is authoritative: 1000 g costs 500 cents, 1001 g costs 800 cents.",
+  "interruption": "",
+  "no_compaction": true,
+  "context_window": 32768,
+  "max_tool_iterations": 16,
+  "max_tokens": 1024,
+  "summarize_token_percent": 75,
+  "turns": [
+    {
+      "id": "t1",
+      "prompt": "Fix the failing shipping rate test at one weight boundary. Read the repository, determine the current rate contract, fix the implementation, and run `./check.sh`. The old carrier notes are in the tree, but finance confirms the README table is current."
+    }
+  ],
+  "criteria": [
+    {
+      "id": "build",
+      "kind": "build",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "public_tests",
+      "kind": "public_tests",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "boundary1000",
+      "kind": "test",
+      "test": "TestRateBoundary1000Hidden",
+      "points": 2,
+      "mandatory": true
+    },
+    {
+      "id": "boundary500",
+      "kind": "test",
+      "test": "TestRateBoundary500Hidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "over1000",
+      "kind": "test",
+      "test": "TestRateOver1000Hidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "negative",
+      "kind": "test",
+      "test": "TestRateNegativeHidden",
+      "points": 1,
+      "mandatory": true
+    }
+  ],
+  "constraints": {
+    "protected_files": [
+      "rate_test.go",
+      "go.mod",
+      "README.md",
+      "legacy_golden.txt"
+    ],
+    "forbidden_files": [
+      "go.work",
+      "go.work.sum"
+    ],
+    "wrong_fix_patterns": [
+      "\\b750\\b"
+    ],
+    "forbid_nested_go_mod": true
+  },
+  "evidence_reuse_tests": [
+    "TestRateBoundary1000Hidden"
+  ]
+}

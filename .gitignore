@@ -76,3 +76,7 @@ docker/data
 .omc/
 .worktrees/
 /.lab/
+
+# Milestone 005A coding fixtures are committed despite the Ralph tasks/ rule.
+!/pkg/bench/testdata/005a/tasks/
+!/pkg/bench/testdata/005a/tasks/**

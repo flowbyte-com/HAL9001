@@ -1,0 +1,93 @@
+{
+  "id": "multi_file_cart",
+  "title": "Multi-file cart pricing repair",
+  "desired_behavior": "SAVE15 is 15%, SAVE10 is 10%, unknown codes are 0, codes are trimmed and case-insensitive, and money always has two decimals.",
+  "interruption": "",
+  "no_compaction": true,
+  "context_window": 32768,
+  "max_tool_iterations": 16,
+  "max_tokens": 1024,
+  "summarize_token_percent": 75,
+  "turns": [
+    {
+      "id": "t1",
+      "prompt": "Fix the failing cart pricing tests. Read the repository, fix the pricing and formatting code, and run `./check.sh` until it passes. Do not edit the public test file or the README."
+    }
+  ],
+  "criteria": [
+    {
+      "id": "build",
+      "kind": "build",
+      "points": 1,
+      "mandatory": true,
+      "description": "The repository builds"
+    },
+    {
+      "id": "public_tests",
+      "kind": "public_tests",
+      "points": 1,
+      "mandatory": true,
+      "description": "All checked-in public tests pass"
+    },
+    {
+      "id": "save15",
+      "kind": "test",
+      "test": "TestDiscountSave15Hidden",
+      "points": 2,
+      "mandatory": true
+    },
+    {
+      "id": "save10",
+      "kind": "test",
+      "test": "TestDiscountSave10Hidden",
+      "points": 2,
+      "mandatory": true
+    },
+    {
+      "id": "unknown",
+      "kind": "test",
+      "test": "TestDiscountUnknownHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "normalize",
+      "kind": "test",
+      "test": "TestDiscountNormalizesCodeHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "format",
+      "kind": "test",
+      "test": "TestFormatPaddingHidden",
+      "points": 2,
+      "mandatory": true
+    },
+    {
+      "id": "empty",
+      "kind": "test",
+      "test": "TestSubtotalEmptyHidden",
+      "points": 1,
+      "mandatory": true
+    }
+  ],
+  "constraints": {
+    "protected_files": [
+      "cart_test.go",
+      "go.mod",
+      "README.md"
+    ],
+    "forbidden_files": [
+      "go.work",
+      "go.work.sum"
+    ],
+    "wrong_fix_patterns": [
+      "return subtotalCents / 10"
+    ],
+    "forbid_nested_go_mod": true
+  },
+  "evidence_reuse_tests": [
+    "TestDiscountSave15Hidden"
+  ]
+}

@@ -58,6 +58,21 @@ type TrialSpec struct {
 
 	CodingExpectedFile    string `json:"coding_expected_file,omitempty"`
 	CodingExpectedContent string `json:"coding_expected_content,omitempty"`
+
+	// 005A realistic coding-task evaluation. CodingTask names the embedded
+	// fixture; the remaining fields record the reproducible starting point and
+	// the paired-run design. None of these change production behavior.
+	CodingTask            string `json:"coding_task,omitempty"`
+	StartingCommit        string `json:"starting_commit,omitempty"`
+	FixtureSHA            string `json:"fixture_sha256,omitempty"`
+	ScoreCacheDir         string `json:"score_cache_dir,omitempty"`
+	SummarizeTokenPercent int    `json:"summarize_token_percent,omitempty"`
+	PairID                string `json:"pair_id,omitempty"`
+	Repetition            int    `json:"repetition,omitempty"`
+	SequenceIndex         int    `json:"sequence_index,omitempty"`
+	RandomSeed            int64  `json:"random_seed,omitempty"`
+	MPMDisabled           bool   `json:"mpm_disabled,omitempty"`
+	ResidentCacheDisabled bool   `json:"resident_cache_disabled,omitempty"`
 }
 
 type TurnSpec struct {
@@ -105,6 +120,8 @@ type Settings struct {
 	ToolNames          []string `json:"tool_names"`
 	ToolSchemaBytes    int      `json:"tool_schema_bytes"`
 	ToolSchemaSHA      string   `json:"tool_schema_sha256"`
+	CodingTask         string   `json:"coding_task,omitempty"`
+	CodingFixtureSHA   string   `json:"coding_fixture_sha256,omitempty"`
 }
 
 type UsageRecord struct {
@@ -214,6 +231,142 @@ type Score struct {
 	CodeLike      string   `json:"code_like,omitempty"`
 	Notes         []string `json:"notes,omitempty"`
 	CodingMatch   bool     `json:"coding_match,omitempty"`
+
+	// 005A coding-task outcome. FullSuccess is independently verified against
+	// the resulting repository; Partial is the weighted fraction of criteria
+	// that pass and is always reported separately from full success.
+	FullSuccess  bool    `json:"full_success,omitempty"`
+	Partial      float64 `json:"partial,omitempty"`
+	PointsEarned int     `json:"points_earned,omitempty"`
+	PointsTotal  int     `json:"points_total,omitempty"`
+}
+
+// CodingCriterion is one independently checkable part of a coding task.
+type CodingCriterion struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"` // build|public_tests|test
+	Test        string `json:"test,omitempty"`
+	Points      int    `json:"points"`
+	Mandatory   bool   `json:"mandatory"`
+	Description string `json:"description,omitempty"`
+}
+
+// CodingConstraints are checks that do not depend on the desired behavior and
+// cannot be satisfied by editing prompts or claims.
+type CodingConstraints struct {
+	ProtectedFiles    []string `json:"protected_files,omitempty"`
+	ForbiddenFiles    []string `json:"forbidden_files,omitempty"`
+	WrongFixPatterns  []string `json:"wrong_fix_patterns,omitempty"`
+	ForbidNestedGoMod bool     `json:"forbid_nested_go_mod,omitempty"`
+}
+
+// CodingCheck records one scored criterion or constraint.
+type CodingCheck struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Passed    bool   `json:"passed"`
+	Mandatory bool   `json:"mandatory"`
+	Points    int    `json:"points,omitempty"`
+	Earned    int    `json:"earned,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+}
+
+// CodingMetrics are derived from the recorded trace. They are local
+// observations, not provider-reported usage.
+type CodingMetrics struct {
+	TotalToolCalls               int      `json:"total_tool_calls"`
+	Reads                        int      `json:"reads"`
+	Writes                       int      `json:"writes"`
+	Edits                        int      `json:"edits"`
+	BashCalls                    int      `json:"bash_calls"`
+	RepeatedReads                int      `json:"repeated_reads"`
+	RepeatedReadPaths            []string `json:"repeated_read_paths,omitempty"`
+	RepeatedBashCommands         int      `json:"repeated_bash_commands"`
+	RepeatedBashCommandList      []string `json:"repeated_bash_commands_list,omitempty"`
+	RepeatedFailedInvestigations int      `json:"repeated_failed_investigations"`
+	FailedToolCalls              int      `json:"failed_tool_calls"`
+	FailedBashCalls              int      `json:"failed_bash_calls"`
+	DiagnosisStatements          int      `json:"diagnosis_statements"`
+	PostCompactionRequests       int      `json:"post_compaction_requests"`
+	PostCompactionToolCalls      int      `json:"post_compaction_tool_calls"`
+	PostCompactionRepeatedReads  int      `json:"post_compaction_repeated_reads"`
+	PostRestartRequests          int      `json:"post_restart_requests"`
+	PostRestartToolCalls         int      `json:"post_restart_tool_calls"`
+	PostRestartRepeatedReads     int      `json:"post_restart_repeated_reads"`
+}
+
+// CodingOutcome is the condition-independent verdict on the resulting
+// repository. It contains no prompt text and is computed only from the
+// workspace, the hidden tests and the recorded trace.
+type CodingOutcome struct {
+	TaskID                   string        `json:"task_id"`
+	StartingCommit           string        `json:"starting_commit"`
+	FixtureSHA               string        `json:"fixture_sha256"`
+	FinalContentSHA          string        `json:"final_content_sha256"`
+	BuildOK                  bool          `json:"build_ok"`
+	PublicTestsPassed        int           `json:"public_tests_passed"`
+	PublicTestsFailed        int           `json:"public_tests_failed"`
+	HiddenTestsPassed        int           `json:"hidden_tests_passed"`
+	HiddenTestsFailed        int           `json:"hidden_tests_failed"`
+	Checks                   []CodingCheck `json:"checks"`
+	ConstraintViolations     []string      `json:"constraint_violations,omitempty"`
+	PointsEarned             int           `json:"points_earned"`
+	PointsTotal              int           `json:"points_total"`
+	Partial                  float64       `json:"partial"`
+	FullSuccess              bool          `json:"full_success"`
+	EvidenceReuse            bool          `json:"evidence_reuse"`
+	WrongFixApplied          bool          `json:"wrong_fix_applied"`
+	RecoveredAfterCompaction bool          `json:"recovered_after_compaction,omitempty"`
+	RecoveredAfterRestart    bool          `json:"recovered_after_restart,omitempty"`
+	NoCompactionTask         bool          `json:"no_compaction_task,omitempty"`
+	Metrics                  CodingMetrics `json:"metrics"`
+	TestOutputTail           string        `json:"test_output_tail,omitempty"`
+	ScoringDir               string        `json:"scoring_dir,omitempty"`
+	DurationMS               int64         `json:"duration_ms,omitempty"`
+	TimeToFullSuccessMS      int64         `json:"time_to_full_success_ms,omitempty"`
+}
+
+// CodingPair is one randomized control/treatment pair.
+type CodingPair struct {
+	PairID                   string  `json:"pair_id"`
+	Task                     string  `json:"task"`
+	Repetition               int     `json:"repetition"`
+	ControlTrial             string  `json:"control_trial"`
+	TreatmentTrial           string  `json:"treatment_trial"`
+	ControlFullSuccess       bool    `json:"control_full_success"`
+	TreatmentFullSuccess     bool    `json:"treatment_full_success"`
+	ControlPartial           float64 `json:"control_partial"`
+	TreatmentPartial         float64 `json:"treatment_partial"`
+	ControlPoints            int     `json:"control_points"`
+	TreatmentPoints          int     `json:"treatment_points"`
+	ControlDurationMS        int64   `json:"control_duration_ms"`
+	TreatmentDurationMS      int64   `json:"treatment_duration_ms"`
+	ControlRequests          int     `json:"control_requests"`
+	TreatmentRequests        int     `json:"treatment_requests"`
+	ControlToolCalls         int     `json:"control_tool_calls"`
+	TreatmentToolCalls       int     `json:"treatment_tool_calls"`
+	ControlRepeatedReads     int     `json:"control_repeated_reads"`
+	TreatmentRepeatedReads   int     `json:"treatment_repeated_reads"`
+	ControlRepeatedFailed    int     `json:"control_repeated_failed_investigations"`
+	TreatmentRepeatedFailed  int     `json:"treatment_repeated_failed_investigations"`
+	ControlTaskStateTokens   int     `json:"control_task_state_tokens"`
+	TreatmentTaskStateTokens int     `json:"treatment_task_state_tokens"`
+}
+
+// CodingSummary aggregates the pre-registered paired comparison.
+type CodingSummary struct {
+	Pairs                 int     `json:"pairs"`
+	ControlFullSuccess    int     `json:"control_full_success"`
+	TreatmentFullSuccess  int     `json:"treatment_full_success"`
+	ControlWins           int     `json:"control_wins"`
+	TreatmentWins         int     `json:"treatment_wins"`
+	Ties                  int     `json:"ties"`
+	MeanPartialDelta      float64 `json:"mean_partial_delta"`
+	MeanPointsDelta       float64 `json:"mean_points_delta"`
+	MeanDurationDeltaMS   float64 `json:"mean_duration_delta_ms"`
+	MeanRequestDelta      float64 `json:"mean_request_delta"`
+	MeanToolCallDelta     float64 `json:"mean_tool_call_delta"`
+	MeanRepeatedReadDelta float64 `json:"mean_repeated_read_delta"`
 }
 
 // TaskStateSnapshot is a deterministic view of the session sidecar after a
@@ -234,6 +387,8 @@ type TaskStateSnapshot struct {
 	RenderedChars       int      `json:"rendered_chars"`
 	RenderedTokens      int      `json:"rendered_tokens_estimate"`
 	RenderedText        string   `json:"rendered_text,omitempty"`
+	StorageBytes        int64    `json:"storage_bytes,omitempty"`
+	ResidentRecords     int      `json:"resident_records,omitempty"`
 }
 
 // TurnScore records the deterministic per-turn expectation for Experiment C.
@@ -267,8 +422,16 @@ type TrialResult struct {
 	Score      Score            `json:"score"`
 	TurnScores []TurnScore      `json:"turn_scores,omitempty"`
 
+	Coding *CodingOutcome `json:"coding,omitempty"`
+
+	PairID         string `json:"pair_id,omitempty"`
+	Repetition     int    `json:"repetition"`
+	SequenceIndex  int    `json:"sequence_index"`
+	StartingCommit string `json:"starting_commit,omitempty"`
+
 	TaskStateFinal *TaskStateSnapshot `json:"task_state_final,omitempty"`
 
+	ResidentCacheRecords   int      `json:"resident_cache_records"`
 	SessionKeysObserved    []string `json:"session_keys_observed"`
 	SessionFilesObserved   []string `json:"session_files_observed"`
 	AnswerFoundInWorkspace bool     `json:"answer_found_in_workspace"`
@@ -299,6 +462,12 @@ type TrialTotals struct {
 	TaskStateRenderedTokens     int `json:"task_state_rendered_tokens_estimate,omitempty"`
 	TaskStatePromptChars        int `json:"task_state_prompt_chars,omitempty"`
 	TaskStatePromptTokens       int `json:"task_state_prompt_tokens_estimate,omitempty"`
+	TaskStateStorageBytes       int `json:"task_state_storage_bytes,omitempty"`
+
+	// 005A local coding-task observations.
+	CodingPointsEarned int `json:"coding_points_earned,omitempty"`
+	CodingPointsTotal  int `json:"coding_points_total,omitempty"`
+	MPMRetrievalCalls  int `json:"mpm_retrieval_calls"`
 }
 
 type RawRecord struct {
@@ -337,6 +506,8 @@ type RunSummary struct {
 	Trials        []TrialResult     `json:"trials"`
 	Aggregates    []Aggregate       `json:"aggregates"`
 	Validation    ValidationSummary `json:"validation"`
+	CodingPairs   []CodingPair      `json:"coding_pairs,omitempty"`
+	Coding        *CodingSummary    `json:"coding,omitempty"`
 }
 
 type ValidationSummary struct {
@@ -367,6 +538,19 @@ type Aggregate struct {
 	MaxTaskStateTokens         int      `json:"max_task_state_rendered_tokens"`
 	MeanTaskStatePromptTokens  *float64 `json:"mean_task_state_prompt_tokens"`
 	MaxTaskStatePromptTokens   int      `json:"max_task_state_prompt_tokens"`
+	MeanTaskStateStorageBytes  *float64 `json:"mean_task_state_storage_bytes"`
+
+	// 005A coding-task aggregates.
+	FullSuccess          int      `json:"full_success"`
+	MeanPartial          *float64 `json:"mean_partial"`
+	MeanPointsEarned     *float64 `json:"mean_points_earned"`
+	ConstraintViolations int      `json:"constraint_violations"`
+	MeanRequests         *float64 `json:"mean_requests"`
+	MeanToolCalls        *float64 `json:"mean_tool_calls"`
+	MeanRepeatedReads    *float64 `json:"mean_repeated_reads"`
+	MeanRepeatedFailed   *float64 `json:"mean_repeated_failed_investigations"`
+	MeanDiagnosis        *float64 `json:"mean_diagnosis_statements"`
+	MPMRetrievalCalls    int      `json:"mpm_retrieval_calls"`
 }
 
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339Nano) }

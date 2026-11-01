@@ -77,9 +77,27 @@ type ScenarioSpec struct {
 	Turns         []TurnSpec
 	CodingFile    string
 	CodingContent string
+
+	// 005A coding-task fields.
+	CodingTask            string
+	ContextWindow         int
+	MaxToolIterations     int
+	MaxTokens             int
+	SummarizeTokenPercent int
 }
 
 func Scenario(name string) (ScenarioSpec, error) {
+	if ids, err := CodingTaskIDs(); err == nil {
+		for _, id := range ids {
+			if id == name {
+				task, err := LoadCodingTask(id)
+				if err != nil {
+					return ScenarioSpec{}, err
+				}
+				return CodingScenarioSpec(task), nil
+			}
+		}
+	}
 	switch name {
 	case "recall":
 		return ScenarioSpec{
@@ -214,6 +232,13 @@ func ExperimentScenarios(experiment string) []string {
 	if strings.EqualFold(experiment, "C") {
 		return []string{"task_state_script", "task_state_multi_failure", "task_state_summary_source"}
 	}
+	if strings.EqualFold(experiment, "D") {
+		ids, err := CodingTaskIDs()
+		if err != nil {
+			return nil
+		}
+		return ids
+	}
 	return []string{
 		"recall", "paraphrase", "abstention", "cross_project", "stale",
 		"injection", "resident_after_history_clear",
@@ -227,14 +252,25 @@ func ExperimentConditions(experiment string) []string {
 	if strings.EqualFold(experiment, "C") {
 		return []string{"history_cache", "always_state", "boundary_state", "summary_only"}
 	}
+	if strings.EqualFold(experiment, "D") {
+		return []string{CodingConditionControl, CodingConditionTreatment}
+	}
 	return []string{"no_memory", "eager", "mpm_retrieval", "mpm_active"}
 }
+
+const (
+	// CodingConditionControl has task state disabled and native history and
+	// compaction enabled.
+	CodingConditionControl = "control"
+	// CodingConditionTreatment enables the frozen 004C boundary task state.
+	CodingConditionTreatment = "treatment"
+)
 
 func ConditionMemoryPolicy(condition string) string {
 	switch condition {
 	case "history_cache", "always_state", "boundary_state":
 		return "mpm_active"
-	case "summary_only":
+	case "summary_only", CodingConditionControl, CodingConditionTreatment:
 		return "none"
 	case "eager":
 		return "eager"
@@ -254,7 +290,7 @@ func ConditionToolProfile(condition string) string {
 	if condition == "tools_standard" {
 		return "standard"
 	}
-	return "coding" // Experiment A uses the corrected four-tool profile everywhere.
+	return "coding" // Experiment A and D use the corrected four-tool profile everywhere.
 }
 
 func ConditionActiveMemory(condition string) bool {
@@ -264,7 +300,8 @@ func ConditionActiveMemory(condition string) bool {
 
 // ConditionTaskState reports whether the condition enables task state.
 func ConditionTaskState(condition string) bool {
-	return condition == "always_state" || condition == "boundary_state"
+	return condition == "always_state" || condition == "boundary_state" ||
+		condition == CodingConditionTreatment
 }
 
 // ConditionTaskStateResidency returns the rendering policy for a condition.
@@ -272,7 +309,7 @@ func ConditionTaskStateResidency(condition string) string {
 	switch condition {
 	case "always_state":
 		return "always"
-	case "boundary_state":
+	case "boundary_state", CodingConditionTreatment:
 		return "boundary"
 	default:
 		return ""

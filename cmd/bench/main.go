@@ -25,6 +25,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "bench trial:", err)
 			os.Exit(1)
 		}
+	case "fixtures":
+		if err := fixturesCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "bench fixtures:", err)
+			os.Exit(1)
+		}
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -36,12 +41,14 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `deepclaw benchmark harness
 
-  bench run   --experiment A|B|C [options]
-  bench trial --spec /path/to/trial-spec.json
+  bench run      --experiment A|B|C|D [options]
+  bench trial    --spec /path/to/trial-spec.json
+  bench fixtures --verify | --reset --task ID --out DIR
 
 Run options:
-  --experiment A|B|C        A = memory policy, B = coding tool profile,
-                            C = task-state mechanism (required)
+  --experiment A|B|C|D      A = memory policy, B = coding tool profile,
+                            C = task-state mechanism, D = realistic coding
+                            evaluation (required)
   --trials N                independent trials per condition/scenario (default 1)
   --provider mock|live      provider kind (default mock)
   --provider-config PATH    PicoClaw config for a live provider
@@ -50,7 +57,8 @@ Run options:
   --conditions a,b          restrict conditions
   --scenarios a,b           restrict scenarios
   --out DIR                 output root (default .lab/bench/003f)
-  --run-id ID               reproducible run identifier`)
+  --run-id ID               reproducible run identifier
+  --seed N                  005A paired-order seed (derived from --run-id when 0)`)
 }
 
 func runCmd(args []string) error {
@@ -65,6 +73,7 @@ func runCmd(args []string) error {
 	scenarios := fs.String("scenarios", "", "comma-separated scenarios")
 	out := fs.String("out", "", "output root")
 	runID := fs.String("run-id", "", "run identifier")
+	seed := fs.Int64("seed", 0, "005A paired-order seed")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -79,6 +88,7 @@ func runCmd(args []string) error {
 		Trials:             *trials,
 		Conditions:         splitCSV(*conditions),
 		Scenarios:          splitCSV(*scenarios),
+		Seed:               *seed,
 	})
 	if err != nil {
 		return err
@@ -123,4 +133,48 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+func fixturesCmd(args []string) error {
+	fs := flag.NewFlagSet("fixtures", flag.ContinueOnError)
+	verify := fs.Bool("verify", false, "materialise every fixture twice and validate hidden tests")
+	reset := fs.Bool("reset", false, "write a pristine fixture at --out")
+	task := fs.String("task", "", "task id for --reset")
+	out := fs.String("out", "", "output directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// --verify is the default action; the flag exists for explicit scripts.
+	_ = *verify
+	if *reset {
+		if strings.TrimSpace(*task) == "" || strings.TrimSpace(*out) == "" {
+			return fmt.Errorf("--reset requires --task and --out")
+		}
+		state, err := bench.ResetCodingFixture(*task, *out)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("reset %s\n  path: %s\n  commit: %s\n  sha256: %s\n", state.TaskID, state.Path, state.Commit, state.ContentSHA)
+		return nil
+	}
+	report, err := bench.VerifyCodingFixtures(*out)
+	if err != nil {
+		return err
+	}
+	for _, item := range report.Tasks {
+		status := "PASS"
+		if !item.Valid {
+			status = "FAIL"
+		}
+		fmt.Printf("  %-4s %-28s commit=%s hidden_failed=%d build=%t deterministic=%t\n",
+			status, item.TaskID, item.StartingCommit, item.HiddenFailed, item.BuildOK, item.Deterministic)
+		if item.Error != "" {
+			fmt.Printf("        %s\n", item.Error)
+		}
+	}
+	if !report.Valid {
+		return fmt.Errorf("one or more coding fixtures failed qualification")
+	}
+	fmt.Printf("all %d coding fixtures valid\n", len(report.Tasks))
+	return nil
 }
