@@ -40,6 +40,10 @@ type RunOptions struct {
 	// churn/guard testing. Never set for live runs.
 	VerboseMock      bool
 	VerboseMockIters int
+	// ContextWindow overrides every scenario's context window when
+	// positive (e.g., 005F's identical 32K sizing). Zero keeps the
+	// fixture-defined windows. Recorded in the manifest.
+	ContextWindow int
 }
 
 type RunManifest struct {
@@ -64,6 +68,7 @@ type RunManifest struct {
 	// 005B authorized ceilings in provider-reported total tokens (0 = none).
 	TokenBudgetTotal    int64 `json:"token_budget_total,omitempty"`
 	TokenBudgetPerTrial int64 `json:"token_budget_per_trial,omitempty"`
+	ContextWindow       int   `json:"context_window_override,omitempty"`
 }
 
 func DefaultOutDir() string { return benchRoot() }
@@ -113,6 +118,12 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 	}
 	if opts.TokenBudgetTotal < 0 || opts.TokenBudgetPerTrial < 0 {
 		return nil, fmt.Errorf("token budgets must be non-negative")
+	}
+	if opts.ContextWindow < 0 {
+		return nil, fmt.Errorf("context window override must be non-negative")
+	}
+	if strings.EqualFold(opts.Experiment, "D") && opts.ProviderKind == "live" && opts.VerboseMock {
+		return nil, fmt.Errorf("verbose mock simulation must never run against a live provider")
 	}
 	if opts.RunID == "" {
 		opts.RunID = newRunID()
@@ -178,6 +189,7 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 		TrialsPerCell: opts.Trials, Conditions: conditions, Scenarios: scenarios,
 		Isolation: true, Provenance: provenance, Seed: seed, PairCount: pairCount,
 		TokenBudgetTotal: opts.TokenBudgetTotal, TokenBudgetPerTrial: opts.TokenBudgetPerTrial,
+		ContextWindow: opts.ContextWindow,
 		Notes: []string{
 			"all conditions run in separate subprocesses with fresh HOME, XDG, workspace, session store and MPM state",
 			"subprocess isolation is enabled for every condition; MPM conditions additionally mask the MPM store",
@@ -460,6 +472,9 @@ func buildTrialSpecFromPlan(
 		}
 		if scenario.ContextWindow > 0 {
 			spec.ContextWindow = scenario.ContextWindow
+		}
+		if opts.ContextWindow > 0 {
+			spec.ContextWindow = opts.ContextWindow
 		}
 		spec.SummarizeTokenPercent = scenario.SummarizeTokenPercent
 	}

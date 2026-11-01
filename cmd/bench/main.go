@@ -76,6 +76,7 @@ func runCmd(args []string) error {
 	seed := fs.Int64("seed", 0, "005A paired-order seed")
 	tokenBudgetTotal := fs.Int64("token-budget-total", 0, "005B pilot ceiling in provider-reported total tokens (0 = unenforced)")
 	tokenBudgetPerTrial := fs.Int64("token-budget-per-trial", 0, "005B per-trial ceiling in provider-reported total tokens (0 = unenforced)")
+	contextWindow := fs.Int("context-window", 0, "override every scenario's context window (0 = fixture-defined)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -93,6 +94,7 @@ func runCmd(args []string) error {
 		Seed:                *seed,
 		TokenBudgetTotal:    *tokenBudgetTotal,
 		TokenBudgetPerTrial: *tokenBudgetPerTrial,
+		ContextWindow:       *contextWindow,
 	})
 	if err != nil {
 		return err
