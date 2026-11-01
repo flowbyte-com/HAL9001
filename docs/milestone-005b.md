@@ -1,14 +1,13 @@
 # Milestone 005B: live coding-agent evaluation
 
-Status: **credential gate cleared on the international endpoint; live pilot
-not started.** A first bounded probe against MiniMax's mainland endpoint
-(`https://api.minimaxi.com/v1`) failed with HTTP 401 (`invalid api key
-(2049)`). After switching only the API base to the international endpoint
-(`https://api.minimax.io/v1`), a second bounded probe authenticated
-successfully and received real model responses. Per instructions the study
-stops here until the existing usage ceiling is confirmed: no pilot, no
-scoring of a comparison, no model or endpoint switching beyond the directed
-base-URL correction.
+Status: **pilot attempted and auto-aborted after 1 of 10 trials.** The first
+trial (control `compaction_ledger`) entered an invalid benchmark state: the
+live model's verbosity triggered repeated threshold compactions that consumed
+the history the trial's designed explicit `/compact` needed, the explicit
+compaction then produced no summary, and the child recorded no result or raw
+usage. The runner stopped the run rather than burning budget on unmetered
+work. No rerun was attempted; no fixture, parameter, or scoring change was
+made.
 
 - Production memory: frozen at 004C
   (`0ebc816eb56ed3c1769342eb4701996921ff0026`); no production behavior changed.
@@ -27,7 +26,9 @@ base-URL correction.
   0 pass, 0 fail, 1 error; HTTP 401).
 - Auth probe (international base): `.lab/bench/005b/005b-auth-probe-io/`
   (1 trial, 1 pass, 0 fail, 0 error; HTTP 200, model responses received).
-- No live pilot run exists. There is nothing to score as a comparison.
+- Pilot run: `.lab/bench/005b/005b-pilot-20261101/` (1 trial attempted,
+  0 pass, 0 fail, 1 error; runner stopped early with reason recorded).
+- No live comparison exists. There is nothing to score as a paired result.
 
 ## 1. Stage 1: qualification gate
 
@@ -166,13 +167,18 @@ confirmation of the usage ceiling.
 - Actual spend in 005B: one rejected request, zero provider-reported usage
   objects, zero successful completions. No budget was consumed.
 
-## 2. Stage 2: small live pilot — not run (awaiting ceiling confirmation)
+## 2. Stage 2: small live pilot — attempted 1/10, auto-aborted
 
-The pilot (one matched pair per fixture, randomized order, identical
-budgets, real subprocess restarts) was correctly **not started**: the
-credential gate cleared only with the second probe, and the instruction
-requires stopping before the pilot until the existing usage ceiling is
-confirmed. No fixture difficulty or scoring criterion was changed.
+With the credential gate cleared and the 8M/1M ceilings authorized, the
+runner's own guard was verified first (bench-only code, commit `508509a0`:
+request-boundary refusal with a context+max-tokens allowance,
+metering-failure latch on unreported usage, cross-trial and cross-segment
+accounting, run stop on invalid trials or unmetered live usage; three new
+guard tests pass and a capped mock run reproduces 10/10 ties). The pilot
+launched with the exact authorized shape (seed 20261101, caps 8M/1M),
+on binary `.lab/bin/bench` SHA-256
+`7d60aaf4b8cc1ab76742c5e511ee1bf5703c526c744ec816f1614f2404142851`
+built clean at commit `508509a0`:
 
 ```bash
 export HOME=$PWD/.lab/home
@@ -185,13 +191,56 @@ export GOTMPDIR=$PWD/.lab/tmp TMPDIR=$PWD/.lab/tmp
   --provider live \
   --provider-config "$PWD/.lab/bench/005b/provider/config.json" \
   --model minimax-m3-flash \
-  --run-id 005b-pilot-<timestamp> \
+  --run-id 005b-pilot-20261101 \
   --seed 20261101 \
+  --token-budget-total 8000000 \
+  --token-budget-per-trial 1000000 \
   --out "$PWD/.lab/bench/005b"
-python3 scripts/bench-005a-analyze.py ".lab/bench/005b/005b-pilot-<timestamp>"
+python3 scripts/bench-005a-analyze.py ".lab/bench/005b/005b-pilot-20261101"
 ```
 
-Do not run it until a credential that passes the bounded probe is supplied.
+Result: `1 trial, 0 pass, 0 fail, 1 error` — the run stopped itself
+before a second trial. Token-budget record: metered reported total 0 of
+8M, per-trial max 0 of 1M, `stopped_early=true` with the trial error as
+reason. No ceiling was breached in metered terms.
+
+### What happened in trial 1 (control `compaction_ledger`)
+
+The child process log (preserved verbatim) shows a trajectory the mock
+never produces at this scale:
+
+- ~40 `LLM request` log lines (vs 13 mock requests for this task), 45
+  `bash` calls, 27 reads, 10 failed tool executions.
+- The live model never converged: twice it hit `max_tool_iterations` (20)
+  without a final response, looping over checks and reads.
+- Each 1024-token completion grew the prompt until the 8192-token context
+  window hit its 60% summarize threshold: **25 threshold compactions and
+  21 session-summarize events** fired during turns 1–2.
+- When turn 3 ran the trial's designed explicit `/compact`, history had
+  nothing left to compact: `error turn t3 compact produced no summary`.
+  The trial errors on that path by design (a compaction task without real
+  compaction is not the experiment), the child wrote no `result.json` and
+  no raw usage trace, and the parent recorded `trial process produced no
+  readable result` and stopped the run.
+
+This is an **invalid benchmark state**, not a coding outcome: the fixture's
+8192-token window was sized for mock-scale traffic, and the live model's
+verbosity plus the production threshold-compaction path interacted to
+destroy the very history the explicit-compaction step requires. It would
+affect both conditions equally in principle (same window, same model), but
+the trial cannot execute its designed sequence, so its result would not be
+a fair paired observation. It was preserved as an error, not rerun, and
+no fixture difficulty, parameter, or scoring criterion was changed
+afterward.
+
+### Metering consequence
+
+The ~40 provider calls in the failed trial were **never recorded** (no raw
+JSONL, no usage objects): their account-level spend is unknown to the
+harness. Per the missing-usage rule this alone requires a stop — it is
+counted as unmetered, never as zero. The operator should check
+account-level usage for the run window; the harness cannot reconstruct it.
+All subsequent spend was prevented by the stop.
 
 ## 3. Stage 3: independent scoring — no live comparison scores exist
 
@@ -210,33 +259,48 @@ The scoring path itself remains validated by the mock run: condition-independent
 criteria with full success kept separate from partial points, constraint
 checks, and merged whole-trial metrics for restarted trials.
 
-## 4. Stage 4: pilot audit — harness audit only
+## 4. Stage 4: pilot audit
 
-- The agent performed no live coding operations (the request failed before
-  any response or tool call).
-- Hidden-test mechanics are proven by the mock run (pristine repos fail,
-  fixed repos pass) but no live hidden-test outcome exists.
-- Fairness machinery is proven: identical tools/schema, clean preflight in
-  both conditions in mock, randomized pairing with recorded seed, MPM
-  structurally disabled, no leakage of hidden tests or credentials into the
-  workspace or traces.
-- No task-state capture gap could manifest in live traffic because no live
-  traffic completed. The known 004C gaps documented in 005A §3 (natural
-  corrections, contradictory evidence adjudication, priorities/scope,
-  paraphrased summaries) remain the watch list for any future pilot audit.
-- No weakness was fixed in response to an outcome; no code was changed for
-  this milestone.
+- The agent performed live coding operations in two trials (probe + pilot
+  trial 1) but completed no paired comparison: the probe was a single
+  control trial (partial 4/11, harness-valid), and pilot trial 1 errored
+  before scoring.
+- Hidden-test mechanics are proven by mock (pristine repos fail, fixed repos
+  pass) but no live hidden-test outcome exists beyond the probe's partial.
+- Fairness machinery held: identical tools/schema, clean preflight in the
+  errored trial's setup phase (18/18), randomized pairing with recorded
+  seed 20261101, MPM structurally disabled, no leakage of hidden tests or
+  credentials into workspaces or traces (full-key scans of both probe runs
+  and the pilot trial dir: absent).
+- The stop rule worked as specified: invalid trial → run halted, reason and
+  budget state recorded in manifest and summary, no rerun, no silent
+  substitution.
+- No task-state capture gap could be assessed live: the pilot trial died at
+  the compaction step before any post-compaction comparison. The known 004C
+  gaps (005A §3) remain the watch list.
+- No weakness was fixed in response to an outcome. Bench-only guard code
+  (`508509a0`) was added before the pilot to satisfy the pre-start
+  enforcement requirement, re-qualified by mock, and applied identically to
+  both conditions; production code, memory behavior, and scoring criteria
+  are untouched.
 
-Paired differences in outcome or effort cannot be reported: with zero live
-trials there is nothing to compare, and no significance claim is made.
+Paired differences in outcome or effort cannot be reported: zero complete
+pairs exist (one errored trial), and no significance claim is made.
 
-## 5. Stage 5: expanded experiment — not authorized
+## 5. Stage 5: expanded experiment — not authorized, pilot incomplete
 
-Do not proceed to the 50-trial study. Requirements for any future attempt:
+Do not proceed to the 50-trial study. The pilot itself did not complete.
+Requirements for any re-attempt (all needing explicit operator approval —
+no automatic reruns, no silent design changes):
 
-1. A credential that passes the single-trial bounded probe above.
-2. A separately approved budget for the pilot and, after audit, for the
-   expansion (including methodologically compatible pilot pairs).
+1. Acknowledge the compaction-window interaction in §2: the 8192-token
+   `compaction_ledger` window plus a verbose live model reliably destroys
+   the history the designed explicit compaction needs. Any fix (larger
+   window, smaller completion cap, compaction-aware sequencing) is a
+   fixture/parameter change requiring re-qualification and a design
+   amendment — explicitly not done here.
+2. A separately approved budget accounting for the unmetered-spend risk:
+   failed trials can leave provider calls unrecorded.
 3. Same binary/source tree or a re-qualified one with fresh provenance.
 
 ## 6. Traceability, limitations, acceptance
@@ -254,30 +318,44 @@ Artifacts (gitignored, redacted by the harness):
   requests, 44,836 provider-reported total tokens).
 - `.lab/bench/005b/provider/config.json` (mode 0600, secret material, never
   committed; `api_base` now `https://api.minimax.io/v1`).
+- `.lab/bench/005b/005b-pilot-20261101/{manifest,summary,trials/...}`
+  with the auto-aborted 1/10 run, the preserved child `process.log`
+  (threshold-compaction storm, max-iteration exhaustion), and the
+  `token_budget` stop record.
+- `.lab/bench/005b/qualification/mock-d-capped/{manifest,summary,...}`
+  with the capped mock re-qualification (10/10 ties under the pilot caps).
 
 Limitations:
 
-1. One successful probe exists on the international endpoint, but no paired
-   comparison; this report supports no claim about task-state benefit,
-   MiniMax behavior beyond one control trial, or token costs.
-2. The mainland 401 is most plausibly a region mismatch, but the key's
+1. No paired live comparison exists: one probe control (partial 4/11)
+   and one errored pilot trial. This report supports no claim about
+   task-state benefit, harm, or token costs.
+2. The failure mode is model-verbosity × fixture-window interaction, not
+   task-state signal. Both conditions share the window and the model, but
+   with zero complete pairs nothing can be attributed either way.
+3. Metered pilot spend is 0 reported tokens, but the errored trial made
+   ~40 unrecorded provider calls: account-level spend is strictly greater
+   than harness-metered spend. Future budgets must price in unmetered
+   failure modes, and failed-trial raw-trace recovery (write raw before
+   failing) is an identified harness gap.
+4. The mainland 401 is most plausibly a region mismatch, but the key's
    region and M-plan subscription type are operator-attested, not
-   cryptographically verified. If the international probe had also failed,
-   the next step would have been comparing endpoint, credential type, and
-   key source against the working MiniMax configuration — not concluding
-   the key itself is invalid.
-3. The ~100M inventory figure is an operator statement, not a metered
+   cryptographically verified.
+5. The ~100M inventory figure is an operator statement, not a metered
    observation.
-4. Mock ties validate orchestration only, as in 005A.
+6. Mock ties validate orchestration only, as in 005A.
 
 Acceptance criterion: the study design **is capable** of detecting benefit,
 harm, or no difference in actual coding outcomes — randomized paired
 control/treatment, real compaction and process restart, hidden acceptance
-tests, independent repository scoring, and effort metrics all validated
-offline, and the live transport now demonstrably delivers model responses
-with provider-reported usage — but the live comparison itself remains
-unexecuted pending usage-ceiling confirmation. No production memory, MPM,
-OpenCode, scheduler, release, or PicoClaw-baseline code was modified; the
-only config change was the directed `api_base` correction in the
-gitignored project-scoped provider file. No push or deploy was made. No key
-was rotated; the model was not changed; the full benchmark was not started.
+tests, independent repository scoring, effort metrics, request-boundary
+budget enforcement, and fail-closed stops all validated — but the pilot
+itself is incomplete (1/10 trials, 0 complete pairs), so it detects
+nothing yet. The abort performed as specified: invalid state in, run
+stopped, evidence preserved, no rerun. Bench-only guard code (`508509a0`)
+was added to meet the pre-start enforcement requirement and re-qualified
+by mock; no production memory, MPM, OpenCode, scheduler, release, or
+PicoClaw-baseline code was modified. The only config change was the
+directed `api_base` correction in the gitignored project-scoped provider
+file. No push or deploy was made. No key was rotated; the model was not
+changed; the expanded study was not started.
