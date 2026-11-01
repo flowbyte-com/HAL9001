@@ -1,13 +1,9 @@
 # Milestone 005B: live coding-agent evaluation
 
-Status: **pilot attempted and auto-aborted after 1 of 10 trials.** The first
-trial (control `compaction_ledger`) entered an invalid benchmark state: the
-live model's verbosity triggered repeated threshold compactions that consumed
-the history the trial's designed explicit `/compact` needed, the explicit
-compaction then produced no summary, and the child recorded no result or raw
-usage. The runner stopped the run rather than burning budget on unmetered
-work. No rerun was attempted; no fixture, parameter, or scoring change was
-made.
+Status: **renewed 10-trial pilot complete (10/10 harness-valid, 0 errors).**
+Control full success 2/5, treatment 1/5; 1 control-won pair, 0 treatment-won,
+4 ties. No significance claimed (n=5, descriptive only). The 50-trial
+expansion is not justified by this signal — see §7.
 
 - Production memory: frozen at 004C
   (`0ebc816eb56ed3c1769342eb4701996921ff0026`); no production behavior changed.
@@ -359,3 +355,122 @@ PicoClaw-baseline code was modified. The only config change was the
 directed `api_base` correction in the gitignored project-scoped provider
 file. No push or deploy was made. No key was rotated; the model was not
 changed; the expanded study was not started.
+
+## 7. Renewed pilot with increased budget — 10/10 complete
+
+Operator re-authorized with ~100M tokens remaining (expiring midnight) and
+caps of 20M aggregate / 2M per trial — 20% of stated inventory. Pre-flight
+for the fresh runs: clean tree at `38ec91b6`, binary rebuilt
+(`fdca03ce...`), fixtures 5/5 re-verified, fast guard/ledger unit tests
+green, prior ledgers reconciled (outstanding reserved/unknown = 0; the
+aborted pilot trial predates the ledger and stays historically unmetered).
+
+Staged execution: pair 1 (`multi_file_cart`) ran first
+(`005b-pilot-20261102a`, seed 20261102, caps 20M/2M) and was inspected —
+2/2 harness-valid, fully metered, no unknown — before pairs 2–5 ran under
+identical settings (`005b-pilot-20261102b`). Pair order was randomized
+within each pair (recorded in manifests). Nothing was modified during the
+pilot: same 8192-token ledger window, fixtures, frozen 004C task state,
+scoring rules, model (`minimax-m3-flash`), and four-tool profile.
+
+| Measure | Run A (pair 1) | Run B (pairs 2–5) | Pilot total |
+|---|---|---|---|
+| Trials valid / attempted | 2/2 | 8/8 | **10/10, 0 fail, 0 error** |
+| Provider-reported tokens | 103,568 | 830,853 | **934,421 (4.67% of 20M)** |
+| Max single-trial tokens | 57,301 | 207,408 (10% of 2M) | cap respected |
+| Reserved / unknown | 0 / 0 | 0 / 0 | **0 / 0** |
+| Missing-usage requests | 0 | 0 | 0 |
+
+### 7.1 Paired functional correctness (treatment − control)
+
+| Task | Control | Treatment | Pair result |
+|---|---|---|---|
+| `multi_file_cart` | partial 0.364 (4/11) | partial 0.364 (4/11) | **tie** |
+| `misleading_failure` | **full 1.000 (7/7)** | partial 0.571 (4/7) | **control wins** |
+| `requirement_change` | partial 0.125 (1/8) | partial 0.125 (1/8) | **tie** |
+| `compaction_ledger` | partial 0.700, task-limited t1 | partial 0.700, task-limited t1 | **tie** |
+| `restart_parser` | **full 1.000 (9/9)** | **full 1.000 (9/9)** | **tie** |
+
+Full success: control 2/5, treatment 1/5. No constraint violations except
+the pre-existing wrong-fix pattern both cart agents left in place
+(`return subtotalCents / 10` untouched). Scoring is from hidden tests on
+the final repositories, never from model claims.
+
+### 7.2 Effort and overhead (treatment − control)
+
+| Task | Δ requests | Δ tool calls | Δ total tokens | Task-state prompt tok. |
+|---|---:|---:|---:|---:|
+| cart | +3 (8→11) | +2 | +11,034 | 3,294 |
+| shipping | 0 (16→16) | +4 | −21,389 | 4,973 |
+| billing | −10 (23→13) | −17 | −110,359 | 3,735 |
+| ledger | −1 (28→27) | +3 | +5,542 | 7,297 |
+| parser | +2 (17→19) | +12 | −21,515 | 5,009 |
+
+Treatment totals: fewer requests (69 vs 75) and fewer tokens overall, but
+more tool calls (+4) and 22.8–57.3 KB of sidecar storage per trial, plus
+3.3–7.3k task-state prompt tokens where control pays zero. Direction of
+effort is mixed; direction of outcome favors control (1–0 with 4 ties).
+
+### 7.3 What the agents actually did (model mistakes)
+
+- **Cart, both:** investigated (6–7 reads, 8–9 checks) but **never wrote
+  a file** — pristine repos, failure to act. Identical partials.
+- **Shipping control:** applied the README contract (boundary fix via
+  `edit`) → full success, evidence reuse true. **Treatment:** no fix
+  (pristine boundary bug retained), 14 failed bash calls looping the
+  same failing checks — the repeated-investigation shape, without
+  converging.
+- **Billing, both:** no edits; the t2 banker's-rounding correction was
+  not implemented (partial 0.125 = build only). Consistent with the
+  known 004C gap: natural corrections are not captured as task-state
+  entries (005A §3).
+- **Ledger, both:** fixed `balance.go` early, then hit the compaction
+  churn guard in t1 (8/7 auto-compactions ≥ 6) with max-iteration
+  exhaustion — the 005B-R-predicted shape. Both stopped as task limits
+  (harness-valid), scored partial 0.7, t2/t3 unreached, explicit
+  compaction untested (vacuous pass). `RecoveredAfterCompaction` false
+  in both — correctly, since full success needs the validation fix.
+- **Parser, both:** converged cleanly across a true process restart
+  (history 23→32 control, 36→50 treatment; 2 processes each),
+  `RecoveredAfterRestart` true, evidence reuse true, full success.
+  Treatment wrote structured `memory/MEMORY.md` notes citing only
+  public test names (no hidden-test leakage; `memory/` is excluded
+  from scoring by construction). Control's memory dir stayed empty —
+  a behavioral difference with no attributable cause and no scoring
+  effect.
+- Unsupported diagnoses: `diagnosis_statements` = 0 in all 10 trials —
+  the heuristic found no wrong-diagnosis claims in traces.
+
+### 7.4 Measurement caveats found live
+
+- Command/path-level repetition is unmeasurable with this provider
+  adapter: response tool-call records carry only an `id` (no
+  name/arguments), so `repeated_*_commands/paths` collapse to an
+  unknown-command bucket. Same-tool recall counts remain valid; the
+  fine-grained "repeated investigation" metric does not.
+- Mock token counts vary ±1 token run-to-run (workspace path length
+  leaks into prompt estimates); tests assert same-run relationships,
+  never absolute totals.
+- Time-to-pass is defined only for the 3 full successes (46–129 s);
+  failed trials record duration without a pass time.
+
+### 7.5 Expansion verdict and limits
+
+The pilot does **not** justify the 50-trial expansion for the primary
+question: with 5 pairs the direction is control-favoring (1–0–4) with
+treatment overhead and no outcome gain — a descriptive signal, not a
+significant one, but with no positive trend to chase. The ledger task
+cannot measure its compaction property under live verbosity in either
+condition (2/2 task-limited in t1), bounding what a larger run could
+learn without a protocol amendment (not made here). Stopping rules
+fired zero times across 10 trials (no auth/quota/isolation/ledger
+failures, no missing usage, no invalid states); the artificial
+compaction limit engaged exactly as designed without voiding the
+experiment.
+
+Artifacts: `.lab/bench/005b/005b-pilot-20261102a/` and
+`.../005b-pilot-20261102b/` (manifests with seeds/orders, summaries
+with coding pairs and token budgets, per-trial results, raw traces,
+usage ledgers, redacted logs). Previous aborted run preserved
+unchanged. No push or deploy was made. The 50-trial expansion remains
+**not authorized**.
