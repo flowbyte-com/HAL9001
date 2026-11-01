@@ -435,6 +435,11 @@ func RunTrial(spec TrialSpec) TrialResult {
 	}
 	loop, instance := newLoop()
 
+	// 005D: the trusted tool-trace collector is created before the
+	// persist-on-fail reassignment so failure paths can snapshot it.
+	tracer := newToolTraceCollector(ToolTracePath(spec))
+	tracer.reseed()
+
 	// 005B-R: from here on, every failure path persists partial evidence.
 	// The original fail() only filled fields; a compact/exhaustion/transport
 	// failure then lost all in-memory requests, tool calls and totals because
@@ -456,6 +461,8 @@ func RunTrial(spec TrialSpec) TrialResult {
 		if recovery, recErr := ReconcileUsage(result, UsageLedgerPath(spec)); recErr == nil {
 			result.UsageRecovery = &recovery
 		}
+		traceSummary := tracer.snapshot()
+		result.ToolTrace = &traceSummary
 		result.Totals = totalsFor(result)
 		_ = recorder.WriteRaw(spec.RawPath)
 		_ = writeJSON(spec.ResultPath, redactValue(result))
@@ -481,6 +488,70 @@ func RunTrial(spec TrialSpec) TrialResult {
 		return fail(fmt.Errorf("subscribe summarize events: %w", summarizeErr))
 	}
 	defer summarizeSub.Close()
+
+	// 005D: subscribe the trusted tool-execution events. Start carries
+	// final validated tool names and arguments, End carries duration and
+	// error status, Skipped carries hook denials. Dispatch is strictly
+	// sequential with locked delivery, so order-joins are exact. Nothing
+	// here touches prompts or tool schemas.
+	traceTurn := ""
+	traceRequestOf := func() string {
+		requests := recorder.Requests()
+		for i := len(requests) - 1; i >= 0; i-- {
+			if requests[i].TurnID == traceTurn && requests[i].RequestID != "" {
+				return requests[i].RequestID
+			}
+		}
+		return ""
+	}
+	startSub, startErr := eventBus.Channel().
+		OfKind(runtimeevents.KindAgentToolExecStart).
+		Subscribe(context.Background(), runtimeevents.SubscribeOptions{
+			Name: "benchmark-tool-start", Buffer: 1024, Concurrency: runtimeevents.Locked,
+		}, func(_ context.Context, evt runtimeevents.Event) error {
+			payload, ok := evt.Payload.(agent.ToolExecStartPayload)
+			if !ok {
+				return nil
+			}
+			tracer.recordStart(evt.Scope.TurnID, payload.Tool, payload.Arguments)
+			return nil
+		})
+	if startErr != nil {
+		return fail(fmt.Errorf("subscribe tool start events: %w", startErr))
+	}
+	defer startSub.Close()
+	endSub, endErr := eventBus.Channel().
+		OfKind(runtimeevents.KindAgentToolExecEnd).
+		Subscribe(context.Background(), runtimeevents.SubscribeOptions{
+			Name: "benchmark-tool-end", Buffer: 1024, Concurrency: runtimeevents.Locked,
+		}, func(_ context.Context, evt runtimeevents.Event) error {
+			payload, ok := evt.Payload.(agent.ToolExecEndPayload)
+			if !ok {
+				return nil
+			}
+			tracer.recordEnd(evt.Scope.TurnID, payload.Tool, payload.Duration, payload.IsError, payload.Async, payload.ForLLMLen)
+			return nil
+		})
+	if endErr != nil {
+		return fail(fmt.Errorf("subscribe tool end events: %w", endErr))
+	}
+	defer endSub.Close()
+	skipSub, skipErr := eventBus.Channel().
+		OfKind(runtimeevents.KindAgentToolExecSkipped).
+		Subscribe(context.Background(), runtimeevents.SubscribeOptions{
+			Name: "benchmark-tool-skip", Buffer: 256, Concurrency: runtimeevents.Locked,
+		}, func(_ context.Context, evt runtimeevents.Event) error {
+			payload, ok := evt.Payload.(agent.ToolExecSkippedPayload)
+			if !ok {
+				return nil
+			}
+			tracer.recordSkipped(evt.Scope.TurnID, payload.Tool, payload.Reason)
+			return nil
+		})
+	if skipErr != nil {
+		return fail(fmt.Errorf("subscribe tool skip events: %w", skipErr))
+	}
+	defer skipSub.Close()
 	if instance == nil {
 		loop.Close()
 		return fail(fmt.Errorf("no default agent"))
@@ -522,6 +593,9 @@ func RunTrial(spec TrialSpec) TrialResult {
 	// 005B-R: runaway-trajectory accounting, symmetric across conditions.
 	exhaustions, totalSummaries, totalRequests, totalToolCalls := 0, 0, 0, 0
 	for i, turn := range spec.Turns[turnStartIndex:turnEndIndex] {
+		traceTurn = turn.ID
+		tracer.setContext(turn.ID, traceRequestOf)
+		filesBeforeTurn := workspaceFileStatus(spec.AgentWorkspace)
 		restarted := turn.RestartBefore
 		if turn.RestartBefore {
 			// A resumed segment already runs in a new OS process. Do not close
@@ -634,6 +708,7 @@ func RunTrial(spec TrialSpec) TrialResult {
 		summarizeMu.Unlock()
 		totalSummaries += turnSummaries
 		turnResult.AutoCompactions = turnSummaries
+		turnResult.FilesChanged = changedWorkspaceFiles(filesBeforeTurn, workspaceFileStatus(spec.AgentWorkspace))
 		totalRequests += turnResult.Requests
 		totalToolCalls += len(turnResult.ToolCalls)
 		var runawayRequests []RequestRecord
@@ -736,6 +811,8 @@ func RunTrial(spec TrialSpec) TrialResult {
 	if recovery, recErr := ReconcileUsage(result, UsageLedgerPath(spec)); recErr == nil {
 		result.UsageRecovery = &recovery
 	}
+	traceFinal := tracer.snapshot()
+	result.ToolTrace = &traceFinal
 	attachRetrievalLatency(&result, spec.LogPath)
 	result.Totals.MPMRetrievalCalls = countLogMessage(spec.LogPath, "MPM retrieval")
 
@@ -1102,6 +1179,56 @@ func sessionList(ctx context.Context, instance *agent.AgentInstance) []string {
 		return nil
 	}
 	return sortedCopy(instance.Sessions.ListSessions())
+}
+
+// workspaceFileStatus snapshots `git status --porcelain` for a workspace.
+// It returns nil for non-git workspaces; callers treat that as unknown.
+func workspaceFileStatus(workspace string) map[string]string {
+	cmd := exec.Command("git", "-C", workspace, "status", "--porcelain=v1")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	status := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if index := strings.Index(path, " -> "); index >= 0 {
+			path = path[index+4:]
+		}
+		status[path] = strings.TrimSpace(line[:2])
+		if path == "sessions/" || strings.HasPrefix(path, "sessions/") {
+			// Session JSONL churns every turn; it is runtime state, not a
+			// repository change attributable to a coding-tool attempt.
+			delete(status, path)
+		}
+	}
+	return status
+}
+
+// changedWorkspaceFiles returns paths whose git status differs between two
+// snapshots (appeared, disappeared, or changed state), sorted.
+func changedWorkspaceFiles(before, after map[string]string) []string {
+	if before == nil || after == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for path, status := range after {
+		if before[path] != status && !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	for path := range before {
+		if _, ok := after[path]; !ok && !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 func sessionFiles(workspace string) []string {

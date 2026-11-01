@@ -244,7 +244,11 @@ type TurnResult struct {
 	// AutoCompactions counts automatic threshold compactions observed
 	// during the turn via session-summarize events.
 	AutoCompactions int `json:"auto_compactions,omitempty"`
-	Requests        int `json:"llm_requests"`
+	// FilesChanged lists workspace files whose git status changed during
+	// the turn (empty for non-git workspaces). Used to attribute
+	// write/edit attempts to actual repository changes.
+	FilesChanged []string `json:"files_changed,omitempty"`
+	Requests     int      `json:"llm_requests"`
 
 	// TaskState is the sidecar snapshot after the turn, when task state is
 	// enabled. It is evidence for the mechanism, not a model-quality score.
@@ -482,6 +486,10 @@ type TrialResult struct {
 	// UsageRecovery is the self- or parent-reconciled spend, including ledger
 	// reservations for requests whose outcome is unknown.
 	UsageRecovery *UsageRecovery `json:"usage_recovery,omitempty"`
+
+	// ToolTrace summarizes the trusted tool-execution trace for the trial.
+	// Full per-attempt records live in raw/tool-trace.jsonl.
+	ToolTrace *ToolTraceSummary `json:"tool_trace,omitempty"`
 
 	TaskStateFinal *TaskStateSnapshot `json:"task_state_final,omitempty"`
 

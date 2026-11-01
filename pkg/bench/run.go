@@ -250,6 +250,15 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 		}
 		manifest.Order = append(manifest.Order, trialID)
 		result := executeTrialSpec(runDir, spec, runner, opts.ProviderKind, item)
+		// 005D: reconcile the tool trace before recording the trial. The
+		// shared trace file is authoritative across restart segments,
+		// where each segment process only saw its own attempts. A crash
+		// after dispatches still leaves attempts even with no result file.
+		if traceRecovery, traceErr := RecoverToolTrace(ToolTracePath(spec)); traceErr == nil && traceRecovery.Events > 0 {
+			converted := SummarizeRecovery(traceRecovery)
+			result.ToolTrace = &converted
+			_ = writeJSON(spec.ResultPath, redactValue(result))
+		}
 		var trialReported int64
 		// 005B-R: reconcile the durable ledger even when the child left no
 		// usable result. A crashed or early-failed child contributes its

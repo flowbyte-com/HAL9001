@@ -91,7 +91,17 @@ func appendUsageEvent(path string, event UsageEvent) error {
 		return nil
 	}
 	event.At = time.Now().UTC().Format(time.RFC3339Nano)
-	data, err := json.Marshal(event)
+	return appendJSONLLine(path, event)
+}
+
+// appendJSONLLine appends one JSON object plus newline with an fsync, mode
+// 0600. Shared by the usage ledger and the tool trace so both survive
+// abnormal child termination with the same durability.
+func appendJSONLLine(path string, value any) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
@@ -117,6 +127,30 @@ func appendUsageEvent(path string, event UsageEvent) error {
 	return closeErr
 }
 
+// readJSONLLines returns the non-empty lines of a JSONL file. A missing file
+// is not an error: it means nothing was recorded yet.
+func readJSONLLines(path string) ([]string, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var lines []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines, nil
+}
+
 // RecoverUsageLedger rebuilds spend from a ledger file. Response events
 // supersede reservations by request ID, so re-appended or duplicated lines
 // cannot double-count; segments sharing one file are naturally merged
@@ -134,6 +168,7 @@ func RecoverUsageLedger(path string) (UsageRecovery, error) {
 		}
 		return recovery, err
 	}
+	_ = data
 	byID := map[string]UsageEvent{}
 	order := []string{}
 	for _, line := range strings.Split(string(data), "\n") {
@@ -219,4 +254,15 @@ func ledgerAllowance(spec TrialSpec) int {
 		maxTokens = 1024
 	}
 	return window + maxTokens
+}
+
+// appendLedgerEvent persists one tool-trace event. It shares the
+// fsync-per-append durability of the usage ledger.
+func appendLedgerEvent(path string, attempt ToolAttempt) error {
+	return appendJSONLLine(path, attempt)
+}
+
+// readTraceLines returns the non-empty lines of a tool-trace file.
+func readTraceLines(path string) ([]string, error) {
+	return readJSONLLines(path)
 }
