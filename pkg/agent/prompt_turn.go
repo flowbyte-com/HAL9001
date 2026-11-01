@@ -41,6 +41,11 @@ func promptBuildRequestForTurn(
 	if ts.profile.Enabled && !hasCallableTools {
 		req.SuppressToolUseRule = true
 	}
+	// HAL9001 replaces the always-use-tools rule with chat-first guidance
+	// carried in its own identity block.
+	if ts.agent != nil && ts.agent.Hal9001 {
+		req.SuppressToolUseRule = true
+	}
 	if turnProfileSkillsOff(ts.profile) {
 		req.SuppressSkillContext = true
 	}

@@ -124,6 +124,12 @@ func NewAgentLoop(
 	// an explicit visibility policy. The registry and allowlist are preserved.
 	if codingProfileEnabled() {
 		enableCodingProfile(registry)
+	} else {
+		// HAL9001 chat-first profile: lookup, reading, and prompt-crafting
+		// tools stay visible; coding and execution tools remain installed
+		// but hidden until explicitly requested. Coding profile takes
+		// precedence when enabled.
+		enableHal9001Profile(registry)
 	}
 
 	return al

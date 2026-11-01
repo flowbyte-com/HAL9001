@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
@@ -41,6 +42,16 @@ func (p *Pipeline) Finalize(
 			status:       turnStatus,
 			followUps:    append([]bus.InboundMessage(nil), ts.followUps...),
 		}, nil
+	}
+
+	// Dave Protocol (HAL9001 only): a provider safety refusal that produced
+	// no usable content — no text, no tool calls — gets exactly the refusal
+	// line. Ordinary errors, empty replies, truncation, and model-authored
+	// prose refusals keep their normal fallbacks.
+	if ts.agent != nil && ts.agent.Hal9001 && exec != nil && exec.response != nil &&
+		strings.TrimSpace(exec.response.Content) == "" && len(exec.normalizedToolCalls) == 0 &&
+		IsSafetyRefusal(exec.response, nil) {
+		finalContent = DaveRefusalLine
 	}
 
 	ts.setPhase(TurnPhaseFinalizing)

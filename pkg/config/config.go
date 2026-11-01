@@ -585,7 +585,12 @@ func (c LoopDetectionConfig) Normalized() LoopDetectionConfig {
 }
 
 type AgentDefaults struct {
-	Workspace                 string              `json:"workspace"                            env:"PICOCLAW_AGENTS_DEFAULTS_WORKSPACE"`
+	Workspace string `json:"workspace"                            env:"PICOCLAW_AGENTS_DEFAULTS_WORKSPACE"`
+	// Persona selects the conversational identity: "" or "picoclaw" keeps
+	// the default coding-assistant behavior; "hal9001" enables the HAL9001
+	// thinking-partner profile (chat-first instructions, curated visible
+	// tools, Dave-protocol refusals). Unknown values fall back to picoclaw.
+	Persona                   string              `json:"persona,omitempty"                    env:"PICOCLAW_AGENTS_DEFAULTS_PERSONA"`
 	RestrictToWorkspace       bool                `json:"restrict_to_workspace"                env:"PICOCLAW_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE"`
 	AllowReadOutsideWorkspace bool                `json:"allow_read_outside_workspace"         env:"PICOCLAW_AGENTS_DEFAULTS_ALLOW_READ_OUTSIDE_WORKSPACE"`
 	Provider                  string              `json:"provider"                             env:"PICOCLAW_AGENTS_DEFAULTS_PROVIDER"`

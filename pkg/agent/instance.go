@@ -59,6 +59,10 @@ type AgentInstance struct {
 	TaskStateEnabled   bool
 	TaskStateBudget    int
 	TaskStateResidency string
+	// Hal9001 selects the HAL9001 conversational persona (chat-first
+	// instructions, curated visible tools, Dave-protocol refusals). It
+	// never changes memory boundaries, isolation, or tool availability.
+	Hal9001            bool
 	Definition         AgentContextDefinition
 	Subagents          *config.SubagentsConfig
 	SkillsFilter       []string
@@ -125,6 +129,11 @@ func NewAgentInstance(
 
 	model := resolveAgentModel(agentCfg, defaults, definition)
 	fallbacks := resolveAgentFallbacks(agentCfg, defaults)
+
+	// HAL9001 conversational persona: chat-first instructions and a curated
+	// visible tool set. Coding profile (explicit action mode) takes
+	// precedence when enabled.
+	hal9001 := Hal9001Enabled(defaults.Persona)
 
 	restrict := defaults.RestrictToWorkspace
 	readRestrict := restrict && !defaults.AllowReadOutsideWorkspace
@@ -198,6 +207,16 @@ func NewAgentInstance(
 		}
 	}
 
+	// HAL9001 Prompt Workshop: deterministic brief builder and prompt
+	// reviewer. Registered (but not yet made visible) here so the
+	// visibility profile applied later in agent_init can expose them.
+	// Coding profile takes precedence for visibility; registration itself
+	// is harmless either way.
+	if hal9001 {
+		toolsRegistry.Register(&tools.DraftPromptTool{})
+		toolsRegistry.Register(&tools.ReviewPromptTool{})
+	}
+
 	sessionsDir := filepath.Join(workspace, "sessions")
 	sessions := initSessionStore(sessionsDir, cfg.Session.DurableWritesEnabled())
 
@@ -207,7 +226,8 @@ func NewAgentInstance(
 			mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseBM25,
 			mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseRegex,
 		).
-		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
+		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker).
+		WithPersona(defaults.Persona)
 
 	mpmRequested := strings.TrimSpace(os.Getenv("DEEPCLAW_MPM_ENABLED")) == "1"
 	mpmRetriever, mpmInitErr := mpm.NewRetrieverFromEnv()
@@ -449,6 +469,7 @@ func NewAgentInstance(
 		TaskStateEnabled:        taskStateEnabled,
 		TaskStateBudget:         taskStateBudget,
 		TaskStateResidency:      taskStateResidency,
+		Hal9001:                 hal9001,
 		Tools:                   toolsRegistry,
 		Definition:              definition,
 		Subagents:               subagents,

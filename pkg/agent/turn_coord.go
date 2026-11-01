@@ -248,6 +248,16 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		ts.setPhase(TurnPhaseRunning)
 		ctrl, callErr := pipeline.CallLLM(ctx, turnCtx, ts, exec, iteration)
 		if callErr != nil {
+			// Dave Protocol (HAL9001 only): a provider-side safety block
+			// surfaces as the exact refusal line instead of a technical
+			// error, persisted through the normal finalize path.
+			if ts.agent != nil && ts.agent.Hal9001 && IsSafetyRefusal(nil, callErr) {
+				result, finalizeErr := pipeline.Finalize(ctx, turnCtx, ts, exec, TurnEndStatusCompleted, DaveRefusalLine)
+				if finalizeErr != nil {
+					turnStatus = TurnEndStatusError
+				}
+				return result, finalizeErr
+			}
 			turnStatus = TurnEndStatusError
 			return turnResult{}, callErr
 		}

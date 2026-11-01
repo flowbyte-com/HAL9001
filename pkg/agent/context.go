@@ -22,11 +22,15 @@ import (
 )
 
 type ContextBuilder struct {
-	workspace      string
-	skillsLoader   *skills.SkillsLoader
-	memory         *MemoryStore
-	splitOnMarker  bool
-	deepClawMode   bool
+	workspace     string
+	skillsLoader  *skills.SkillsLoader
+	memory        *MemoryStore
+	splitOnMarker bool
+	deepClawMode  bool
+	// hal9001 selects the HAL9001 conversational persona: chat-first
+	// identity, no eager tool-use rule, curated visible tools. It never
+	// changes memory boundaries or isolation.
+	hal9001        bool
 	agentDiscovery func(agentID string) []AgentDescriptor
 	promptRegistry *PromptRegistry
 
@@ -69,6 +73,13 @@ func (cb *ContextBuilder) WithToolDiscovery(useBM25, useRegex bool) *ContextBuil
 
 func (cb *ContextBuilder) WithSplitOnMarker(enabled bool) *ContextBuilder {
 	cb.splitOnMarker = enabled
+	return cb
+}
+
+// WithPersona selects a conversational persona for prompt construction.
+// Only "hal9001" changes behavior today; anything else is the default.
+func (cb *ContextBuilder) WithPersona(persona string) *ContextBuilder {
+	cb.hal9001 = Hal9001Enabled(persona)
 	return cb
 }
 
@@ -148,6 +159,9 @@ func (cb *ContextBuilder) promptRegistryOrDefault() *PromptRegistry {
 func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 	workspacePath, _ := filepath.Abs(filepath.Join(cb.workspace))
 	version := config.FormatVersion()
+	if cb.hal9001 {
+		return Hal9001Identity(version, workspacePath)
+	}
 	rules := []string{}
 	if includeToolUseRule {
 		rules = append(rules, toolUseSystemPromptRule())
@@ -230,7 +244,9 @@ func (cb *ContextBuilder) BuildSystemPrompt() string {
 func (cb *ContextBuilder) BuildSystemPromptParts() []PromptPart {
 	return cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeSkillCatalog: true,
-		IncludeToolUseRule:  true,
+		// HAL9001 replaces the always-use-tools rule with chat-first
+		// guidance carried in its own identity block.
+		IncludeToolUseRule: !cb.hal9001,
 	})
 }
 

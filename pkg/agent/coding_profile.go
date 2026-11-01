@@ -92,6 +92,29 @@ func applyCodingProfile(agent *AgentInstance) []string {
 	return visible
 }
 
+// enableHal9001Profile installs the chat-first visible tool set on every
+// HAL9001 agent in the registry. Tools are already registered (including
+// the workshop tools from NewAgentInstance); this only narrows what the
+// provider sees. Agents without the persona are untouched, and coding
+// profile takes precedence (callers check that first).
+func enableHal9001Profile(registry *AgentRegistry) {
+	for _, agentID := range registry.ListAgentIDs() {
+		agent, ok := registry.GetAgent(agentID)
+		if !ok || agent == nil || !agent.Hal9001 || agent.Tools == nil {
+			continue
+		}
+		if agent.Tools.HasVisibilityProfile() {
+			continue
+		}
+		visible := Hal9001DefaultVisibleTools()
+		agent.Tools.SetVisibleTools(visible)
+		logger.InfoCF("agent", "HAL9001 chat-first tool profile enabled", map[string]any{
+			"agent_id": agentID,
+			"tools":    agent.Tools.VisibleToolNames(),
+		})
+	}
+}
+
 func enableCodingProfile(registry *AgentRegistry) {
 	for _, agentID := range registry.ListAgentIDs() {
 		agent, ok := registry.GetAgent(agentID)
