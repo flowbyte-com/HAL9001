@@ -44,6 +44,10 @@ type CodingTask struct {
 	Criteria              []CodingCriterion
 	Constraints           CodingConstraints
 	EvidenceReuseTests    []string
+	// EvidenceMarkers are dry-run-specific strings whose presence proves
+	// the finding survived. Used by the 005G eligibility gate; empty
+	// means the gate cannot evaluate retention.
+	EvidenceMarkers []string
 
 	Files       map[string][]byte
 	Modes       map[string]os.FileMode
@@ -75,6 +79,7 @@ type codingTaskManifest struct {
 	Criteria              []CodingCriterion `json:"criteria"`
 	Constraints           CodingConstraints `json:"constraints"`
 	EvidenceReuseTests    []string          `json:"evidence_reuse_tests"`
+	EvidenceMarkers       []string          `json:"evidence_markers,omitempty"`
 }
 
 // CodingTaskIDs lists every embedded 005A assignment, sorted for deterministic
@@ -128,6 +133,7 @@ func LoadCodingTask(id string) (CodingTask, error) {
 		Criteria:              append([]CodingCriterion(nil), manifest.Criteria...),
 		Constraints:           manifest.Constraints,
 		EvidenceReuseTests:    append([]string(nil), manifest.EvidenceReuseTests...),
+		EvidenceMarkers:       append([]string(nil), manifest.EvidenceMarkers...),
 	}
 	if task.ContextWindow <= 0 {
 		task.ContextWindow = 32768
@@ -259,6 +265,20 @@ func validateCodingTask(task CodingTask) error {
 				return fmt.Errorf("criterion %s references unknown hidden test %q", criterion.ID, criterion.Test)
 			}
 			covered[criterion.Test] = true
+		case "agent_test":
+			// Agent-created regression tests (prescribed by name in the
+			// prompt) are scored from the same test run. They must not
+			// shadow hidden acceptance tests.
+			if strings.TrimSpace(criterion.Test) == "" {
+				return fmt.Errorf("criterion %s agent_test needs a test name", criterion.ID)
+			}
+			if hidden[criterion.Test] {
+				return fmt.Errorf("criterion %s agent_test %q collides with a hidden test", criterion.ID, criterion.Test)
+			}
+		case "file_contains":
+			if strings.TrimSpace(criterion.Path) == "" || strings.TrimSpace(criterion.Pattern) == "" {
+				return fmt.Errorf("criterion %s file_contains needs path and pattern", criterion.ID)
+			}
 		default:
 			return fmt.Errorf("criterion %s has unknown kind %q", criterion.ID, criterion.Kind)
 		}

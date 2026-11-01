@@ -500,6 +500,14 @@ func codingMockTurn(task, lastUser string) string {
 			return "t2"
 		}
 		return "t1"
+	case "tiered_migration":
+		if strings.Contains(lastUser, "Finish the tier work") {
+			return "t3"
+		}
+		if strings.Contains(lastUser, "Run the checks again") {
+			return "t2"
+		}
+		return "t1"
 	default:
 		return "t1"
 	}
@@ -693,6 +701,86 @@ func ParseInt(s string) (int, error) {
 			mockBash("sh check.sh"),
 			mockSay("ParseInt is fixed; ParseList still fails."),
 		}
+	case "tiered_migration":
+		if turn == "t3" {
+			return []codingMockAction{
+				mockRead("round.go"),
+				mockWrite("regression_test.go", `package tiers
+
+import "testing"
+
+// TestG4Regression pins the original mis-mapping: G4 (edge 1000) used to
+// migrate to 800 (the next tier up) instead of 650.
+func TestG4Regression(t *testing.T) {
+	if got := Migrate("G4"); got == 800 {
+		t.Fatalf("regression: Migrate(G4) = 800, want the fixed mapping")
+	}
+	if got := Migrate("G4"); got != 650 {
+		t.Fatalf("Migrate(G4) = %d, want 650", got)
+	}
+}
+`),
+				mockBash("sh check.sh"),
+				mockRead("round.go"),
+				mockWrite("round.go", `package tiers
+
+import "math"
+
+// RoundEdge rounds a currency amount to the nearest cent. Exact halves
+// round to the nearest even cent (banker's rounding).
+func RoundEdge(amount float64) int {
+	return int(math.RoundToEven(amount))
+}
+`),
+				mockBash("sh check.sh"),
+				mockSay("The rounding helper now matches the dry-run mapping."),
+			}
+		}
+		if turn == "t2" {
+			return []codingMockAction{
+				mockBash("sh check.sh"),
+				mockSay("Only TestRoundEdgeTies still fails."),
+			}
+		}
+		return []codingMockAction{
+			mockBash("sh check.sh"),
+			mockRead("legacy.go"),
+			mockRead("tiers.go"),
+			mockBash("go test -run TestDryRunMapping -v ./..."),
+			mockWrite("legacy.go", `package tiers
+
+// LegacyTier is one row of the retired legacy table. Codes are old-style
+// ("G1".."G7"); edges match the current table one to one.
+type LegacyTier struct {
+	Code      string
+	EdgeCents int
+}
+
+var legacyTable = []LegacyTier{
+	{Code: "G1", EdgeCents: 100},
+	{Code: "G2", EdgeCents: 250},
+	{Code: "G3", EdgeCents: 500},
+	{Code: "G4", EdgeCents: 1000},
+	{Code: "G5", EdgeCents: 2500},
+	{Code: "G6", EdgeCents: 5000},
+	{Code: "G7", EdgeCents: 10000},
+}
+
+// Migrate maps a legacy tier code to its current rate in cents. An amount
+// sitting exactly on a tier edge belongs to that tier.
+func Migrate(code string) int {
+	for _, tier := range legacyTable {
+		if code != tier.Code {
+			continue
+		}
+		return RateFor(tier.EdgeCents)
+	}
+	return -1
+}
+`),
+			mockBash("sh check.sh"),
+			mockSay("G4 now maps to its own tier; the rounding helper still fails as expected."),
+		}
 	}
 	return nil
 }
@@ -752,7 +840,7 @@ func mockSummaryLine(value string, limit int) string {
 // like the live trial that fixed balance.go and then looped).
 
 func verboseCodingMockActions(task, turn string, base []codingMockAction, iters int) []codingMockAction {
-	if task != "compaction_ledger" {
+	if task != "compaction_ledger" && task != "tiered_migration" {
 		return base
 	}
 	// iters <= 0 selects the live shape: 20 tool actions per turn with no
@@ -771,6 +859,16 @@ func verboseCodingMockActions(task, turn string, base []codingMockAction, iters 
 		mockRead("validate.go"),
 		mockBash("sh check.sh"),
 		mockRead("ledger_test.go"),
+	}
+	if task == "tiered_migration" {
+		filler = []codingMockAction{
+			mockBash("sh check.sh"),
+			mockRead("legacy.go"),
+			mockBash("go test -run TestDryRunMapping -v ./..."),
+			mockRead("tiers.go"),
+			mockBash("sh check.sh"),
+			mockRead("round.go"),
+		}
 	}
 	tools := func(actions []codingMockAction) []codingMockAction {
 		var out []codingMockAction

@@ -1,0 +1,110 @@
+{
+  "criteria": [
+    {
+      "description": "The repository builds",
+      "id": "build",
+      "kind": "build",
+      "mandatory": true,
+      "points": 1
+    },
+    {
+      "description": "All checked-in public tests pass",
+      "id": "public_tests",
+      "kind": "public_tests",
+      "mandatory": true,
+      "points": 1
+    },
+    {
+      "id": "mapping_exact",
+      "kind": "test",
+      "test": "TestMigrateExactHidden",
+      "points": 3,
+      "mandatory": true
+    },
+    {
+      "id": "mapping_idempotent",
+      "kind": "test",
+      "test": "TestMigrateIdempotentHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "rounding_ties",
+      "kind": "test",
+      "test": "TestRoundEdgeBankersHidden",
+      "points": 2,
+      "mandatory": true
+    },
+    {
+      "id": "rounding_nontie",
+      "kind": "test",
+      "test": "TestRoundEdgeNonTieHidden",
+      "points": 1,
+      "mandatory": true
+    },
+    {
+      "id": "regression_runs",
+      "kind": "agent_test",
+      "test": "TestG4Regression",
+      "points": 2,
+      "mandatory": true,
+      "description": "The agent-pinned regression test runs and passes"
+    },
+    {
+      "id": "regression_pins",
+      "kind": "file_contains",
+      "path": "regression_test.go",
+      "pattern": "800",
+      "points": 1,
+      "mandatory": true,
+      "description": "The regression test records the exact pre-fix wrong rate"
+    }
+  ],
+  "constraints": {
+    "forbid_nested_go_mod": true,
+    "forbidden_files": [
+      "go.work",
+      "go.work.sum"
+    ],
+    "protected_files": [
+      "migrate_test.go",
+      "round_test.go",
+      "go.mod",
+      "README.md"
+    ],
+    "wrong_fix_patterns": [
+      "legacyTable\\[i\\+1\\]\\.EdgeCents"
+    ]
+  },
+  "context_window": 32768,
+  "desired_behavior": "Migrate maps each legacy code to its own tier rate (G4 edge 1000 -> 650); RoundEdge uses banker's rounding for exact halves; a TestG4Regression test pins the original 800 mis-mapping.",
+  "evidence_reuse_tests": [
+    "TestMigrateExactHidden"
+  ],
+  "id": "tiered_migration",
+  "interruption": "compaction",
+  "max_tokens": 1024,
+  "max_tool_iterations": 20,
+  "no_compaction": false,
+  "summarize_token_percent": 75,
+  "title": "Tiered migration with a dry-run mapping",
+  "turns": [
+    {
+      "id": "t1",
+      "prompt": "The legacy tier migration maps one tier to the wrong rate. Run the dry-run mapping test to see the full legacy-to-current table, find the wrong tier, fix `Migrate`, and get `./check.sh` passing. The rounding helper may still fail; leave it for the next step and report what still fails after you run `./check.sh`."
+    },
+    {
+      "id": "t2",
+      "prompt": "Run the checks again and confirm exactly which failure remains."
+    },
+    {
+      "id": "t3",
+      "prompt": "Finish the tier work. First fix the rounding helper to match the dry-run mapping: amounts exactly halfway between cents at tier edges round to the nearest even cent. Then pin the original bug with a regression test named TestG4Regression in a new regression_test.go: it must assert the current correct rate for G4 and record the exact wrong rate from your dry run (800) so a regression would fail. It must pass now. Use the mapping you already computed.",
+      "compact_before": true
+    }
+  ],
+  "evidence_markers": [
+    "tier G7: legacy 10000 delta +0",
+    "tier G6: legacy 5000 delta +0"
+  ]
+}

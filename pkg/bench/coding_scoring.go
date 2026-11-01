@@ -78,7 +78,7 @@ func ScoreCodingTask(task CodingTask, workspace, workDir string) (CodingOutcome,
 	}
 
 	outcome.Checks, outcome.PointsEarned, outcome.PointsTotal = evaluateCodingCriteria(
-		task, outcome.BuildOK, outcome.PublicTestsPassed, outcome.PublicTestsFailed, testRun,
+		task, repoDir, outcome.BuildOK, outcome.PublicTestsPassed, outcome.PublicTestsFailed, testRun,
 	)
 	outcome.Partial = 0
 	if outcome.PointsTotal > 0 {
@@ -372,6 +372,7 @@ func runCodingTests(dir string, env []string, timeout time.Duration) (string, go
 
 func evaluateCodingCriteria(
 	task CodingTask,
+	repoDir string,
 	buildOK bool,
 	publicPassed, publicFailed int,
 	tests goTestRun,
@@ -393,18 +394,24 @@ func evaluateCodingCriteria(
 		case "public_tests":
 			check.Passed = publicFailed == 0 && publicPassed > 0
 			check.Detail = fmt.Sprintf("public tests passed=%d failed=%d", publicPassed, publicFailed)
-		case "test":
+		case "test", "agent_test":
 			check.Passed = tests.passed[criterion.Test]
+			label := "hidden test"
+			if criterion.Kind == "agent_test" {
+				label = "agent regression test"
+			}
 			switch {
 			case check.Passed:
-				check.Detail = "hidden test passed"
+				check.Detail = label + " passed"
 			case tests.failed[criterion.Test]:
-				check.Detail = "hidden test failed"
+				check.Detail = label + " failed"
 			case tests.skipped[criterion.Test]:
-				check.Detail = "hidden test was skipped"
+				check.Detail = label + " was skipped"
 			default:
-				check.Detail = "hidden test was not reported (build or compile failure)"
+				check.Detail = label + " was not reported (build or compile failure)"
 			}
+		case "file_contains":
+			check.Passed, check.Detail = checkFileContains(repoDir, criterion)
 		default:
 			check.Detail = "unknown criterion kind"
 		}
@@ -703,4 +710,26 @@ func summarizeCodingPairs(trials []TrialResult) ([]CodingPair, *CodingSummary) {
 		summary.MeanRepeatedReadDelta /= divisor
 	}
 	return pairs, summary
+}
+
+// checkFileContains verifies that a file created by the agent exists in the
+// resulting repository and records required evidence (for example, a pinned
+// pre-fix value in a regression test). Patterns are matched as regular
+// expressions against the file content.
+func checkFileContains(repoDir string, criterion CodingCriterion) (bool, string) {
+	if strings.TrimSpace(criterion.Path) == "" || strings.TrimSpace(criterion.Pattern) == "" {
+		return false, "file_contains criterion is missing path or pattern"
+	}
+	data, err := os.ReadFile(filepath.Join(repoDir, filepath.FromSlash(criterion.Path)))
+	if err != nil {
+		return false, "file not present: " + criterion.Path
+	}
+	matched, err := regexp.MatchString(criterion.Pattern, string(data))
+	if err != nil {
+		return false, "invalid required pattern: " + criterion.Pattern
+	}
+	if !matched {
+		return false, "required evidence not recorded in " + criterion.Path
+	}
+	return true, "required evidence recorded in " + criterion.Path
 }

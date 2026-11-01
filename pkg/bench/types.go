@@ -284,11 +284,15 @@ type Score struct {
 // CodingCriterion is one independently checkable part of a coding task.
 type CodingCriterion struct {
 	ID          string `json:"id"`
-	Kind        string `json:"kind"` // build|public_tests|test
+	Kind        string `json:"kind"` // build|public_tests|test|file_contains
 	Test        string `json:"test,omitempty"`
 	Points      int    `json:"points"`
 	Mandatory   bool   `json:"mandatory"`
 	Description string `json:"description,omitempty"`
+	// FileContains carries the path/pattern for kind file_contains: the
+	// named file must exist in the resulting repository and match.
+	Path    string `json:"path,omitempty"`
+	Pattern string `json:"pattern,omitempty"`
 }
 
 // CodingConstraints are checks that do not depend on the desired behavior and
