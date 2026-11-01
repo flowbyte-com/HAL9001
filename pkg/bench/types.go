@@ -73,6 +73,17 @@ type TrialSpec struct {
 	RandomSeed            int64  `json:"random_seed,omitempty"`
 	MPMDisabled           bool   `json:"mpm_disabled,omitempty"`
 	ResidentCacheDisabled bool   `json:"resident_cache_disabled,omitempty"`
+
+	// 005A segmented execution. A restart trial is split at RestartBefore and
+	// each segment runs in a fresh OS process while sharing the trial
+	// workspace, session store and task-state sidecar.
+	TurnStart       int    `json:"turn_start,omitempty"`
+	TurnEnd         int    `json:"turn_end,omitempty"`
+	Resume          bool   `json:"resume,omitempty"`
+	Segment         int    `json:"segment,omitempty"`
+	SegmentCount    int    `json:"segment_count,omitempty"`
+	SkipScoring     bool   `json:"skip_scoring,omitempty"`
+	RequestIDPrefix string `json:"request_id_prefix,omitempty"`
 }
 
 type TurnSpec struct {
@@ -428,6 +439,7 @@ type TrialResult struct {
 	Repetition     int    `json:"repetition"`
 	SequenceIndex  int    `json:"sequence_index"`
 	StartingCommit string `json:"starting_commit,omitempty"`
+	ProcessStarts  int    `json:"process_starts,omitempty"`
 
 	TaskStateFinal *TaskStateSnapshot `json:"task_state_final,omitempty"`
 

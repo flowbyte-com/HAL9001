@@ -136,7 +136,7 @@ func (p *RecordingProvider) begin(
 	seq := p.next
 	p.mu.Unlock()
 
-	requestID := fmt.Sprintf("req-%03d", seq)
+	requestID := fmt.Sprintf("%sreq-%03d", p.spec.RequestIDPrefix, seq)
 	if turnID == "" {
 		turnID = "unknown"
 	}

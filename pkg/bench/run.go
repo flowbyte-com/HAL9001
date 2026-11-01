@@ -210,21 +210,11 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 			return nil, fmt.Errorf("prepare fixture %s: %w", trialID, err)
 		}
 		manifest.Order = append(manifest.Order, trialID)
-		result, err := runTrialSubprocess(runDir, spec, runner, opts.ProviderKind)
-		if err != nil {
-			result = TrialResult{
-				SchemaVersion: SchemaVersion, RunID: opts.RunID, TrialID: trialID,
-				Experiment: experiment, Condition: item.Condition, Scenario: item.Scenario,
-				Status: "error", Error: err.Error(),
-				StartedAt: nowRFC3339(), EndedAt: nowRFC3339(),
-				RawPath: spec.RawPath, LogPath: spec.LogPath,
-				PairID: item.PairID, Repetition: item.Repetition, SequenceIndex: item.SequenceIndex,
-			}
-			_ = writeJSON(spec.ResultPath, redactValue(result))
-		}
-		redactFile(spec.LogPath)
-		redactFile(filepath.Join(spec.TrialDir, "process.log"))
+		result := executeTrialSpec(runDir, spec, runner, opts.ProviderKind, item)
 		summary.Trials = append(summary.Trials, result)
+		for _, path := range append([]string{spec.LogPath}, processLogPaths(spec)...) {
+			redactFile(path)
+		}
 	}
 
 	summary.EndedAt = nowRFC3339()
@@ -430,6 +420,11 @@ func runTrialSubprocess(runDir string, spec TrialSpec, runner []string, provider
 	}
 	// The child reads the spec from DEEPCLAW_BENCH_TRIAL_SPEC, so the same
 	// invocation works for the CLI and for the test-binary helper process.
+	// Written here, not in PrepareTrial, because a restart segment carries its
+	// own turn range and result/raw paths.
+	if err := writeJSON(trialSpecPath(spec), spec); err != nil {
+		return result, fmt.Errorf("write trial spec: %w", err)
+	}
 	args := append([]string(nil), runner[1:]...)
 	cmd := exec.Command(runner[0], args...)
 	cmd.Dir = repoRoot()
@@ -438,7 +433,8 @@ func runTrialSubprocess(runDir string, spec TrialSpec, runner []string, provider
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	processLog := filepath.Join(spec.TrialDir, "process.log")
+	processLog := processLogPath(spec)
+	_ = os.MkdirAll(filepath.Dir(processLog), 0o755)
 	_ = os.WriteFile(processLog, append(append([]byte{}, stdout.Bytes()...), stderr.Bytes()...), 0o600)
 	_ = redactFileNow(processLog)
 	if data, readErr := os.ReadFile(spec.ResultPath); readErr == nil {
@@ -468,7 +464,7 @@ func trialProcessEnv(spec TrialSpec, runDir string) []string {
 		"PATH":                      trialPath(spec),
 		"DEEPCLAW_BENCH_ROOT":       runDir,
 		"DEEPCLAW_CODING_PROFILE":   boolEnv(spec.ToolProfile == "coding"),
-		"DEEPCLAW_BENCH_TRIAL_SPEC": filepath.Join(spec.TrialDir, "trial-spec.json"),
+		"DEEPCLAW_BENCH_TRIAL_SPEC": trialSpecPath(spec),
 	}
 	if spec.Experiment == "D" {
 		base["DEEPCLAW_TASK_STATE"] = boolEnv(spec.TaskState)
@@ -522,6 +518,222 @@ func firstLines(text string, n int) string {
 		lines = lines[:n]
 	}
 	return strings.Join(lines, " | ")
+}
+
+func processLogPath(spec TrialSpec) string {
+	if spec.Segment > 0 {
+		return filepath.Join(spec.TrialDir, fmt.Sprintf("process-s%d.log", spec.Segment))
+	}
+	return filepath.Join(spec.TrialDir, "process.log")
+}
+
+func trialSpecPath(spec TrialSpec) string {
+	if spec.Segment > 0 {
+		return filepath.Join(spec.TrialDir, fmt.Sprintf("trial-spec-s%d.json", spec.Segment))
+	}
+	return filepath.Join(spec.TrialDir, "trial-spec.json")
+}
+
+func processLogPaths(spec TrialSpec) []string {
+	paths, _ := filepath.Glob(filepath.Join(spec.TrialDir, "process*.log"))
+	return paths
+}
+
+type trialSegment struct {
+	start  int
+	end    int
+	resume bool
+}
+
+// trialSegments splits a D trial immediately before each RestartBefore turn.
+// Each segment runs in a new OS process but shares the trial's workspace,
+// session store and task-state sidecar. Non-D trials keep one process so the
+// existing 003F behavior is unchanged.
+func trialSegments(spec TrialSpec) []trialSegment {
+	if spec.Experiment != "D" || len(spec.Turns) == 0 {
+		return []trialSegment{{start: 0, end: len(spec.Turns)}}
+	}
+	var segments []trialSegment
+	start := 0
+	resume := false
+	for i, turn := range spec.Turns {
+		if turn.RestartBefore && i > start {
+			segments = append(segments, trialSegment{start: start, end: i, resume: resume})
+			start = i
+			resume = true
+		}
+	}
+	segments = append(segments, trialSegment{start: start, end: len(spec.Turns), resume: resume})
+	return segments
+}
+
+// executeTrialSpec runs one plan item. A restart trial is executed as multiple
+// subprocesses; the merged result is written to the ordinary result path.
+func executeTrialSpec(runDir string, spec TrialSpec, runner []string, providerKind string, item trialPlanItem) TrialResult {
+	segments := trialSegments(spec)
+	if len(segments) <= 1 {
+		spec.SegmentCount = 1
+		result, err := runTrialSubprocess(runDir, spec, runner, providerKind)
+		if err != nil && result.TrialID == "" {
+			result = TrialResult{
+				SchemaVersion: SchemaVersion, RunID: spec.RunID, TrialID: spec.TrialID,
+				Experiment: spec.Experiment, Condition: item.Condition, Scenario: item.Scenario,
+				Status: "error", Error: err.Error(),
+				StartedAt: nowRFC3339(), EndedAt: nowRFC3339(),
+				RawPath: spec.RawPath, LogPath: spec.LogPath, ResultPath: spec.ResultPath,
+				PairID: item.PairID, Repetition: item.Repetition, SequenceIndex: item.SequenceIndex,
+				StartingCommit: spec.StartingCommit, ProcessStarts: 1,
+			}
+			_ = writeJSON(spec.ResultPath, redactValue(result))
+		}
+		if result.ProcessStarts == 0 {
+			result.ProcessStarts = 1
+		}
+		return result
+	}
+
+	started := time.Now()
+	results := make([]TrialResult, 0, len(segments))
+	for i, segment := range segments {
+		segmentSpec := spec
+		segmentSpec.TurnStart = segment.start
+		segmentSpec.TurnEnd = segment.end
+		segmentSpec.Resume = segment.resume
+		segmentSpec.Segment = i + 1
+		segmentSpec.SegmentCount = len(segments)
+		segmentSpec.SkipScoring = i < len(segments)-1
+		segmentSpec.RequestIDPrefix = fmt.Sprintf("s%d-", i+1)
+		segmentSpec.RawPath = filepath.Join(spec.TrialDir, "raw", fmt.Sprintf("requests-s%d.jsonl", i+1))
+		segmentSpec.ResultPath = filepath.Join(spec.TrialDir, fmt.Sprintf("result-s%d.json", i+1))
+		result, err := runTrialSubprocess(runDir, segmentSpec, runner, providerKind)
+		if err != nil && result.TrialID == "" {
+			result = TrialResult{
+				SchemaVersion: SchemaVersion, RunID: spec.RunID, TrialID: segmentSpec.TrialID,
+				Experiment: spec.Experiment, Condition: item.Condition, Scenario: item.Scenario,
+				Status: "error", Error: err.Error(),
+				StartedAt: nowRFC3339(), EndedAt: nowRFC3339(),
+				RawPath: segmentSpec.RawPath, LogPath: segmentSpec.LogPath,
+				ResultPath: segmentSpec.ResultPath,
+				PairID:     item.PairID, Repetition: item.Repetition, SequenceIndex: item.SequenceIndex,
+				StartingCommit: spec.StartingCommit,
+			}
+			_ = writeJSON(segmentSpec.ResultPath, redactValue(result))
+		}
+		results = append(results, result)
+		if result.Status == "error" {
+			break
+		}
+	}
+
+	merged := mergeTrialSegments(spec, results, time.Since(started))
+	_ = mergeTrialRaw(merged.RawPath, results)
+	_ = writeJSON(spec.ResultPath, redactValue(merged))
+	return merged
+}
+
+func mergeTrialSegments(base TrialSpec, results []TrialResult, elapsed time.Duration) TrialResult {
+	if len(results) == 0 {
+		return TrialResult{
+			SchemaVersion: SchemaVersion, RunID: base.RunID, TrialID: base.TrialID,
+			Experiment: base.Experiment, Condition: base.Condition, Scenario: base.Scenario,
+			Status: "error", Error: "no trial segment produced a result",
+			StartedAt: nowRFC3339(), EndedAt: nowRFC3339(),
+			RawPath: base.RawPath, LogPath: base.LogPath, ResultPath: base.ResultPath,
+			ProcessStarts: 0,
+		}
+	}
+	last := results[len(results)-1]
+	merged := last
+	merged.SchemaVersion = SchemaVersion
+	merged.RunID = base.RunID
+	merged.TrialID = base.TrialID
+	merged.Experiment = base.Experiment
+	merged.Condition = base.Condition
+	merged.Scenario = base.Scenario
+	merged.RawPath = base.RawPath
+	merged.LogPath = base.LogPath
+	merged.ResultPath = base.ResultPath
+	merged.StartingCommit = base.StartingCommit
+	merged.ProcessStarts = len(results)
+	merged.StartedAt = results[0].StartedAt
+	merged.EndedAt = last.EndedAt
+	merged.DurationMS = elapsed.Milliseconds()
+	merged.Turns = nil
+	merged.Requests = nil
+	merged.ToolCalls = nil
+	merged.Preflight = mergeChecksByName(results, func(result TrialResult) []Check { return result.Preflight })
+	merged.Postflight = mergeChecksByName(results, func(result TrialResult) []Check { return result.Postflight })
+	var errs []string
+	taskStateStorage := 0
+	for _, result := range results {
+		merged.Turns = append(merged.Turns, result.Turns...)
+		merged.Requests = append(merged.Requests, result.Requests...)
+		merged.ToolCalls = append(merged.ToolCalls, result.ToolCalls...)
+		// The task-state sidecar is shared by every segment, so the last
+		// segment's measurement is the end state; summing would double count.
+		if result.Totals.TaskStateStorageBytes > 0 {
+			taskStateStorage = result.Totals.TaskStateStorageBytes
+		}
+		if result.Error != "" {
+			errs = append(errs, result.Error)
+		}
+		if result.Status != "pass" {
+			merged.Status = result.Status
+		}
+	}
+	merged.Totals = totalsFor(merged)
+	merged.Totals.E2EMS = elapsed.Milliseconds()
+	// All segments append to one trial log, so count the shared file once
+	// instead of summing per-segment counts of the same log.
+	merged.Totals.MPMRetrievalCalls = countLogMessage(base.LogPath, "MPM retrieval")
+	if taskStateStorage > 0 {
+		merged.Totals.TaskStateStorageBytes = taskStateStorage
+	}
+	if len(errs) > 0 {
+		merged.Error = strings.Join(uniqueStrings(errs), "; ")
+		merged.Status = "error"
+	}
+	if task, err := LoadCodingTask(base.CodingTask); err == nil && task.Interruption == "restart" {
+		merged.Postflight = append(merged.Postflight, Check{
+			Name: "coding_process_restart", Passed: len(results) >= 2,
+			Detail: fmt.Sprintf("segments=%d", len(results)),
+		})
+		if merged.Status == "pass" && len(results) < 2 {
+			merged.Status = "fail"
+			merged.Error = "restart task did not run in a new process"
+		}
+	}
+	return merged
+}
+
+func mergeChecksByName(results []TrialResult, pick func(TrialResult) []Check) []Check {
+	seen := map[string]bool{}
+	var out []Check
+	for _, result := range results {
+		for _, check := range pick(result) {
+			if seen[check.Name] {
+				continue
+			}
+			seen[check.Name] = true
+			out = append(out, check)
+		}
+	}
+	return out
+}
+
+func mergeTrialRaw(dst string, results []TrialResult) error {
+	var b strings.Builder
+	for _, result := range results {
+		data, err := os.ReadFile(result.RawPath)
+		if err != nil {
+			continue
+		}
+		b.Write(data)
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			b.WriteByte('\n')
+		}
+	}
+	return writeFilePrivate(dst, []byte(RedactSecrets(b.String())))
 }
 
 func redactFile(path string) {

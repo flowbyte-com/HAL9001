@@ -286,13 +286,27 @@ func TestExperimentDMockRun(t *testing.T) {
 			}
 		case "restart_parser":
 			restarted := false
+			resumedHistory := 0
 			for _, turn := range trial.Turns {
 				if turn.Restarted {
 					restarted = true
+					resumedHistory = turn.HistoryBefore
 				}
 			}
 			if !restarted {
 				t.Fatalf("%s did not exercise restart", trial.TrialID)
+			}
+			// 005A requires a real process restart, not an in-process loop
+			// rebuild: the trial must span at least two OS processes and the
+			// resumed process must see the earlier session history.
+			if trial.ProcessStarts < 2 {
+				t.Fatalf("%s ran in %d process(es), want at least 2", trial.TrialID, trial.ProcessStarts)
+			}
+			if resumedHistory == 0 {
+				t.Fatalf("%s resumed with empty history", trial.TrialID)
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(trial.ResultPath), "result-s2.json")); err != nil {
+				t.Fatalf("%s has no second segment result: %v", trial.TrialID, err)
 			}
 		}
 	}
@@ -305,4 +319,42 @@ func mustTask(t *testing.T, taskID string) CodingTask {
 		t.Fatalf("load %s: %v", taskID, err)
 	}
 	return task
+}
+
+func TestTrialSegmentsSplitOnlyAtRestart(t *testing.T) {
+	turns := []TurnSpec{
+		{ID: "t1"},
+		{ID: "t2", RestartBefore: true},
+		{ID: "t3"},
+		{ID: "t4", RestartBefore: true},
+	}
+	segments := trialSegments(TrialSpec{Experiment: "D", Turns: turns})
+	want := []trialSegment{
+		{start: 0, end: 1, resume: false},
+		{start: 1, end: 3, resume: true},
+		{start: 3, end: 4, resume: true},
+	}
+	if len(segments) != len(want) {
+		t.Fatalf("segments = %+v, want %+v", segments, want)
+	}
+	for i := range want {
+		if segments[i] != want[i] {
+			t.Fatalf("segment %d = %+v, want %+v", i, segments[i], want[i])
+		}
+	}
+
+	// Experiments A-C must keep their single-process behavior.
+	single := trialSegments(TrialSpec{Experiment: "C", Turns: turns})
+	if len(single) != 1 || single[0] != (trialSegment{start: 0, end: 4}) {
+		t.Fatalf("non-D segments = %+v, want one process over every turn", single)
+	}
+
+	// A restart marker on the first turn has no earlier segment to preserve,
+	// so it stays in the initial process.
+	firstMarker := trialSegments(TrialSpec{Experiment: "D", Turns: []TurnSpec{
+		{ID: "t1", RestartBefore: true}, {ID: "t2"},
+	}})
+	if len(firstMarker) != 1 {
+		t.Fatalf("leading restart marker produced %+v, want one segment", firstMarker)
+	}
 }

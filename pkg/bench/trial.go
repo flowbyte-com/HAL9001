@@ -354,7 +354,7 @@ func RunTrial(spec TrialSpec) TrialResult {
 		Status: "error", StartedAt: started.UTC().Format(time.RFC3339Nano),
 		RawPath: spec.RawPath, LogPath: spec.LogPath, ResultPath: spec.ResultPath,
 		PairID: spec.PairID, Repetition: spec.Repetition, SequenceIndex: spec.SequenceIndex,
-		StartingCommit: spec.StartingCommit,
+		StartingCommit: spec.StartingCommit, ProcessStarts: 1,
 	}
 	fail := func(err error) TrialResult {
 		result.Error = err.Error()
@@ -462,13 +462,29 @@ func RunTrial(spec TrialSpec) TrialResult {
 
 	ctx := context.Background()
 	requestCursor := 0
-	for i, turn := range spec.Turns {
+	turnStartIndex, turnEndIndex := spec.TurnStart, spec.TurnEnd
+	if turnStartIndex < 0 {
+		turnStartIndex = 0
+	}
+	if turnEndIndex <= 0 || turnEndIndex > len(spec.Turns) {
+		turnEndIndex = len(spec.Turns)
+	}
+	if turnStartIndex > turnEndIndex {
+		turnStartIndex = turnEndIndex
+	}
+	for i, turn := range spec.Turns[turnStartIndex:turnEndIndex] {
+		restarted := turn.RestartBefore
 		if turn.RestartBefore {
-			closeLoop()
-			loop, instance = newLoop()
-			closed = false
-			if instance == nil {
-				return fail(fmt.Errorf("restart produced no default agent"))
+			// A resumed segment already runs in a new OS process. Do not close
+			// and rebuild the loop again just because the first turn carries
+			// the original restart marker.
+			if !(spec.Resume && i == 0) {
+				closeLoop()
+				loop, instance = newLoop()
+				closed = false
+				if instance == nil {
+					return fail(fmt.Errorf("restart produced no default agent"))
+				}
 			}
 		}
 		historyBefore := sessionHistoryLen(ctx, instance, spec.SessionKey)
@@ -512,7 +528,7 @@ func RunTrial(spec TrialSpec) TrialResult {
 			DurationMS:    time.Since(turnStart).Milliseconds(),
 			HistoryBefore: historyBefore, HistoryAfter: sessionHistoryLen(ctx, instance, spec.SessionKey),
 			SummaryCharsBefore: summaryBefore, SummaryCharsAfter: sessionSummaryLen(ctx, instance, spec.SessionKey),
-			HistoryCleared: cleared, Restarted: turn.RestartBefore, Compacted: compacted,
+			HistoryCleared: cleared, Restarted: restarted, Compacted: compacted,
 			Requests: len(recorder.Requests()) - requestCursor,
 		}
 		turnRequests := recorder.Requests()
@@ -565,7 +581,7 @@ func RunTrial(spec TrialSpec) TrialResult {
 	if spec.TaskState {
 		result.TaskStateFinal = taskStateSnapshot(instance, spec.SessionKey, spec.TaskStateBudget)
 	}
-	if spec.Experiment == "D" {
+	if spec.Experiment == "D" && !spec.SkipScoring {
 		result.Score = Score{Notes: []string{"independently scored from the resulting repository; not a prompt diagnostic"}}
 		outcome, scoreErr := scoreCodingResult(spec, result, started)
 		if scoreErr != nil {
@@ -582,7 +598,7 @@ func RunTrial(spec TrialSpec) TrialResult {
 					"constraint violations: "+strings.Join(outcome.ConstraintViolations, ", "))
 			}
 		}
-	} else {
+	} else if spec.Experiment != "D" {
 		result.Score = scoreTrial(spec, result.Turns, result.AnswerFoundInWorkspace)
 	}
 	if spec.Experiment == "C" {
@@ -681,13 +697,20 @@ func pathWithin(parent, child string) bool {
 }
 
 func preflightChecks(spec TrialSpec, instance *agent.AgentInstance, modelID string) []Check {
+	sessionFilesNow := sessionFiles(spec.AgentWorkspace)
+	sessionOK := len(sessionFilesNow) == 0
+	if spec.Resume {
+		sessionOK = len(sessionFilesNow) > 0
+	}
+	activeMemoryDir := filepath.Join(spec.AgentWorkspace, ".deepclaw", "active-memory")
+	activeMemoryOK := !hasFiles(activeMemoryDir)
 	checks := []Check{
 		{Name: "trial_dirs_absolute", Passed: true, Detail: spec.TrialDir},
 		{Name: "session_key_explicit", Passed: ValidateSessionKey(spec.SessionKey) == nil, Detail: spec.SessionKey},
 		{Name: "tool_profile_four", Passed: true},
 		{Name: "isolation_enabled", Passed: !spec.Isolation || isolation.CurrentConfig().Enabled},
-		{Name: "no_pre_existing_session", Passed: len(sessionFiles(spec.AgentWorkspace)) == 0},
-		{Name: "no_pre_existing_active_memory", Passed: !hasFiles(filepath.Join(spec.AgentWorkspace, ".deepclaw", "active-memory"))},
+		{Name: "no_pre_existing_session", Passed: sessionOK, Detail: fmt.Sprintf("resume=%t sessions=%d", spec.Resume, len(sessionFilesNow))},
+		{Name: "no_pre_existing_active_memory", Passed: activeMemoryOK, Detail: fmt.Sprintf("resume=%t", spec.Resume)},
 		{Name: "provider_model_recorded", Passed: strings.TrimSpace(modelID) != ""},
 		{Name: "provider_config_outside_agent_paths", Passed: validateProviderConfigLocation(spec) == nil},
 	}
@@ -702,10 +725,14 @@ func preflightChecks(spec TrialSpec, instance *agent.AgentInstance, modelID stri
 				protected = true
 			}
 		}
+		sidecarOK := !hasFiles(dir)
+		if spec.Resume {
+			sidecarOK = hasFiles(dir)
+		}
 		checks = append(checks,
 			Check{Name: "task_state_outside_workspace", Passed: dir != "" && !pathWithin(spec.AgentWorkspace, dir), Detail: dir},
 			Check{Name: "task_state_protected", Passed: protected, Detail: dir},
-			Check{Name: "task_state_no_pre_existing_sidecar", Passed: !hasFiles(dir), Detail: dir},
+			Check{Name: "task_state_no_pre_existing_sidecar", Passed: sidecarOK, Detail: dir},
 		)
 	}
 	names := sortedCopy(instance.Tools.List())
@@ -761,10 +788,26 @@ func preflightChecks(spec TrialSpec, instance *agent.AgentInstance, modelID stri
 				Detail: os.Getenv("DEEPCLAW_ACTIVE_MEMORY")},
 		)
 		if taskOK {
-			sha, shaErr := CodingWorkspaceSHA(spec.AgentWorkspace)
+			if !spec.Resume {
+				sha, shaErr := CodingWorkspaceSHA(spec.AgentWorkspace)
+				checks = append(checks, Check{Name: "coding_fixture_clean", Passed: shaErr == nil && sha == spec.FixtureSHA,
+					Detail: spec.FixtureSHA})
+			} else {
+				// The resumed process must find the earlier session on disk. The
+				// session store lives in PICOCLAW_HOME, not the workspace, so the
+				// check reads its state rather than shelling out to git.
+				history := sessionHistoryLen(context.Background(), instance, spec.SessionKey)
+				sidecarOK := true
+				if spec.TaskState {
+					sidecarOK = instance.ActiveMemory != nil && hasFiles(instance.ActiveMemory.Dir())
+				}
+				checks = append(checks, Check{
+					Name:   "coding_resume_state_present",
+					Passed: history > 0 && sidecarOK,
+					Detail: fmt.Sprintf("history=%d task_state=%t", history, sidecarOK),
+				})
+			}
 			checks = append(checks,
-				Check{Name: "coding_fixture_clean", Passed: shaErr == nil && sha == spec.FixtureSHA,
-					Detail: spec.FixtureSHA},
 				Check{Name: "coding_hidden_tests_absent", Passed: len(presentHiddenTests(spec.AgentWorkspace, task)) == 0,
 					Detail: strings.Join(presentHiddenTests(spec.AgentWorkspace, task), ",")},
 			)
@@ -834,7 +877,7 @@ func scoreCodingResult(spec TrialSpec, result TrialResult, started time.Time) (*
 }
 
 func codingPostflightChecks(spec TrialSpec, result TrialResult) []Check {
-	if spec.Experiment != "D" {
+	if spec.Experiment != "D" || spec.SkipScoring {
 		return nil
 	}
 	task, taskErr := LoadCodingTask(spec.CodingTask)
