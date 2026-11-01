@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 func applyMockWrites(t *testing.T, workspace string, actions []codingMockAction) {
@@ -362,5 +364,94 @@ func TestTrialSegmentsSplitOnlyAtRestart(t *testing.T) {
 	}})
 	if len(firstMarker) != 1 {
 		t.Fatalf("leading restart marker produced %+v, want one segment", firstMarker)
+	}
+}
+
+func TestTokenBudgetStopsTrialBeforeFirstRequest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("budget guard test runs an isolated mock trial")
+	}
+	out := t.TempDir()
+	summary, err := RunExperiment(RunOptions{
+		Experiment: "D", RunID: "005b-budget-trip", OutDir: out,
+		ProviderKind: "mock", ModelName: "mock-003f", Trials: 1,
+		Scenarios:           []string{"multi_file_cart"},
+		Conditions:          []string{CodingConditionControl},
+		TrialRunner:         testRunner(t),
+		TokenBudgetPerTrial: 50, TokenBudgetTotal: 100,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(summary.Trials) != 1 {
+		t.Fatalf("trials = %d, want 1", len(summary.Trials))
+	}
+	trial := summary.Trials[0]
+	if trial.Status != "error" {
+		t.Fatalf("status = %q, want error", trial.Status)
+	}
+	if !trial.TokenBudgetStopped {
+		t.Fatal("TokenBudgetStopped = false, want true")
+	}
+	if !strings.Contains(trial.Error, "token budget exhausted") {
+		t.Fatalf("error = %q, want token budget message", trial.Error)
+	}
+	if trial.Totals.LLMRequests != 0 {
+		t.Fatalf("requests = %d, want 0: the guard must refuse before contacting the provider", trial.Totals.LLMRequests)
+	}
+	if summary.TokenBudget == nil || !summary.TokenBudget.StoppedEarly {
+		t.Fatalf("budget summary = %+v, want stopped-early record", summary.TokenBudget)
+	}
+}
+
+func TestTokenBudgetMissingUsageStopsLiveTrial(t *testing.T) {
+	spec := TrialSpec{
+		Experiment: "D", ProviderKind: "live", ModelName: "test-model",
+		ContextWindow: 32768, MaxTokens: 1024,
+		TokenBudgetPerTrial: 1000000, TokenBudgetTotal: 8000000,
+	}
+	inner := NewMockProvider(spec)
+	recorder := NewRecordingProvider(inner, spec)
+	if err := recorder.requestAllowed(); err != nil {
+		t.Fatalf("first request blocked: %v", err)
+	}
+	// A successful response that reports no usable total cannot be metered.
+	recorder.finish("req-001", RawRecord{}, RequestRecord{}, time.Now(), &providers.LLMResponse{}, nil)
+	if err := recorder.requestAllowed(); err == nil || !strings.Contains(err.Error(), "metering") {
+		t.Fatalf("second request allowed or wrong error: %v", err)
+	}
+	if stopped, _ := recorder.BudgetStop(); !stopped {
+		t.Fatal("BudgetStop = false, want true")
+	}
+}
+
+func TestTokenBudgetGenerousCapsLeaveMockOutcomesUnchanged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("budget generous-cap test runs isolated mock trials")
+	}
+	out := t.TempDir()
+	summary, err := RunExperiment(RunOptions{
+		Experiment: "D", RunID: "005b-budget-ample", OutDir: out,
+		ProviderKind: "mock", ModelName: "mock-003f", Trials: 1,
+		Scenarios:           []string{"multi_file_cart", "restart_parser"},
+		TrialRunner:         testRunner(t),
+		TokenBudgetPerTrial: 1000000, TokenBudgetTotal: 8000000,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, trial := range summary.Trials {
+		if trial.Status != "pass" {
+			t.Fatalf("%s status = %q (%s), want pass", trial.TrialID, trial.Status, trial.Error)
+		}
+		if trial.TokenBudgetStopped {
+			t.Fatalf("%s stopped by an ample budget", trial.TrialID)
+		}
+		if trial.Coding == nil || !trial.Coding.FullSuccess {
+			t.Fatalf("%s coding outcome changed under ample caps", trial.TrialID)
+		}
+	}
+	if summary.TokenBudget == nil || summary.TokenBudget.StoppedEarly {
+		t.Fatalf("budget summary = %+v, want no early stop", summary.TokenBudget)
 	}
 }

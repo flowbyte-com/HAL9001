@@ -567,6 +567,12 @@ func RunTrial(spec TrialSpec) TrialResult {
 	_ = eventBus.Close()
 	<-sub.Done()
 	result.Requests = recorder.Requests()
+	// 005B: record whether the token-budget guard (or a metering failure)
+	// blocked a request. The human-readable reason is already on the failed
+	// turn and in result.Error.
+	if stopped, _ := recorder.BudgetStop(); stopped {
+		result.TokenBudgetStopped = true
+	}
 	// Executed tool calls and outcomes come from runtime events. The provider
 	// records are retained inside Requests as attempted calls; only fall back to
 	// them if event delivery produced nothing.

@@ -43,6 +43,14 @@ type RecordingProvider struct {
 	raw      []RawRecord
 	tools    []ToolCallRecord
 	next     int
+
+	// 005B token-budget enforcement state. reportedTrialTotal sums
+	// provider-reported total_tokens for requests that completed in this
+	// process; meteringFailed latches when a successful live response
+	// carries no usable total, because that spend cannot be metered.
+	reportedTrialTotal int64
+	meteringFailed     bool
+	budgetStop         string
 }
 
 func NewRecordingProvider(inner providers.LLMProvider, spec TrialSpec) *RecordingProvider {
@@ -51,6 +59,65 @@ func NewRecordingProvider(inner providers.LLMProvider, spec TrialSpec) *Recordin
 
 func (p *RecordingProvider) GetDefaultModel() string { return p.inner.GetDefaultModel() }
 
+// nextRequestAllowance is the conservative upper bound for one more request:
+// the full context window plus the per-request completion cap. The next
+// request is refused when the metered total plus this allowance would exceed
+// a ceiling, so a ceiling can never be breached by sending one more request.
+func (p *RecordingProvider) nextRequestAllowance() int64 {
+	window := p.spec.ContextWindow
+	if window <= 0 {
+		window = 32768
+	}
+	maxTokens := p.spec.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 1024
+	}
+	return int64(window) + int64(maxTokens)
+}
+
+func (p *RecordingProvider) budgetCaps() (perTrial, total, before int64) {
+	return p.spec.TokenBudgetPerTrial, p.spec.TokenBudgetTotal,
+		p.spec.PilotReportedBefore + p.spec.TrialReportedBefore
+}
+
+// requestAllowed reports whether another provider request may be sent. A nil
+// error means the request may proceed; the provider is never contacted when
+// an error is returned.
+func (p *RecordingProvider) requestAllowed() error {
+	perTrial, total, before := p.budgetCaps()
+	if perTrial <= 0 && total <= 0 {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.meteringFailed {
+		return fmt.Errorf("token metering failure: a successful live response reported no usable total; stopping instead of treating spend as zero")
+	}
+	if p.budgetStop != "" {
+		return fmt.Errorf("%s", p.budgetStop)
+	}
+	allowance := p.nextRequestAllowance()
+	metered := before + p.reportedTrialTotal
+	if perTrial > 0 && metered+allowance > perTrial {
+		p.budgetStop = fmt.Sprintf("token budget exhausted: trial reported %d + allowance %d exceeds per-trial cap %d; refusing to send another request",
+			p.reportedTrialTotal, allowance, perTrial)
+		return fmt.Errorf("%s", p.budgetStop)
+	}
+	if total > 0 && metered+allowance > total {
+		p.budgetStop = fmt.Sprintf("token budget exhausted: pilot reported %d + trial reported %d + allowance %d exceeds total cap %d; refusing to send another request",
+			before, p.reportedTrialTotal, allowance, total)
+		return fmt.Errorf("%s", p.budgetStop)
+	}
+	return nil
+}
+
+// BudgetStop reports whether the budget guard blocked a request.
+func (p *RecordingProvider) BudgetStop() (bool, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.budgetStop != "" || p.meteringFailed, p.budgetStop
+}
+
 func (p *RecordingProvider) Chat(
 	ctx context.Context,
 	messages []providers.Message,
@@ -58,6 +125,9 @@ func (p *RecordingProvider) Chat(
 	model string,
 	options map[string]any,
 ) (*providers.LLMResponse, error) {
+	if err := p.requestAllowed(); err != nil {
+		return nil, err
+	}
 	start := time.Now()
 	turnID := TurnIDFromContext(ctx)
 	requestID, raw, request := p.begin(turnID, model, messages, tools)
@@ -78,6 +148,9 @@ func (p *RecordingProvider) ChatStream(
 	if !ok {
 		return p.Chat(ctx, messages, tools, model, options)
 	}
+	if err := p.requestAllowed(); err != nil {
+		return nil, err
+	}
 	start := time.Now()
 	turnID := TurnIDFromContext(ctx)
 	requestID, raw, request := p.begin(turnID, model, messages, tools)
@@ -97,6 +170,9 @@ func (p *RecordingProvider) ChatStreamEvents(
 	streamer, ok := p.inner.(providers.StreamingEventProvider)
 	if !ok {
 		return p.Chat(ctx, messages, tools, model, options)
+	}
+	if err := p.requestAllowed(); err != nil {
+		return nil, err
 	}
 	start := time.Now()
 	turnID := TurnIDFromContext(ctx)
@@ -237,6 +313,20 @@ func (p *RecordingProvider) finish(
 	}
 
 	p.mu.Lock()
+	// 005B metering: account provider-reported totals while holding the same
+	// lock that gates the next request, so the check-then-send sequence in
+	// requestAllowed cannot race a concurrent completion. A successful
+	// response without a usable total latches a metering failure when caps
+	// are active: its spend cannot be measured, so it must stop the trial
+	// rather than count as zero. Transport errors are excluded because the
+	// failed turn already ends the trial.
+	if perTrial, total, _ := p.budgetCaps(); (perTrial > 0 || total > 0) && err == nil && response != nil {
+		if request.Usage.Reported && request.Usage.TotalTokens != nil {
+			p.reportedTrialTotal += int64(*request.Usage.TotalTokens)
+		} else {
+			p.meteringFailed = true
+		}
+	}
 	p.requests = append(p.requests, request)
 	p.raw = append(p.raw, raw)
 	p.tools = append(p.tools, request.ToolCalls...)

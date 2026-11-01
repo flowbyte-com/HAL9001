@@ -30,6 +30,12 @@ type RunOptions struct {
 	Scenarios          []string
 	TrialRunner        []string // command prefix; defaults to the current executable
 	Seed               int64    // 005A paired-order seed; derived from RunID when zero
+	// 005B live-pilot token ceilings in provider-reported total tokens.
+	// Zero means unenforced. When set, the recorder refuses to send any
+	// request that could breach a ceiling, and the runner stops the run
+	// rather than starting work it cannot meter.
+	TokenBudgetTotal    int64
+	TokenBudgetPerTrial int64
 }
 
 type RunManifest struct {
@@ -51,6 +57,9 @@ type RunManifest struct {
 	Seed           int64      `json:"seed,omitempty"`
 	Order          []string   `json:"order,omitempty"`
 	PairCount      int        `json:"pair_count,omitempty"`
+	// 005B authorized ceilings in provider-reported total tokens (0 = none).
+	TokenBudgetTotal    int64 `json:"token_budget_total,omitempty"`
+	TokenBudgetPerTrial int64 `json:"token_budget_per_trial,omitempty"`
 }
 
 func DefaultOutDir() string { return benchRoot() }
@@ -97,6 +106,9 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 	}
 	if opts.ProviderKind == "live" && opts.ModelName == "" {
 		return nil, fmt.Errorf("live provider requires an explicit model name")
+	}
+	if opts.TokenBudgetTotal < 0 || opts.TokenBudgetPerTrial < 0 {
+		return nil, fmt.Errorf("token budgets must be non-negative")
 	}
 	if opts.RunID == "" {
 		opts.RunID = newRunID()
@@ -161,11 +173,18 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 		ModelRequested: opts.ModelName, MPMBinary: opts.MPMBinary,
 		TrialsPerCell: opts.Trials, Conditions: conditions, Scenarios: scenarios,
 		Isolation: true, Provenance: provenance, Seed: seed, PairCount: pairCount,
+		TokenBudgetTotal: opts.TokenBudgetTotal, TokenBudgetPerTrial: opts.TokenBudgetPerTrial,
 		Notes: []string{
 			"all conditions run in separate subprocesses with fresh HOME, XDG, workspace, session store and MPM state",
 			"subprocess isolation is enabled for every condition; MPM conditions additionally mask the MPM store",
 			"LLM request counts come from RecordingProvider.Chat calls, never from log lines",
 		},
+	}
+	if opts.TokenBudgetTotal > 0 || opts.TokenBudgetPerTrial > 0 {
+		manifest.Notes = append(manifest.Notes,
+			fmt.Sprintf("005B: token ceilings enforced at the provider-request boundary (per-trial=%d total=%d provider-reported total tokens); a missing usage report stops the run instead of counting as zero",
+				opts.TokenBudgetPerTrial, opts.TokenBudgetTotal),
+		)
 	}
 	if experiment == "D" {
 		manifest.Notes = append(manifest.Notes,
@@ -196,6 +215,10 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 		runner = []string{exe, "trial"}
 	}
 
+	var pilotReportedTotal, maxTrialReported int64
+	var budgetStopped bool
+	var budgetStopReason string
+
 	for _, item := range plan {
 		scenario, err := Scenario(item.Scenario)
 		if err != nil {
@@ -206,6 +229,17 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 		if err != nil {
 			return nil, fmt.Errorf("prepare %s: %w", trialID, err)
 		}
+		// 005B: never start metered work that the ceilings cannot cover.
+		// The in-trial guard refuses single requests past a cap; this
+		// pre-check refuses whole trials once the pilot total is exhausted.
+		if opts.TokenBudgetTotal > 0 && pilotReportedTotal >= opts.TokenBudgetTotal {
+			budgetStopped = true
+			budgetStopReason = fmt.Sprintf("pilot reported total %d reached total cap %d; not starting %s",
+				pilotReportedTotal, opts.TokenBudgetTotal, trialID)
+			manifest.Notes = append(manifest.Notes, "005B: "+budgetStopReason)
+			break
+		}
+		spec.PilotReportedBefore = pilotReportedTotal
 		if err := PrepareTrial(&spec); err != nil {
 			return nil, fmt.Errorf("prepare fixture %s: %w", trialID, err)
 		}
@@ -215,6 +249,21 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 		for _, path := range append([]string{spec.LogPath}, processLogPaths(spec)...) {
 			redactFile(path)
 		}
+		trialReported := int64(result.Totals.TotalTokens)
+		pilotReportedTotal += trialReported
+		if trialReported > maxTrialReported {
+			maxTrialReported = trialReported
+		}
+		// 005B abort conditions: any harness-invalid trial, transport or
+		// credential failure, budget/metering stop, or a breached ceiling.
+		// Coding-task failure alone (status pass, full_success false) never
+		// stops the run; it is the measured outcome.
+		if reason := trialAbortReason(result, opts); reason != "" {
+			budgetStopped = true
+			budgetStopReason = fmt.Sprintf("%s: %s", trialID, reason)
+			manifest.Notes = append(manifest.Notes, "005B: "+budgetStopReason)
+			break
+		}
 	}
 
 	summary.EndedAt = nowRFC3339()
@@ -222,6 +271,12 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 	summary.Validation = validationSummary(summary.Trials)
 	if experiment == "D" {
 		summary.CodingPairs, summary.Coding = summarizeCodingPairs(summary.Trials)
+	}
+	summary.TokenBudget = &TokenBudgetSummary{
+		PerTrialCap: opts.TokenBudgetPerTrial, TotalCap: opts.TokenBudgetTotal,
+		ReportedTotal: pilotReportedTotal, MaxTrialReported: maxTrialReported,
+		TrialsCompleted: len(summary.Trials), TrialsAttempted: len(plan),
+		StoppedEarly: budgetStopped, StopReason: budgetStopReason,
 	}
 	manifest.EndedAt = summary.EndedAt
 	if err := writeJSON(filepath.Join(runDir, "manifest.json"), redactValue(manifest)); err != nil {
@@ -353,6 +408,8 @@ func buildTrialSpecFromPlan(
 		PairID:                item.PairID,
 		Repetition:            item.Repetition,
 		SequenceIndex:         item.SequenceIndex,
+		TokenBudgetPerTrial:   opts.TokenBudgetPerTrial,
+		TokenBudgetTotal:      opts.TokenBudgetTotal,
 	}
 	if strings.EqualFold(opts.Experiment, "D") {
 		spec.CodingTask = scenario.CodingTask
@@ -605,6 +662,14 @@ func executeTrialSpec(runDir string, spec TrialSpec, runner []string, providerKi
 		segmentSpec.RequestIDPrefix = fmt.Sprintf("s%d-", i+1)
 		segmentSpec.RawPath = filepath.Join(spec.TrialDir, "raw", fmt.Sprintf("requests-s%d.jsonl", i+1))
 		segmentSpec.ResultPath = filepath.Join(spec.TrialDir, fmt.Sprintf("result-s%d.json", i+1))
+		// 005B: later segments inherit what earlier segments already
+		// reported, so the per-trial cap covers the whole trial rather than
+		// resetting in each new process.
+		var trialReported int64
+		for _, prior := range results {
+			trialReported += int64(prior.Totals.TotalTokens)
+		}
+		segmentSpec.TrialReportedBefore = trialReported
 		result, err := runTrialSubprocess(runDir, segmentSpec, runner, providerKind)
 		if err != nil && result.TrialID == "" {
 			result = TrialResult{
@@ -629,6 +694,27 @@ func executeTrialSpec(runDir string, spec TrialSpec, runner []string, providerKi
 	_ = mergeTrialRaw(merged.RawPath, results)
 	_ = writeJSON(spec.ResultPath, redactValue(merged))
 	return merged
+}
+
+// trialAbortReason decides whether a completed trial must stop the run.
+// A trial whose harness status is not pass is invalid benchmark state or a
+// transport/credential/budget/sandbox failure (authentication, quota and
+// rate-limit failures surface here as status error) and aborts the run. A
+// trial that is harness-valid but codes poorly (status pass,
+// full_success false) never aborts: that is the measured outcome.
+func trialAbortReason(result TrialResult, opts RunOptions) string {
+	if result.Status == "pass" {
+		if opts.TokenBudgetPerTrial > 0 && int64(result.Totals.TotalTokens) > opts.TokenBudgetPerTrial {
+			return fmt.Sprintf("trial reported %d tokens over per-trial cap %d",
+				result.Totals.TotalTokens, opts.TokenBudgetPerTrial)
+		}
+		if opts.TokenBudgetTotal > 0 && result.Totals.UsageMissingRequests > 0 && opts.ProviderKind == "live" {
+			return fmt.Sprintf("trial has %d live requests with missing usage; spend cannot be metered",
+				result.Totals.UsageMissingRequests)
+		}
+		return ""
+	}
+	return fmt.Sprintf("trial %s with %q", result.Status, result.Error)
 }
 
 func mergeTrialSegments(base TrialSpec, results []TrialResult, elapsed time.Duration) TrialResult {
@@ -669,6 +755,9 @@ func mergeTrialSegments(base TrialSpec, results []TrialResult, elapsed time.Dura
 		merged.Turns = append(merged.Turns, result.Turns...)
 		merged.Requests = append(merged.Requests, result.Requests...)
 		merged.ToolCalls = append(merged.ToolCalls, result.ToolCalls...)
+		if result.TokenBudgetStopped {
+			merged.TokenBudgetStopped = true
+		}
 		// The task-state sidecar is shared by every segment, so the last
 		// segment's measurement is the end state; summing would double count.
 		if result.Totals.TaskStateStorageBytes > 0 {

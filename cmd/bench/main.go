@@ -74,21 +74,25 @@ func runCmd(args []string) error {
 	out := fs.String("out", "", "output root")
 	runID := fs.String("run-id", "", "run identifier")
 	seed := fs.Int64("seed", 0, "005A paired-order seed")
+	tokenBudgetTotal := fs.Int64("token-budget-total", 0, "005B pilot ceiling in provider-reported total tokens (0 = unenforced)")
+	tokenBudgetPerTrial := fs.Int64("token-budget-per-trial", 0, "005B per-trial ceiling in provider-reported total tokens (0 = unenforced)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	summary, err := bench.RunExperiment(bench.RunOptions{
-		Experiment:         *experiment,
-		RunID:              *runID,
-		OutDir:             *out,
-		ProviderKind:       *provider,
-		ProviderConfigPath: *providerConfig,
-		ModelName:          *model,
-		MPMBinary:          *mpmBinary,
-		Trials:             *trials,
-		Conditions:         splitCSV(*conditions),
-		Scenarios:          splitCSV(*scenarios),
-		Seed:               *seed,
+		Experiment:          *experiment,
+		RunID:               *runID,
+		OutDir:              *out,
+		ProviderKind:        *provider,
+		ProviderConfigPath:  *providerConfig,
+		ModelName:           *model,
+		MPMBinary:           *mpmBinary,
+		Trials:              *trials,
+		Conditions:          splitCSV(*conditions),
+		Scenarios:           splitCSV(*scenarios),
+		Seed:                *seed,
+		TokenBudgetTotal:    *tokenBudgetTotal,
+		TokenBudgetPerTrial: *tokenBudgetPerTrial,
 	})
 	if err != nil {
 		return err
@@ -96,6 +100,13 @@ func runCmd(args []string) error {
 	fmt.Printf("run %s: %d trials, %d pass, %d fail, %d error\n",
 		summary.RunID, summary.Validation.Total, summary.Validation.Passed,
 		summary.Validation.Failed, summary.Validation.Errors)
+	if summary.TokenBudget != nil {
+		fmt.Printf("  token budget: reported=%d cap(total=%d per-trial=%d) trials=%d/%d stopped=%t %s\n",
+			summary.TokenBudget.ReportedTotal, summary.TokenBudget.TotalCap,
+			summary.TokenBudget.PerTrialCap, summary.TokenBudget.TrialsCompleted,
+			summary.TokenBudget.TrialsAttempted, summary.TokenBudget.StoppedEarly,
+			summary.TokenBudget.StopReason)
+	}
 	for _, aggregate := range summary.Aggregates {
 		fmt.Printf("  %-18s %-30s correct=%d/%d requests=%d\n",
 			aggregate.Condition, aggregate.Scenario, aggregate.Correct,

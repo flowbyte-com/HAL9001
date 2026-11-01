@@ -74,6 +74,17 @@ type TrialSpec struct {
 	MPMDisabled           bool   `json:"mpm_disabled,omitempty"`
 	ResidentCacheDisabled bool   `json:"resident_cache_disabled,omitempty"`
 
+	// 005B live-pilot token ceilings, in provider-reported total tokens.
+	// Zero means unenforced (offline/mock behavior is unchanged). When set,
+	// the recorder refuses to send another request once the reported total
+	// plus a conservative allowance for the next request would exceed a cap.
+	TokenBudgetPerTrial int64 `json:"token_budget_per_trial,omitempty"`
+	TokenBudgetTotal    int64 `json:"token_budget_total,omitempty"`
+	// PilotReportedBefore is the pilot-wide reported total before this trial;
+	// TrialReportedBefore is the same-trial total before this segment.
+	PilotReportedBefore int64 `json:"pilot_reported_before,omitempty"`
+	TrialReportedBefore int64 `json:"trial_reported_before,omitempty"`
+
 	// 005A segmented execution. A restart trial is split at RestartBefore and
 	// each segment runs in a fresh OS process while sharing the trial
 	// workspace, session store and task-state sidecar.
@@ -441,6 +452,11 @@ type TrialResult struct {
 	StartingCommit string `json:"starting_commit,omitempty"`
 	ProcessStarts  int    `json:"process_starts,omitempty"`
 
+	// TokenBudgetStopped is true when the trial stopped because a token
+	// ceiling or a missing-usage metering failure blocked the next request.
+	// The human-readable reason is in Error.
+	TokenBudgetStopped bool `json:"token_budget_stopped,omitempty"`
+
 	TaskStateFinal *TaskStateSnapshot `json:"task_state_final,omitempty"`
 
 	ResidentCacheRecords   int      `json:"resident_cache_records"`
@@ -509,17 +525,32 @@ type ResponseRecord struct {
 }
 
 type RunSummary struct {
-	SchemaVersion string            `json:"schema_version"`
-	RunID         string            `json:"run_id"`
-	Experiment    string            `json:"experiment"`
-	StartedAt     string            `json:"started_at"`
-	EndedAt       string            `json:"ended_at"`
-	Provenance    Provenance        `json:"provenance"`
-	Trials        []TrialResult     `json:"trials"`
-	Aggregates    []Aggregate       `json:"aggregates"`
-	Validation    ValidationSummary `json:"validation"`
-	CodingPairs   []CodingPair      `json:"coding_pairs,omitempty"`
-	Coding        *CodingSummary    `json:"coding,omitempty"`
+	SchemaVersion string              `json:"schema_version"`
+	RunID         string              `json:"run_id"`
+	Experiment    string              `json:"experiment"`
+	StartedAt     string              `json:"started_at"`
+	EndedAt       string              `json:"ended_at"`
+	Provenance    Provenance          `json:"provenance"`
+	Trials        []TrialResult       `json:"trials"`
+	Aggregates    []Aggregate         `json:"aggregates"`
+	Validation    ValidationSummary   `json:"validation"`
+	CodingPairs   []CodingPair        `json:"coding_pairs,omitempty"`
+	Coding        *CodingSummary      `json:"coding,omitempty"`
+	TokenBudget   *TokenBudgetSummary `json:"token_budget,omitempty"`
+}
+
+// TokenBudgetSummary accounts pilot-wide provider-reported token spend
+// against the authorized ceilings. Missing usage is never counted as zero:
+// a live trial with unreported usage stops the run instead.
+type TokenBudgetSummary struct {
+	PerTrialCap      int64  `json:"per_trial_cap"`
+	TotalCap         int64  `json:"total_cap"`
+	ReportedTotal    int64  `json:"reported_total"`
+	MaxTrialReported int64  `json:"max_trial_reported"`
+	TrialsCompleted  int    `json:"trials_completed"`
+	TrialsAttempted  int    `json:"trials_attempted"`
+	StoppedEarly     bool   `json:"stopped_early"`
+	StopReason       string `json:"stop_reason,omitempty"`
 }
 
 type ValidationSummary struct {
