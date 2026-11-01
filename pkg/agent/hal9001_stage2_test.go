@@ -89,8 +89,10 @@ func halToolRoles(history []providers.Message) int {
 
 // --- 1. Capability boundary ---
 
-// Coding profile takes precedence over HAL: implementation tools stay
-// available to existing non-HAL workflows, workshop tools stay hidden.
+// Conflicting configuration is resolved explicitly in favor of the 444
+// boundary: with the coding profile enabled process-wide, a HAL agent
+// keeps its restricted chat-first profile (coding tools hidden, workshop
+// visible) and logs the refusal. Non-HAL agents are unaffected.
 func TestHalCodingProfilePrecedence(t *testing.T) {
 	t.Setenv("DEEPCLAW_CODING_PROFILE", "1")
 	cfg := testConfig(t)
@@ -110,14 +112,17 @@ func TestHalCodingProfilePrecedence(t *testing.T) {
 	for _, name := range agent.Tools.VisibleToolNames() {
 		visible[strings.ToLower(name)] = true
 	}
-	for _, want := range []string{"read", "write", "edit"} {
-		if !visible[want] {
-			t.Errorf("coding profile must keep %q visible, got %v", want, agent.Tools.VisibleToolNames())
+	for _, banned := range []string{"read", "write", "edit", "bash", "exec", "edit_file", "write_file", "spawn", "subagent"} {
+		if visible[banned] {
+			t.Errorf("HAL must not gain %q under coding profile, got %v", banned, agent.Tools.VisibleToolNames())
 		}
 	}
-	for _, banned := range []string{"draft_prompt", "review_prompt", "exec", "edit_file"} {
-		if visible[banned] {
-			t.Errorf("coding profile must not expose %q, got %v", banned, agent.Tools.VisibleToolNames())
+	if !agent.HalRestricted {
+		t.Error("HAL stays restricted even when the coding profile is enabled")
+	}
+	for _, want := range []string{"draft_prompt", "review_prompt", "review_report"} {
+		if !visible[want] {
+			t.Errorf("HAL profile must keep %q visible, got %v", want, agent.Tools.VisibleToolNames())
 		}
 	}
 }

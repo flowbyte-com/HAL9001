@@ -26,14 +26,17 @@ func TestHalRestrictedFlag(t *testing.T) {
 		t.Fatal("HAL without coding profile must be restricted")
 	}
 
+	// Conflicting configuration: the coding profile no longer clears the
+	// boundary. HAL stays restricted; the conflict is resolved explicitly
+	// (warning) in favor of 444.
 	t.Setenv("DEEPCLAW_CODING_PROFILE", "1")
-	codingLoop := NewAgentLoop(hal, bus.NewMessageBus(), &simpleMockProvider{response: "ok"})
-	codingAgent := codingLoop.registry.GetDefaultAgent()
-	if codingAgent == nil {
+	conflictLoop := NewAgentLoop(hal, bus.NewMessageBus(), &simpleMockProvider{response: "ok"})
+	conflictAgent := conflictLoop.registry.GetDefaultAgent()
+	if conflictAgent == nil {
 		t.Fatal("expected default agent")
 	}
-	if !codingAgent.Hal9001 || codingAgent.HalRestricted {
-		t.Fatal("operator-enabled coding profile must clear the restriction")
+	if !conflictAgent.Hal9001 || !conflictAgent.HalRestricted {
+		t.Fatal("HAL plus coding profile must stay restricted: 444 is unconditional")
 	}
 
 	defLoop := NewAgentLoop(testConfig(t), bus.NewMessageBus(), &simpleMockProvider{response: "ok"})
@@ -93,12 +96,42 @@ func TestHal444GateBlocksHiddenWrite(t *testing.T) {
 	}
 }
 
-// Coding precedence survives the gate: with the operator profile enabled,
-// the write alias executes normally.
-func TestHalCodingPrecedenceExecutes(t *testing.T) {
+// Coding precedence no longer escalates HAL: with the operator profile
+// enabled, a HAL write alias call is refused and the file is never
+// created. Non-HAL coding behavior is preserved (see
+// TestNonHalCodingProfileExecutes).
+func TestHalCodingProfileCannotEscalate(t *testing.T) {
 	t.Setenv("DEEPCLAW_CODING_PROFILE", "1")
 	cfg := testConfig(t)
 	cfg.Agents.Defaults.Persona = "hal9001"
+	cfg.Agents.Defaults.RestrictToWorkspace = true
+	cfg.Tools.WriteFile.Enabled = true
+	script := &halScriptProvider{queue: []*providers.LLMResponse{
+		halToolResponse("call_w", "write", map[string]any{"path": "blocked.txt", "content": "must not exist"}),
+		halTextResponse("I can't write files; here's the brief instead."),
+	}}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), script)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+	if !agent.HalRestricted {
+		t.Fatal("HAL stays restricted even when the coding profile is enabled")
+	}
+	result := halRun(t, al, agent, "hal-coding-blocked", "write blocked.txt", script)
+	if !strings.Contains(result, "brief instead") {
+		t.Fatalf("unexpected result %q", result)
+	}
+	if _, err := os.Stat(filepath.Join(agent.Workspace, "blocked.txt")); !os.IsNotExist(err) {
+		t.Fatal("444 boundary must hold under coding profile: file must not exist")
+	}
+}
+
+// Non-HAL sessions keep existing coding functionality: with the operator
+// profile enabled and default persona, the write alias executes normally.
+func TestNonHalCodingProfileExecutes(t *testing.T) {
+	t.Setenv("DEEPCLAW_CODING_PROFILE", "1")
+	cfg := testConfig(t)
 	cfg.Agents.Defaults.RestrictToWorkspace = true
 	cfg.Tools.WriteFile.Enabled = true
 	script := &halScriptProvider{queue: []*providers.LLMResponse{
@@ -110,13 +143,13 @@ func TestHalCodingPrecedenceExecutes(t *testing.T) {
 	if agent == nil {
 		t.Fatal("expected default agent")
 	}
-	if agent.HalRestricted {
-		t.Fatal("coding profile must clear HalRestricted")
+	if agent.Hal9001 || agent.HalRestricted {
+		t.Fatal("default persona must not be flagged or restricted")
 	}
-	halRun(t, al, agent, "hal-coding-write", "write allowed.txt", script)
+	halRun(t, al, agent, "hal-coding-allowed", "write allowed.txt", script)
 	data, err := os.ReadFile(filepath.Join(agent.Workspace, "allowed.txt"))
 	if err != nil || string(data) != "via coding profile" {
-		t.Fatalf("coding profile write must execute, got %q err=%v", data, err)
+		t.Fatalf("non-HAL coding profile write must execute, got %q err=%v", data, err)
 	}
 }
 
@@ -145,11 +178,12 @@ func TestHalLateMCPStyleRegistration(t *testing.T) {
 	}
 	halRun(t, al2, agent2, "hal-444-todo", "list my tasks", script)
 	for _, msg := range halHistory(t, agent2, "hal-444-todo") {
-		if msg.Role == "tool" && strings.Contains(msg.Content, "not found") {
+		if msg.Role == "tool" && (strings.Contains(msg.Content, "not found") ||
+			strings.Contains(msg.Content, "non-implementing")) {
 			return
 		}
 	}
-	t.Fatal("hidden non-implementation tool must stay invisible (not found)")
+	t.Fatal("hidden non-implementation tool must stay unusable (not found or 444-refused)")
 }
 
 // Registry clones (the SubTurn mechanism) preserve the visibility profile,
@@ -253,11 +287,12 @@ func TestHalDirectFixRequestNeverImplements(t *testing.T) {
 func halReviewScript() *halScriptProvider {
 	return &halScriptProvider{queue: []*providers.LLMResponse{
 		halToolResponse("call_rev", "review_report", map[string]any{
-			"objectives":    "Add a canary step to the Friday deploy.",
-			"acceptance":    "Bad canaries are detected within five minutes\nTwo consecutive clean Friday deploys",
-			"summary":       "Added a canary step that detects bad canaries within five minutes. Two consecutive clean Friday deploys succeeded. Changed deploy/canary.go and added TestCanaryRollback.",
-			"tests_passed":  "TestCanaryRollback\nTestCanaryDetectFiveMinutes\nTestTwoConsecutiveCleanFridayDeploys",
-			"changed_files": "deploy/canary.go",
+			"objectives":       "Add a canary step to the Friday deploy.",
+			"acceptance":       "Bad canaries are detected within five minutes\nTwo consecutive clean Friday deploys",
+			"summary":          "Added a canary step that detects bad canaries within five minutes. Two consecutive clean Friday deploys succeeded. Changed deploy/canary.go and added TestCanaryRollback.",
+			"tests_passed":     "TestCanaryRollback\nTestCanaryDetectFiveMinutes\nTestTwoConsecutiveCleanFridayDeploys",
+			"changed_files":    "deploy/canary.go",
+			"trusted_evidence": "TestCanaryRollback\nTestCanaryDetectFiveMinutes\nTestTwoConsecutiveCleanFridayDeploys",
 		}),
 		halTextResponse("Review complete: both criteria verified by passing tests. Ready to ship."),
 	}}
@@ -325,7 +360,7 @@ func TestHalReviewMisleadingReport(t *testing.T) {
 			toolOut += msg.Content + "\n"
 		}
 	}
-	for _, want := range []string{"Deviations", "deploy/rollback.go", "TestCanaryRollback", "Suggested follow-up brief"} {
+	for _, want := range []string{"Contradictions", "deploy/rollback.go", "TestCanaryRollback", "Suggested follow-up brief"} {
 		if !strings.Contains(toolOut, want) {
 			t.Errorf("assessment missing %q:\n%s", want, toolOut)
 		}

@@ -120,17 +120,16 @@ func NewAgentLoop(
 	// Register shared tools to all agents (now that al is created)
 	registerSharedTools(al, cfg, msgBus, registry, provider)
 
-	// Optional minimal coding profile: expose only read/write/edit/bash through
-	// an explicit visibility policy. The registry and allowlist are preserved.
+	// Capability profiles are per-agent and mutually exclusive by persona:
+	// the coding profile applies only to non-HAL agents (its implementation
+	// authority is preserved there); HAL agents always keep the restricted
+	// chat-first profile, even when the coding profile is enabled
+	// process-wide. Conflicting configuration is resolved explicitly in
+	// favor of the 444 boundary, with a warning, never by escalation.
 	if codingProfileEnabled() {
 		enableCodingProfile(registry)
-	} else {
-		// HAL9001 chat-first profile: lookup, reading, and prompt-crafting
-		// tools stay visible; coding and execution tools remain installed
-		// but hidden until explicitly requested. Coding profile takes
-		// precedence when enabled.
-		enableHal9001Profile(registry)
 	}
+	enableHal9001Profile(registry)
 
 	return al
 }

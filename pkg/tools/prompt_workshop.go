@@ -158,9 +158,12 @@ func (t *ReviewReportTool) Name() string { return "review_report" }
 
 func (t *ReviewReportTool) Description() string {
 	return "Review an implementor's work report against objectives and " +
-		"acceptance criteria. Returns verified findings, unverified claims, " +
-		"deviations, risks, actions, and a follow-up brief. Without tests " +
-		"or diffs, claims stay unverified. Evaluates work; never implements it."
+		"acceptance criteria. Returns verified findings (trusted evidence " +
+		"only), supporting evidence, self-reported claims, contradictions, " +
+		"missing evidence, risks, actions, and a follow-up brief. Only " +
+		"evidence named in trusted_evidence (CI or operator-run tests) can " +
+		"verify; agent-supplied tests merely support. Evaluates work; never " +
+		"implements it."
 }
 
 func (t *ReviewReportTool) Parameters() map[string]any {
@@ -170,12 +173,13 @@ func (t *ReviewReportTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"objectives":    lines("Original objectives, one per line (required)."),
-			"acceptance":    lines("Acceptance criteria, one per line."),
-			"summary":       map[string]any{"type": "string", "description": "Agent's report: what changed, what was tested, what remains (required)."},
-			"tests_passed":  lines("Passing tests, one per line."),
-			"tests_failed":  lines("Failing tests, one per line."),
-			"changed_files": lines("Changed files, one per line."),
+			"objectives":       lines("Original objectives, one per line (required)."),
+			"acceptance":       lines("Acceptance criteria, one per line."),
+			"summary":          map[string]any{"type": "string", "description": "Agent's report: what changed, what was tested, what remains (required)."},
+			"tests_passed":     lines("Passing tests, one per line."),
+			"tests_failed":     lines("Failing tests, one per line."),
+			"changed_files":    lines("Changed files, one per line."),
+			"trusted_evidence": lines("Subset of the above produced by trusted verification (CI, operator runs). Only these can verify a claim."),
 		},
 		"required": []string{"objectives", "summary"},
 	}
@@ -183,12 +187,13 @@ func (t *ReviewReportTool) Parameters() map[string]any {
 
 func (t *ReviewReportTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
 	report := promptwork.WorkReport{
-		Objectives:   stringListArg(args, "objectives"),
-		Acceptance:   stringListArg(args, "acceptance"),
-		Summary:      workshopStringArg(args, "summary"),
-		TestsPassed:  stringListArg(args, "tests_passed"),
-		TestsFailed:  stringListArg(args, "tests_failed"),
-		ChangedFiles: stringListArg(args, "changed_files"),
+		Objectives:      stringListArg(args, "objectives"),
+		Acceptance:      stringListArg(args, "acceptance"),
+		Summary:         workshopStringArg(args, "summary"),
+		TestsPassed:     stringListArg(args, "tests_passed"),
+		TestsFailed:     stringListArg(args, "tests_failed"),
+		ChangedFiles:    stringListArg(args, "changed_files"),
+		TrustedEvidence: stringListArg(args, "trusted_evidence"),
 	}
 	return NewToolResult(promptwork.AssessReport(report).Render())
 }

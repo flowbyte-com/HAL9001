@@ -226,21 +226,27 @@ func assessFixture() WorkReport {
 		Summary:      "Added a canary step that detects bad canaries within five minutes. Two consecutive clean Friday deploys succeeded with no issues. Changed deploy/canary.go and added TestCanaryRollback.",
 		TestsPassed:  []string{"TestCanaryRollback", "TestCanaryDetectFiveMinutes", "TestTwoConsecutiveCleanFridayDeploys"},
 		ChangedFiles: []string{"deploy/canary.go"},
+		TrustedEvidence: []string{
+			"TestCanaryRollback", "TestCanaryDetectFiveMinutes", "TestTwoConsecutiveCleanFridayDeploys",
+		},
 	}
 }
 
-// A successful report with corroborating tests verifies; no gaps means no
-// follow-up brief.
+// A successful report with trusted corroborating tests verifies; no gaps
+// means no follow-up brief.
 func TestAssessSuccessfulReport(t *testing.T) {
 	a := AssessReport(assessFixture())
 	if a.SelfReportOnly {
 		t.Error("evidence was provided; must not be flagged self-report-only")
 	}
-	if len(a.Verified) == 0 {
-		t.Fatalf("expected verified findings, got %+v", a)
+	if len(a.Verified) != 2 {
+		t.Fatalf("both criteria should verify against trusted tests, got %+v", a)
 	}
-	if len(a.Deviations) != 0 {
-		t.Errorf("successful report should have no deviations, got %v", a.Deviations)
+	for _, field := range [][]string{a.Supported, a.Claimed, a.Contradictions, a.Missing} {
+		if len(field) != 0 {
+			t.Errorf("successful report should be clean, got %+v", a)
+			break
+		}
 	}
 	if strings.TrimSpace(a.FollowUp) != "" {
 		t.Error("no gaps means no follow-up brief")
@@ -251,17 +257,38 @@ func TestAssessSuccessfulReport(t *testing.T) {
 	}
 }
 
-// An incomplete report (unaddressed criterion, no tests) stays unverified,
-// gains deviations and actions, and proposes a follow-up brief.
+// The same evidence supplied by the agent (nothing trusted) supports but
+// never verifies: identical text, weaker tier.
+func TestAssessUntrustedEvidenceSupportedNotVerified(t *testing.T) {
+	r := assessFixture()
+	r.TrustedEvidence = nil
+	a := AssessReport(r)
+	if len(a.Verified) != 0 {
+		t.Fatalf("agent-supplied tests must not verify, got %v", a.Verified)
+	}
+	if len(a.Supported) == 0 {
+		t.Fatalf("addressed criteria with supplied evidence should be supported, got %+v", a)
+	}
+	if !strings.Contains(strings.Join(a.Supported, "\n"), "nothing independently checked") {
+		t.Errorf("supported items must disclaim independent checking: %v", a.Supported)
+	}
+	if !strings.Contains(strings.Join(a.Actions, "\n"), "trusted verification") {
+		t.Errorf("supported items must ask for trusted confirmation: %v", a.Actions)
+	}
+}
+
+// An incomplete report (unaddressed criterion, thin evidence) lands in
+// missing/claimed, gains actions, and proposes a follow-up brief.
 func TestAssessIncompleteReport(t *testing.T) {
 	r := assessFixture()
 	r.TestsPassed = nil
+	r.TrustedEvidence = nil
 	r.Summary = "Added a canary step. Looks good."
 	a := AssessReport(r)
 	if a.SelfReportOnly {
 		t.Error("changed files count as evidence; must not be self-report-only")
 	}
-	if len(a.Unverified) == 0 && len(a.Deviations) == 0 {
+	if len(a.Claimed) == 0 && len(a.Missing) == 0 {
 		t.Fatalf("incomplete report must produce findings, got %+v", a)
 	}
 	if len(a.Actions) == 0 {
@@ -275,22 +302,27 @@ func TestAssessIncompleteReport(t *testing.T) {
 	}
 }
 
-// A misleading report (claimed file with no record, failing test) is
-// flagged as deviations with risks — never laundered into verified.
+// A misleading report (claimed file with no record, failing test,
+// blanket success claim) lands in contradictions — never verified,
+// never merely missing.
 func TestAssessMisleadingReport(t *testing.T) {
 	r := assessFixture()
-	r.Summary += " Also rewrote deploy/rollback.go from scratch."
+	r.TrustedEvidence = nil
+	r.Summary += " Also rewrote deploy/rollback.go from scratch. All tests pass."
 	r.TestsFailed = []string{"TestCanaryRollback"}
 	a := AssessReport(r)
-	joined := strings.Join(append(append([]string{}, a.Deviations...), a.Risks...), "\n")
+	joined := strings.Join(append(append([]string{}, a.Contradictions...), a.Risks...), "\n")
 	if !strings.Contains(joined, "deploy/rollback.go") {
-		t.Errorf("unrecorded claimed change must be flagged, got %+v", a.Deviations)
+		t.Errorf("unrecorded claimed change must be flagged, got %+v", a.Contradictions)
 	}
 	if !strings.Contains(joined, "TestCanaryRollback") {
-		t.Errorf("failing test must be flagged, got %+v", append(a.Deviations, a.Risks...))
+		t.Errorf("failing test must be flagged, got %+v", a.Contradictions)
+	}
+	if !strings.Contains(joined, "blanket success") {
+		t.Errorf("blanket pass claim alongside failures must be flagged, got %+v", a.Contradictions)
 	}
 	for _, v := range a.Verified {
-		if strings.Contains(v, "rollback") {
+		if strings.Contains(v, "rollback") || strings.Contains(v, "Rollback") {
 			t.Errorf("failing-test criterion must not verify: %q", v)
 		}
 	}
@@ -300,7 +332,7 @@ func TestAssessMisleadingReport(t *testing.T) {
 }
 
 // Self-report only: nothing verifies, the disclaimer renders, and every
-// claim is labeled as such.
+// addressed claim is labeled as self-reported.
 func TestAssessSelfReportOnly(t *testing.T) {
 	a := AssessReport(WorkReport{
 		Objectives: []string{"Migrate the database."},
@@ -310,11 +342,11 @@ func TestAssessSelfReportOnly(t *testing.T) {
 	if !a.SelfReportOnly {
 		t.Fatal("must be flagged self-report-only")
 	}
-	if len(a.Verified) != 0 {
-		t.Errorf("nothing may verify without evidence, got %v", a.Verified)
+	if len(a.Verified) != 0 || len(a.Supported) != 0 {
+		t.Errorf("nothing may verify or corroborate without evidence, got %+v", a)
 	}
-	if len(a.Unverified) == 0 {
-		t.Error("addressed criterion must be labeled unverified")
+	if len(a.Claimed) == 0 {
+		t.Error("addressed criterion must be labeled self-reported")
 	}
 	if !strings.Contains(a.Render(), "solely on the agent's self-report") {
 		t.Error("render must carry the self-report disclaimer")
@@ -323,8 +355,8 @@ func TestAssessSelfReportOnly(t *testing.T) {
 
 func TestAssessEmpty(t *testing.T) {
 	a := AssessReport(WorkReport{})
-	if len(a.Deviations) == 0 {
-		t.Error("empty report must deviate")
+	if len(a.Missing) == 0 {
+		t.Error("empty report must record missing evidence")
 	}
 	if len(a.Actions) == 0 {
 		t.Error("empty report must produce actions")

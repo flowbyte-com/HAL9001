@@ -39,20 +39,32 @@ default behavior unchanged.
 - Read-only authority enforced in application logic at three layers
   (provider defs, registry execution, 444 execution gate on
   `HalRestricted`); full audit of tools, MCP, plugins, subturns, custom
-  prompts, and coding-profile precedence. One gap class closed by
-  construction: blocklisted tools are refused by name even if visible.
-- Coding capabilities preserved for non-HAL profiles: operator-enabled
-  coding profile clears the restriction and executes normally.
+  prompts, and coding-profile precedence. No filesystem chmod tricks.
 - Review capability: `promptwork.AssessReport` + `review_report` tool —
-  verified findings vs unverified claims vs deviations, risks, actions,
-  and a follow-up brief; self-report-only disclaimer by design.
+  verified (trusted only) vs supported vs claimed vs contradictions vs
+  missing, risks, actions, and a follow-up brief; self-report-only
+  disclaimer by design. Matching limits documented.
 - Memory admission design proposed in the
   [memory contract](../architecture/hal9001-memory-contract.md) for
   review: four record types, doubt rule, sensitive tier, correction
   supersession, operator approval boundary. No live writes; none
   implemented.
-- Roadmap conflict resolved (below): no HAL coding-profile escalation,
+- Roadmap conflict resolved (below): no HAL coding-escalation,
   ever. Delegation is by assignment, not by implementation.
+
+## Stage 3.1 — Unconditional 444 (done)
+
+- The boundary no longer depends on configuration: HAL plus coding
+  profile is explicitly rejected (warning, HAL keeps its restricted
+  profile); non-HAL agents keep full coding functionality.
+- Denylist replaced with an explicit capability allowlist
+  (`Hal9001ToolAllowed`): unknown MCP/plugin tools are refused by
+  default-deny, not by name matching. Aliases, wrappers, subturns, late
+  registration, and conflicting profiles all covered by regression tests.
+- Assessment terminology refined: only trusted machine evidence
+  (`TrustedEvidence`: CI or operator-run tests) can verify; supplied
+  tests support; prose claims; contradictions and missing evidence are
+  distinct. Capabilities and limits documented in code and architecture.
 
 ## Stage 4 — Authorized delegation and specialist coordination (design)
 

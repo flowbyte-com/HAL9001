@@ -270,16 +270,41 @@ type WorkReport struct {
 	TestsPassed  []string
 	TestsFailed  []string
 	ChangedFiles []string
+	// TrustedEvidence names the subset of TestsPassed/TestsFailed produced
+	// by trusted verification (CI harness, operator-run tests) rather than
+	// pasted into the report by the agent. Matching is exact and
+	// case-insensitive. Only trusted passing tests can verify a claim;
+	// everything else is supporting evidence at best.
+	TrustedEvidence []string
 }
 
-// Assessment is the deterministic outcome of reviewing a WorkReport. It
-// distinguishes what the evidence supports from what is merely claimed.
-// Nothing here is an independent verification: without tests or diffs,
-// the strongest statement available is "self-reported".
+// Assessment is the deterministic outcome of reviewing a WorkReport.
+// Evidence tiers, strongest first:
+//
+//   - Verified: the claim is addressed in the report AND corroborated by
+//     trusted machine evidence (a trusted passing test). This is the only
+//     tier that may be read as independently checked.
+//   - Supported: the claim is addressed and backed by agent-supplied
+//     evidence (untrusted test names, changed files). Consistent, not
+//     proven.
+//   - Claimed: the claim is addressed in prose with no evidence at all.
+//   - Contradictions: evidence actively against a claim (a failing test
+//     on claimed work, a claimed file change with no record, a blanket
+//     pass claim alongside failures).
+//   - Missing: unaddressed objectives or criteria, an empty report, no
+//     acceptance criteria.
+//
+// What the deterministic reviewer can establish: addressal (token
+// overlap), corroboration (named-evidence overlap), and consistency
+// (claims vs records). What it cannot: truth. Test names and outputs
+// are strings the agent wrote unless listed in TrustedEvidence; file
+// lists are not verified changes; semantic correctness is never judged.
 type Assessment struct {
 	Verified       []string
-	Unverified     []string
-	Deviations     []string
+	Supported      []string
+	Claimed        []string
+	Contradictions []string
+	Missing        []string
 	Risks          []string
 	Actions        []string
 	FollowUp       string
@@ -379,23 +404,32 @@ func reportAddresses(criterion, text string) bool {
 // AssessReport reviews an implementation report against its objectives
 // and acceptance criteria. It is deliberately shallow and deterministic:
 // it checks addressal, corroboration, and consistency, and never claims
-// independent verification from a self-report alone.
+// independent verification from a self-report alone. Only evidence
+// named in TrustedEvidence can verify; agent-supplied tests and file
+// lists corroborate at best.
 func AssessReport(r WorkReport) Assessment {
 	var a Assessment
 	summary := strings.TrimSpace(r.Summary)
 	if summary == "" {
-		a.Deviations = append(a.Deviations, "No implementation report provided.")
+		a.Missing = append(a.Missing, "No implementation report provided.")
 		a.Actions = append(a.Actions, "Ask the implementing agent for a written report: what changed, what was tested, what remains.")
 	}
 	for _, objective := range nonEmpty(r.Objectives) {
 		if summary != "" && !reportAddresses(objective, summary) {
-			a.Deviations = append(a.Deviations, fmt.Sprintf("Objective not addressed in report: %q.", objective))
+			a.Missing = append(a.Missing, fmt.Sprintf("Objective not addressed in report: %q.", objective))
 			a.Actions = append(a.Actions, fmt.Sprintf("Ask for explicit status on objective %q (done, partial, or dropped with reason).", objective))
 		}
 	}
 	if len(nonEmpty(r.Acceptance)) == 0 {
-		a.Risks = append(a.Risks, "No acceptance criteria were provided, so there is nothing to assess completion against.")
+		a.Missing = append(a.Missing, "No acceptance criteria were provided, so there is nothing to assess completion against.")
+		a.Risks = append(a.Risks, "Work accepted without agreed criteria ships an undefined outcome.")
 		a.Actions = append(a.Actions, "Define acceptance criteria before judging the work done.")
+	}
+	trusted := map[string]bool{}
+	for _, name := range r.TrustedEvidence {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			trusted[strings.ToLower(trimmed)] = true
+		}
 	}
 	evidenceTokens := map[string]struct{}{}
 	for _, t := range append(append([]string{}, r.TestsPassed...), r.TestsFailed...) {
@@ -412,33 +446,65 @@ func AssessReport(r WorkReport) Assessment {
 	a.SelfReportOnly = summary != "" && !hasEvidence
 	for _, criterion := range nonEmpty(r.Acceptance) {
 		if summary == "" || !reportAddresses(criterion, summary) {
-			a.Deviations = append(a.Deviations, fmt.Sprintf("Acceptance criterion not addressed in report: %q.", criterion))
+			a.Missing = append(a.Missing, fmt.Sprintf("Acceptance criterion not addressed in report: %q.", criterion))
 			a.Actions = append(a.Actions, fmt.Sprintf("Address or explicitly defer: %q.", criterion))
 			a.Risks = append(a.Risks, fmt.Sprintf("Work may ship without the agreed outcome %q.", criterion))
 			continue
 		}
-		corroborated := ""
-		for _, t := range nonEmpty(r.TestsPassed) {
+		// Machine evidence against the claim wins over prose: a failing
+		// test on addressed work is a contradiction, not a gap.
+		contradicted := ""
+		for _, t := range nonEmpty(r.TestsFailed) {
 			if reportAddresses(criterion, t) {
-				corroborated = t
+				contradicted = t
 				break
 			}
 		}
+		if contradicted != "" {
+			a.Contradictions = append(a.Contradictions, fmt.Sprintf("Acceptance %q is addressed in the report but test %q fails.", criterion, contradicted))
+			a.Actions = append(a.Actions, fmt.Sprintf("Fix %q and re-run before accepting %q.", contradicted, criterion))
+			a.Risks = append(a.Risks, "Known test failures ship if the work is accepted as-is.")
+			continue
+		}
+		trustedHit, untrustedHit := "", ""
+		for _, t := range nonEmpty(r.TestsPassed) {
+			if reportAddresses(criterion, t) {
+				if trusted[strings.ToLower(strings.TrimSpace(t))] {
+					trustedHit = t
+					break
+				}
+				if untrustedHit == "" {
+					untrustedHit = t
+				}
+			}
+		}
 		switch {
-		case corroborated != "" && !a.SelfReportOnly:
-			a.Verified = append(a.Verified, fmt.Sprintf("Acceptance %q corroborated by passing test %q.", criterion, corroborated))
-		case reportOverlap(criterion, evidenceTokens) >= reportMatchThreshold && !a.SelfReportOnly:
-			a.Unverified = append(a.Unverified, fmt.Sprintf("Acceptance %q is described and change-evidenced, but no passing test confirms the outcome.", criterion))
-			a.Actions = append(a.Actions, fmt.Sprintf("Provide a passing test for %q; change evidence alone does not confirm behavior.", criterion))
+		case trustedHit != "":
+			a.Verified = append(a.Verified, fmt.Sprintf("Acceptance %q corroborated by trusted passing test %q.", criterion, trustedHit))
+		case untrustedHit != "" || reportOverlap(criterion, evidenceTokens) >= reportMatchThreshold:
+			support := untrustedHit
+			if support == "" {
+				support = "the supplied change records"
+			} else {
+				support = fmt.Sprintf("supplied test %q", support)
+			}
+			a.Supported = append(a.Supported, fmt.Sprintf("Acceptance %q is described and supported by %s, which the agent supplied and nothing independently checked.", criterion, support))
+			a.Actions = append(a.Actions, fmt.Sprintf("Confirm %q with trusted verification (CI or operator-run tests); supplied evidence alone does not verify behavior.", criterion))
 		default:
-			a.Unverified = append(a.Unverified, fmt.Sprintf("Acceptance %q is self-reported only.", criterion))
+			a.Claimed = append(a.Claimed, fmt.Sprintf("Acceptance %q is self-reported only.", criterion))
 			a.Actions = append(a.Actions, fmt.Sprintf("Provide test results or diffs supporting %q.", criterion))
 		}
 	}
 	for _, t := range nonEmpty(r.TestsFailed) {
-		a.Deviations = append(a.Deviations, fmt.Sprintf("Failing test: %q.", t))
-		a.Actions = append(a.Actions, fmt.Sprintf("Fix %q and re-run before accepting the work.", t))
-		a.Risks = append(a.Risks, "Known test failures ship if the work is accepted as-is.")
+		a.Risks = append(a.Risks, fmt.Sprintf("Failing test %q ships if the work is accepted as-is.", t))
+		if !criterionTouched(r.Acceptance, t) {
+			a.Contradictions = append(a.Contradictions, fmt.Sprintf("Failing test %q has no addressed criterion to attach to.", t))
+			a.Actions = append(a.Actions, fmt.Sprintf("Fix %q and re-run before accepting the work.", t))
+		}
+	}
+	if claimsBlanketPass(summary) && len(nonEmpty(r.TestsFailed)) > 0 {
+		a.Contradictions = append(a.Contradictions, "Report claims blanket success while failing tests are recorded.")
+		a.Actions = append(a.Actions, "Reconcile the success claim with the failing tests before proceeding.")
 	}
 	changed := map[string]bool{}
 	for _, f := range nonEmpty(r.ChangedFiles) {
@@ -446,15 +512,15 @@ func AssessReport(r WorkReport) Assessment {
 	}
 	for _, claimed := range fileTokenPattern.FindAllString(summary, -1) {
 		if !changed[strings.ToLower(claimed)] {
-			a.Deviations = append(a.Deviations, fmt.Sprintf("Report claims a change to %q with no supporting file record.", claimed))
+			a.Contradictions = append(a.Contradictions, fmt.Sprintf("Report claims a change to %q with no supporting file record.", claimed))
 			a.Actions = append(a.Actions, fmt.Sprintf("Reconcile the claimed change to %q with the provided diffs or file list.", claimed))
 		}
 	}
 	if a.SelfReportOnly {
 		a.Risks = append(a.Risks, "Assessment is based solely on the agent's self-report: nothing here is independently verified.")
-		a.Actions = append(a.Actions, "Treat every claim above as unverified until tests or diffs arrive.")
+		a.Actions = append(a.Actions, "Treat every claim above as self-reported until tests or diffs arrive.")
 	}
-	if len(a.Deviations)+len(a.Unverified) > 0 {
+	if len(a.Contradictions)+len(a.Missing)+len(a.Claimed) > 0 {
 		objective := "Close the review gaps in the reported work."
 		if first := firstNonEmpty(r.Objectives); first != "" {
 			objective = "Close the review gaps in: " + firstSentence(first)
@@ -467,6 +533,32 @@ func AssessReport(r WorkReport) Assessment {
 		})
 	}
 	return a
+}
+
+// criterionTouched reports whether any acceptance criterion overlaps a
+// test name, used to attach orphan failures to the contradictions list.
+func criterionTouched(acceptance []string, test string) bool {
+	for _, criterion := range nonEmpty(acceptance) {
+		if reportAddresses(criterion, test) {
+			return true
+		}
+	}
+	return false
+}
+
+var blanketPassPatterns = []string{
+	"all tests pass", "all green", "no failures", "everything passes",
+	"all tests passed", "fully working", "complete success",
+}
+
+func claimsBlanketPass(summary string) bool {
+	lowered := strings.ToLower(summary)
+	for _, pattern := range blanketPassPatterns {
+		if strings.Contains(lowered, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func unaddressedCriteria(r WorkReport, summary string) []string {
@@ -492,7 +584,8 @@ func firstNonEmpty(items []string) string {
 }
 
 // Render formats the assessment as Markdown: verified findings first,
-// then claims, deviations, risks, actions, and the suggested follow-up.
+// then supporting evidence, self-reported claims, contradictions,
+// missing evidence, risks, actions, and the suggested follow-up.
 // Empty sections are omitted; the self-report disclaimer is always
 // present when no evidence was available.
 func (a Assessment) Render() string {
@@ -509,8 +602,10 @@ func (a Assessment) Render() string {
 		}
 	}
 	writeAssessmentList("Verified findings", a.Verified)
-	writeAssessmentList("Unverified claims", a.Unverified)
-	writeAssessmentList("Deviations", a.Deviations)
+	writeAssessmentList("Supporting evidence", a.Supported)
+	writeAssessmentList("Self-reported claims", a.Claimed)
+	writeAssessmentList("Contradictions", a.Contradictions)
+	writeAssessmentList("Missing evidence", a.Missing)
 	writeAssessmentList("Risks", a.Risks)
 	writeAssessmentList("Recommended corrective actions", a.Actions)
 	if strings.TrimSpace(a.FollowUp) != "" {

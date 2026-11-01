@@ -63,10 +63,10 @@ type AgentInstance struct {
 	// instructions, curated visible tools, Dave-protocol refusals). It
 	// never changes memory boundaries, isolation, or tool availability.
 	Hal9001 bool
-	// HalRestricted marks the active 444 non-implementing boundary: HAL
-	// persona without the coding profile. When true, implementation and
-	// orchestration tools are refused at execution time even if they
-	// somehow became visible. Operator-enabled coding profile clears it.
+	// HalRestricted marks the active 444 non-implementing boundary. It is
+	// true for every HAL turn, unconditionally: conflicting configuration
+	// (notably the operator coding profile) never clears it. HAL agents
+	// keep the restricted capability profile instead of escalating.
 	HalRestricted      bool
 	Definition         AgentContextDefinition
 	Subagents          *config.SubagentsConfig
@@ -136,12 +136,12 @@ func NewAgentInstance(
 	fallbacks := resolveAgentFallbacks(agentCfg, defaults)
 
 	// HAL9001 conversational persona: chat-first instructions and a curated
-	// visible tool set. Coding profile (explicit action mode) takes
-	// precedence when enabled.
+	// visible tool set. The 444 boundary is unconditional: a HAL agent is
+	// always restricted, even when the coding profile is enabled
+	// process-wide (the coding profile then applies only to non-HAL
+	// agents; see enableCodingProfile/enableHal9001Profile).
 	hal9001 := Hal9001Enabled(defaults.Persona)
-	// 444 boundary: restricted unless the operator explicitly enabled the
-	// coding profile, which carries its own implementation authority.
-	halRestricted := hal9001 && !codingProfileEnabled()
+	halRestricted := hal9001
 
 	restrict := defaults.RestrictToWorkspace
 	readRestrict := restrict && !defaults.AllowReadOutsideWorkspace

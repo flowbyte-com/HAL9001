@@ -175,11 +175,12 @@ toolLoop:
 		toolName := tc.Name
 		toolArgs := cloneStringAnyMap(tc.Arguments)
 		// 444 boundary (application logic, first check): a restricted HAL
-		// turn never executes implementation or orchestration tools, even
-		// if a profile, hook, or registration quirk made one visible. The
-		// operator-enabled coding profile clears HalRestricted at the
-		// agent, so explicit action mode is unaffected.
-		if ts.agent != nil && ts.agent.HalRestricted && Hal9001ImplementationBlocked(toolName) {
+		// turn executes only allowlisted capabilities. Default-deny: any
+		// other tool — implementation, orchestration, or simply unknown
+		// (late MCP/plugin registrations, aliases, wrappers) — is refused
+		// with an explicit skip, even if a profile, hook, or registration
+		// quirk made it visible. Non-HAL turns are unaffected.
+		if ts.agent != nil && ts.agent.HalRestricted && !Hal9001ToolAllowed(toolName) {
 			reason := fmt.Sprintf("Tool %q is not available under the HAL9001 non-implementing profile.", toolName)
 			al.emitEvent(
 				runtimeevents.KindAgentToolExecSkipped,

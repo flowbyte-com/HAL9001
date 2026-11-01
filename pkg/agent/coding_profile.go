@@ -93,10 +93,11 @@ func applyCodingProfile(agent *AgentInstance) []string {
 }
 
 // enableHal9001Profile installs the chat-first visible tool set on every
-// HAL9001 agent in the registry. Tools are already registered (including
-// the workshop tools from NewAgentInstance); this only narrows what the
-// provider sees. Agents without the persona are untouched, and coding
-// profile takes precedence (callers check that first).
+// HAL9001 agent in the registry, unconditionally: it runs whether or not
+// the coding profile is enabled, and the coding profile never overrides
+// it (enableCodingProfile skips HAL agents). Tools are already registered
+// (including the workshop tools from NewAgentInstance); this only narrows
+// what the provider sees. Agents without the persona are untouched.
 func enableHal9001Profile(registry *AgentRegistry) {
 	for _, agentID := range registry.ListAgentIDs() {
 		agent, ok := registry.GetAgent(agentID)
@@ -119,6 +120,11 @@ func enableCodingProfile(registry *AgentRegistry) {
 	for _, agentID := range registry.ListAgentIDs() {
 		agent, ok := registry.GetAgent(agentID)
 		if !ok || agent == nil || agent.Tools == nil {
+			continue
+		}
+		if agent.Hal9001 {
+			logger.WarnCF("agent", "coding profile refused for HAL9001 agent: 444 boundary keeps the restricted profile",
+				map[string]any{"agent_id": agentID})
 			continue
 		}
 		visible := applyCodingProfile(agent)

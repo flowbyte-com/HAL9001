@@ -64,30 +64,22 @@ func Hal9001DefaultVisibleTools() []string {
 	}
 }
 
-// hal9001BlockedTools names the implementation and orchestration tools
-// HAL must never execute: shell, file mutation, scheduling, capability
-// changes, and delegation primitives. Both original and coding-profile
-// alias names are listed so the block holds regardless of which
-// registration produced the tool.
-var hal9001BlockedTools = map[string]struct{}{
-	"exec": {}, "bash": {},
-	"write_file": {}, "write": {},
-	"edit_file": {}, "edit": {},
-	"append_file":   {},
-	"spawn":         {},
-	"subagent":      {},
-	"delegate":      {},
-	"cron":          {},
-	"install_skill": {},
-}
-
-// Hal9001ImplementationBlocked reports whether a tool is an implementation
-// or orchestration tool HAL must never execute. This is defense in depth
-// behind the visibility profile: even if a tool somehow became visible,
-// the execution gate still refuses it.
-func Hal9001ImplementationBlocked(name string) bool {
-	_, blocked := hal9001BlockedTools[strings.ToLower(strings.TrimSpace(name))]
-	return blocked
+// Hal9001ToolAllowed reports whether a tool is within HAL's approved
+// capability set: investigation (lookup, reading), reporting, prompt
+// creation, and review. Everything else — shell, file mutation,
+// scheduling, capability changes, orchestration, and unknown tools —
+// is refused. Default-deny: anything not on the visible-tools list,
+// including future tools no denylist could anticipate, is refused.
+// Memory admission and future authorized delegation are separate,
+// narrowly scoped operations, not entries here.
+func Hal9001ToolAllowed(name string) bool {
+	want := strings.ToLower(strings.TrimSpace(name))
+	for _, allowed := range Hal9001DefaultVisibleTools() {
+		if strings.ToLower(strings.TrimSpace(allowed)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // DaveRefusalLine is the entire user-facing response when HAL9001 must

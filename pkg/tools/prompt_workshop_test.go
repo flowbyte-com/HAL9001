@@ -58,17 +58,32 @@ func TestReviewReportTool(t *testing.T) {
 		t.Fatalf("Name() = %q", tool.Name())
 	}
 	good := tool.Execute(context.Background(), map[string]any{
+		"objectives":       "Add a canary step.",
+		"acceptance":       "Bad canaries are detected within five minutes",
+		"summary":          "Added a canary that detects bad canaries within five minutes. Changed deploy/canary.go and added TestCanaryDetectFiveMinutes.",
+		"tests_passed":     "TestCanaryDetectFiveMinutes",
+		"changed_files":    "deploy/canary.go",
+		"trusted_evidence": "TestCanaryDetectFiveMinutes",
+	})
+	if !strings.Contains(good.ForLLM, "Verified findings") {
+		t.Errorf("trusted-corroborated report should verify:\n%s", good.ForLLM)
+	}
+	if strings.Contains(good.ForLLM, "## Contradictions") || strings.Contains(good.ForLLM, "## Missing evidence") {
+		t.Errorf("clean trusted report should have no contradictions or gaps:\n%s", good.ForLLM)
+	}
+
+	untrusted := tool.Execute(context.Background(), map[string]any{
 		"objectives":    "Add a canary step.",
 		"acceptance":    "Bad canaries are detected within five minutes",
 		"summary":       "Added a canary that detects bad canaries within five minutes. Changed deploy/canary.go and added TestCanaryDetectFiveMinutes.",
 		"tests_passed":  "TestCanaryDetectFiveMinutes",
 		"changed_files": "deploy/canary.go",
 	})
-	if !strings.Contains(good.ForLLM, "Verified findings") {
-		t.Errorf("corroborated report should verify:\n%s", good.ForLLM)
+	if strings.Contains(untrusted.ForLLM, "## Verified findings") {
+		t.Errorf("agent-supplied evidence must support, never verify:\n%s", untrusted.ForLLM)
 	}
-	if strings.Contains(good.ForLLM, "## Deviations") {
-		t.Errorf("clean report should have no deviations section:\n%s", good.ForLLM)
+	if !strings.Contains(untrusted.ForLLM, "## Supporting evidence") {
+		t.Errorf("supplied evidence should be labeled supporting:\n%s", untrusted.ForLLM)
 	}
 
 	selfOnly := tool.Execute(context.Background(), map[string]any{
