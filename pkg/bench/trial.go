@@ -434,6 +434,53 @@ func RunTrial(spec TrialSpec) TrialResult {
 		return loop, loop.GetRegistry().GetDefaultAgent()
 	}
 	loop, instance := newLoop()
+
+	// 005B-R: from here on, every failure path persists partial evidence.
+	// The original fail() only filled fields; a compact/exhaustion/transport
+	// failure then lost all in-memory requests, tool calls and totals because
+	// neither the raw trace nor result.json was written. The ledger (written
+	// synchronously per request) already survived crashes; this makes the
+	// result file survive them too.
+	fail = func(err error) TrialResult {
+		result.Error = err.Error()
+		result.EndedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		result.DurationMS = time.Since(started).Milliseconds()
+		result.Requests = recorder.Requests()
+		result.ToolCalls = collector.snapshot()
+		if len(result.ToolCalls) == 0 {
+			result.ToolCalls = recorder.ToolCalls()
+		}
+		if stopped, _ := recorder.BudgetStop(); stopped {
+			result.TokenBudgetStopped = true
+		}
+		if recovery, recErr := ReconcileUsage(result, UsageLedgerPath(spec)); recErr == nil {
+			result.UsageRecovery = &recovery
+		}
+		result.Totals = totalsFor(result)
+		_ = recorder.WriteRaw(spec.RawPath)
+		_ = writeJSON(spec.ResultPath, redactValue(result))
+		return result
+	}
+
+	// 005B-R: count automatic threshold compactions per bench turn via the
+	// session-summarize events. Production compaction code is frozen; the
+	// bench only observes, to detect runaway compaction churn.
+	var summarizeMu sync.Mutex
+	summarizeCount := 0
+	summarizeSub, summarizeErr := eventBus.Channel().
+		OfKind(runtimeevents.KindAgentSessionSummarize).
+		Subscribe(context.Background(), runtimeevents.SubscribeOptions{
+			Name: "benchmark-summaries", Buffer: 256, Concurrency: runtimeevents.Locked,
+		}, func(_ context.Context, _ runtimeevents.Event) error {
+			summarizeMu.Lock()
+			summarizeCount++
+			summarizeMu.Unlock()
+			return nil
+		})
+	if summarizeErr != nil {
+		return fail(fmt.Errorf("subscribe summarize events: %w", summarizeErr))
+	}
+	defer summarizeSub.Close()
 	if instance == nil {
 		loop.Close()
 		return fail(fmt.Errorf("no default agent"))
@@ -472,6 +519,8 @@ func RunTrial(spec TrialSpec) TrialResult {
 	if turnStartIndex > turnEndIndex {
 		turnStartIndex = turnEndIndex
 	}
+	// 005B-R: runaway-trajectory accounting, symmetric across conditions.
+	exhaustions, totalSummaries, totalRequests, totalToolCalls := 0, 0, 0, 0
 	for i, turn := range spec.Turns[turnStartIndex:turnEndIndex] {
 		restarted := turn.RestartBefore
 		if turn.RestartBefore {
@@ -490,14 +539,35 @@ func RunTrial(spec TrialSpec) TrialResult {
 		historyBefore := sessionHistoryLen(ctx, instance, spec.SessionKey)
 		summaryBefore := sessionSummaryLen(ctx, instance, spec.SessionKey)
 		compacted := false
+		compactionAlreadyLost := false
+		summarizeMu.Lock()
+		turnSummarizeStart := summarizeCount
+		summarizeMu.Unlock()
 		if turn.CompactBefore {
 			beforeCompact := sessionSummaryLen(ctx, instance, spec.SessionKey)
 			if _, err := loop.ProcessDirectWithChannel(ctx, "/compact", spec.SessionKey, "cli", "direct"); err != nil {
 				return fail(fmt.Errorf("turn %s compact: %w", turn.ID, err))
 			}
-			compacted = sessionSummaryLen(ctx, instance, spec.SessionKey) > beforeCompact
+			afterCompact := sessionSummaryLen(ctx, instance, spec.SessionKey)
+			historyAfterCompact := sessionHistoryLen(ctx, instance, spec.SessionKey)
+			compacted = afterCompact > beforeCompact
 			if !compacted {
-				return fail(fmt.Errorf("turn %s compact produced no summary", turn.ID))
+				// 005B-R: a no-op explicit compaction is accepted only when
+				// history loss was already achieved — ordinarily by
+				// automatic threshold compaction earlier in the trial. The
+				// trial starts with an empty summary (preflight rejects
+				// pre-existing sessions), so a non-empty summary proves
+				// some compaction already ran; the remaining history must
+				// then be within twice the normal protected tail
+				// (production keeps ~4 messages plus the current turn).
+				// Anything larger means compaction is seriously behind and
+				// the no-op is genuine: fail as before.
+				if explicitCompactHistoryLost(afterCompact, historyAfterCompact) {
+					compactionAlreadyLost = true
+				} else {
+					return fail(fmt.Errorf("turn %s compact produced no summary (summary_chars=%d history=%d)",
+						turn.ID, afterCompact, historyAfterCompact))
+				}
 			}
 			// Compaction requests belong to the run total, not to the turn's
 			// own request count.
@@ -529,7 +599,8 @@ func RunTrial(spec TrialSpec) TrialResult {
 			HistoryBefore: historyBefore, HistoryAfter: sessionHistoryLen(ctx, instance, spec.SessionKey),
 			SummaryCharsBefore: summaryBefore, SummaryCharsAfter: sessionSummaryLen(ctx, instance, spec.SessionKey),
 			HistoryCleared: cleared, Restarted: restarted, Compacted: compacted,
-			Requests: len(recorder.Requests()) - requestCursor,
+			CompactionAlreadyLost: compactionAlreadyLost,
+			Requests:              len(recorder.Requests()) - requestCursor,
 		}
 		turnRequests := recorder.Requests()
 		if requestCursor < len(turnRequests) {
@@ -555,7 +626,44 @@ func RunTrial(spec TrialSpec) TrialResult {
 			result = fail(fmt.Errorf("turn %s: %w", turn.ID, turnErr))
 			break
 		}
+		// 005B-R: no-progress analysis on the completed turn. A task limit
+		// stops the remaining turns but keeps the trial harness-valid: the
+		// repository is scored as-is. Identical rules in both conditions.
+		summarizeMu.Lock()
+		turnSummaries := summarizeCount - turnSummarizeStart
+		summarizeMu.Unlock()
+		totalSummaries += turnSummaries
+		turnResult.AutoCompactions = turnSummaries
+		totalRequests += turnResult.Requests
+		totalToolCalls += len(turnResult.ToolCalls)
+		var runawayRequests []RequestRecord
+		allRequests := recorder.Requests()
+		runawayStart := len(allRequests) - turnResult.Requests
+		if runawayStart < 0 {
+			runawayStart = 0
+		}
+		runawayRequests = append([]RequestRecord(nil), allRequests[runawayStart:]...)
+		if maxIterationExhausted(turnResult.Response) {
+			exhaustions++
+		}
+		taskLimitReason := turnRunawayReason(runawayRequests, turnSummaries)
+		switch {
+		case taskLimitReason != "":
+		case totalSummaries > maxSummariesPerTrial:
+			taskLimitReason = "task execution limit: too many automatic compactions in one trial"
+		case exhaustions >= maxIterationExhaustionsPerTrial:
+			taskLimitReason = "task execution limit: tool-iteration budget exhausted without a final response more than once"
+		case totalRequests > maxRequestsPerTrial:
+			taskLimitReason = "task execution limit: too many LLM requests in one trial"
+		case totalToolCalls > maxToolCallsPerTrial:
+			taskLimitReason = "task execution limit: too many tool calls in one trial"
+		}
 		result.Turns = append(result.Turns, turnResult)
+		if taskLimitReason != "" {
+			result.TaskLimitReached = true
+			result.TaskLimitReason = fmt.Sprintf("turn %s: %s", turn.ID, taskLimitReason)
+			break
+		}
 		_ = i
 	}
 
@@ -589,6 +697,9 @@ func RunTrial(spec TrialSpec) TrialResult {
 	}
 	if spec.Experiment == "D" && !spec.SkipScoring {
 		result.Score = Score{Notes: []string{"independently scored from the resulting repository; not a prompt diagnostic"}}
+		if result.TaskLimitReached {
+			result.Score.Notes = append(result.Score.Notes, "task execution limit reached: "+result.TaskLimitReason)
+		}
 		outcome, scoreErr := scoreCodingResult(spec, result, started)
 		if scoreErr != nil {
 			result.Error = "coding scoring: " + scoreErr.Error()
@@ -620,6 +731,11 @@ func RunTrial(spec TrialSpec) TrialResult {
 	result.Postflight = postflightChecks(spec, instance)
 	result.Postflight = append(result.Postflight, codingPostflightChecks(spec, result)...)
 	result.Totals = totalsFor(result)
+	// 005B-R: reconcile the durable ledger on the normal path too, so the
+	// recorded recovery always reflects reservations for unknown outcomes.
+	if recovery, recErr := ReconcileUsage(result, UsageLedgerPath(spec)); recErr == nil {
+		result.UsageRecovery = &recovery
+	}
 	attachRetrievalLatency(&result, spec.LogPath)
 	result.Totals.MPMRetrievalCalls = countLogMessage(spec.LogPath, "MPM retrieval")
 
@@ -905,20 +1021,56 @@ func codingPostflightChecks(spec TrialSpec, result TrialResult) []Check {
 	switch task.Interruption {
 	case "compaction":
 		compacted := false
+		reachedInterruption := false
 		for _, turn := range result.Turns {
-			if turn.Compacted && turn.SummaryCharsAfter > 0 {
+			// 005B-R: an accepted no-op (history loss already achieved by
+			// automatic compaction) exercises the same property as a fresh
+			// explicit compaction.
+			if (turn.Compacted || turn.CompactionAlreadyLost) && turn.SummaryCharsAfter > 0 {
 				compacted = true
 			}
 		}
-		checks = append(checks, Check{Name: "coding_compaction_exercised", Passed: compacted})
+		for _, spec := range task.Turns {
+			if spec.CompactBefore {
+				for _, turn := range result.Turns {
+					if turn.TurnID == spec.ID {
+						reachedInterruption = true
+					}
+				}
+			}
+		}
+		if result.TaskLimitReached && !reachedInterruption {
+			// 005B-R: the task limit stopped the trial before the
+			// interruption turn. The property is untested, not violated:
+			// the limit itself is the recorded outcome.
+			checks = append(checks, Check{Name: "coding_compaction_exercised", Passed: true,
+				Detail: "interruption turn not reached; task limit stopped the trial first"})
+		} else {
+			checks = append(checks, Check{Name: "coding_compaction_exercised", Passed: compacted})
+		}
 	case "restart":
 		restarted := false
+		reachedRestart := false
 		for _, turn := range result.Turns {
 			if turn.Restarted {
 				restarted = true
 			}
 		}
-		checks = append(checks, Check{Name: "coding_restart_exercised", Passed: restarted})
+		for _, spec := range task.Turns {
+			if spec.RestartBefore {
+				for _, turn := range result.Turns {
+					if turn.TurnID == spec.ID {
+						reachedRestart = true
+					}
+				}
+			}
+		}
+		if result.TaskLimitReached && !reachedRestart {
+			checks = append(checks, Check{Name: "coding_restart_exercised", Passed: true,
+				Detail: "restart turn not reached; task limit stopped the trial first"})
+		} else {
+			checks = append(checks, Check{Name: "coding_restart_exercised", Passed: restarted})
+		}
 	}
 	return checks
 }

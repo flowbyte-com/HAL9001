@@ -36,6 +36,10 @@ type RunOptions struct {
 	// rather than starting work it cannot meter.
 	TokenBudgetTotal    int64
 	TokenBudgetPerTrial int64
+	// VerboseMock enables the verbose-agent simulation for offline
+	// churn/guard testing. Never set for live runs.
+	VerboseMock      bool
+	VerboseMockIters int
 }
 
 type RunManifest struct {
@@ -215,7 +219,8 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 		runner = []string{exe, "trial"}
 	}
 
-	var pilotReportedTotal, maxTrialReported int64
+	var pilotReportedTotal, maxTrialReported, pilotReservedTotal int64
+	var pilotUnknownRequests int
 	var budgetStopped bool
 	var budgetStopReason string
 
@@ -245,12 +250,31 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 		}
 		manifest.Order = append(manifest.Order, trialID)
 		result := executeTrialSpec(runDir, spec, runner, opts.ProviderKind, item)
-		summary.Trials = append(summary.Trials, result)
+		var trialReported int64
+		// 005B-R: reconcile the durable ledger even when the child left no
+		// usable result. A crashed or early-failed child contributes its
+		// metered known totals plus reservations for unknown outcomes.
+		if recovery, recErr := ReconcileUsage(result, UsageLedgerPath(spec)); recErr == nil {
+			if result.UsageRecovery == nil {
+				result.UsageRecovery = &recovery
+			}
+			pilotReservedTotal += int64(recovery.Reserved)
+			pilotUnknownRequests += recovery.Unknown
+			summary.Trials = append(summary.Trials, result)
+			trialSpend := TrialSpendForBudget(recovery)
+			if inMemory := int64(result.Totals.TotalTokens); inMemory > trialSpend {
+				trialSpend = inMemory
+			}
+			trialReported = trialSpend
+			pilotReportedTotal += trialReported
+		} else {
+			summary.Trials = append(summary.Trials, result)
+			trialReported = int64(result.Totals.TotalTokens)
+			pilotReportedTotal += trialReported
+		}
 		for _, path := range append([]string{spec.LogPath}, processLogPaths(spec)...) {
 			redactFile(path)
 		}
-		trialReported := int64(result.Totals.TotalTokens)
-		pilotReportedTotal += trialReported
 		if trialReported > maxTrialReported {
 			maxTrialReported = trialReported
 		}
@@ -274,7 +298,8 @@ func RunExperiment(opts RunOptions) (*RunSummary, error) {
 	}
 	summary.TokenBudget = &TokenBudgetSummary{
 		PerTrialCap: opts.TokenBudgetPerTrial, TotalCap: opts.TokenBudgetTotal,
-		ReportedTotal: pilotReportedTotal, MaxTrialReported: maxTrialReported,
+		ReportedTotal: pilotReportedTotal, ReservedTotal: pilotReservedTotal,
+		UnknownRequests: pilotUnknownRequests, MaxTrialSpend: int(maxTrialReported),
 		TrialsCompleted: len(summary.Trials), TrialsAttempted: len(plan),
 		StoppedEarly: budgetStopped, StopReason: budgetStopReason,
 	}
@@ -410,6 +435,8 @@ func buildTrialSpecFromPlan(
 		SequenceIndex:         item.SequenceIndex,
 		TokenBudgetPerTrial:   opts.TokenBudgetPerTrial,
 		TokenBudgetTotal:      opts.TokenBudgetTotal,
+		VerboseMock:           opts.VerboseMock,
+		VerboseMockIters:      opts.VerboseMockIters,
 	}
 	if strings.EqualFold(opts.Experiment, "D") {
 		spec.CodingTask = scenario.CodingTask
@@ -688,6 +715,11 @@ func executeTrialSpec(runDir string, spec TrialSpec, runner []string, providerKi
 		if result.Status == "error" {
 			break
 		}
+		// 005B-R: a task limit stops the remaining segments the same way
+		// it stops remaining turns: the partial work is scored as-is.
+		if result.TaskLimitReached {
+			break
+		}
 	}
 
 	merged := mergeTrialSegments(spec, results, time.Since(started))
@@ -704,9 +736,17 @@ func executeTrialSpec(runDir string, spec TrialSpec, runner []string, providerKi
 // full_success false) never aborts: that is the measured outcome.
 func trialAbortReason(result TrialResult, opts RunOptions) string {
 	if result.Status == "pass" {
-		if opts.TokenBudgetPerTrial > 0 && int64(result.Totals.TotalTokens) > opts.TokenBudgetPerTrial {
-			return fmt.Sprintf("trial reported %d tokens over per-trial cap %d",
-				result.Totals.TotalTokens, opts.TokenBudgetPerTrial)
+		// 005B-R: charge the conservative spend (known reported plus held
+		// reservations), not just the in-memory total.
+		spend := int64(result.Totals.TotalTokens)
+		if result.UsageRecovery != nil {
+			if recovered := TrialSpendForBudget(*result.UsageRecovery); recovered > spend {
+				spend = recovered
+			}
+		}
+		if opts.TokenBudgetPerTrial > 0 && spend > opts.TokenBudgetPerTrial {
+			return fmt.Sprintf("trial spend %d tokens over per-trial cap %d",
+				spend, opts.TokenBudgetPerTrial)
 		}
 		if opts.TokenBudgetTotal > 0 && result.Totals.UsageMissingRequests > 0 && opts.ProviderKind == "live" {
 			return fmt.Sprintf("trial has %d live requests with missing usage; spend cannot be metered",
@@ -757,6 +797,12 @@ func mergeTrialSegments(base TrialSpec, results []TrialResult, elapsed time.Dura
 		merged.ToolCalls = append(merged.ToolCalls, result.ToolCalls...)
 		if result.TokenBudgetStopped {
 			merged.TokenBudgetStopped = true
+		}
+		if result.TaskLimitReached {
+			merged.TaskLimitReached = true
+			if merged.TaskLimitReason == "" {
+				merged.TaskLimitReason = result.TaskLimitReason
+			}
 		}
 		// The task-state sidecar is shared by every segment, so the last
 		// segment's measurement is the end state; summing would double count.

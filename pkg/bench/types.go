@@ -80,6 +80,13 @@ type TrialSpec struct {
 	// plus a conservative allowance for the next request would exceed a cap.
 	TokenBudgetPerTrial int64 `json:"token_budget_per_trial,omitempty"`
 	TokenBudgetTotal    int64 `json:"token_budget_total,omitempty"`
+	// VerboseMock replays a verbose live-agent trajectory shape (long
+	// completions, looping checks) for offline churn/guard testing. It is
+	// never a capability claim and never enabled for live runs.
+	VerboseMock bool `json:"verbose_mock,omitempty"`
+	// VerboseMockIters sets the per-turn tool-action count in verbose mode.
+	// Zero selects the live shape (20 actions, no converging response).
+	VerboseMockIters int `json:"verbose_mock_iters,omitempty"`
 	// PilotReportedBefore is the pilot-wide reported total before this trial;
 	// TrialReportedBefore is the same-trial total before this segment.
 	PilotReportedBefore int64 `json:"pilot_reported_before,omitempty"`
@@ -230,7 +237,14 @@ type TurnResult struct {
 	HistoryCleared     bool `json:"history_cleared,omitempty"`
 	Restarted          bool `json:"restarted,omitempty"`
 	Compacted          bool `json:"compacted,omitempty"`
-	Requests           int  `json:"llm_requests"`
+	// CompactionAlreadyLost marks an accepted no-op explicit compaction:
+	// ordinary history was already minimal with a non-empty summary, so the
+	// history-loss property held before this turn ran /compact.
+	CompactionAlreadyLost bool `json:"compaction_already_lost,omitempty"`
+	// AutoCompactions counts automatic threshold compactions observed
+	// during the turn via session-summarize events.
+	AutoCompactions int `json:"auto_compactions,omitempty"`
+	Requests        int `json:"llm_requests"`
 
 	// TaskState is the sidecar snapshot after the turn, when task state is
 	// enabled. It is evidence for the mechanism, not a model-quality score.
@@ -457,6 +471,18 @@ type TrialResult struct {
 	// The human-readable reason is in Error.
 	TokenBudgetStopped bool `json:"token_budget_stopped,omitempty"`
 
+	// TaskLimitReached marks a harness-valid trial stopped by a
+	// runaway-trajectory guard (no-progress loops, compaction churn, or
+	// request/tool backstops). Unlike Error/Status, it does not invalidate
+	// the trial: the repository is scored as-is. Identical rules apply in
+	// both conditions.
+	TaskLimitReached bool   `json:"task_limit_reached,omitempty"`
+	TaskLimitReason  string `json:"task_limit_reason,omitempty"`
+
+	// UsageRecovery is the self- or parent-reconciled spend, including ledger
+	// reservations for requests whose outcome is unknown.
+	UsageRecovery *UsageRecovery `json:"usage_recovery,omitempty"`
+
 	TaskStateFinal *TaskStateSnapshot `json:"task_state_final,omitempty"`
 
 	ResidentCacheRecords   int      `json:"resident_cache_records"`
@@ -543,14 +569,16 @@ type RunSummary struct {
 // against the authorized ceilings. Missing usage is never counted as zero:
 // a live trial with unreported usage stops the run instead.
 type TokenBudgetSummary struct {
-	PerTrialCap      int64  `json:"per_trial_cap"`
-	TotalCap         int64  `json:"total_cap"`
-	ReportedTotal    int64  `json:"reported_total"`
-	MaxTrialReported int64  `json:"max_trial_reported"`
-	TrialsCompleted  int    `json:"trials_completed"`
-	TrialsAttempted  int    `json:"trials_attempted"`
-	StoppedEarly     bool   `json:"stopped_early"`
-	StopReason       string `json:"stop_reason,omitempty"`
+	PerTrialCap     int64  `json:"per_trial_cap"`
+	TotalCap        int64  `json:"total_cap"`
+	ReportedTotal   int64  `json:"reported_total"`
+	ReservedTotal   int64  `json:"reserved_allowance_total"`
+	UnknownRequests int    `json:"unknown_outcome_requests"`
+	MaxTrialSpend   int    `json:"max_trial_spend"`
+	TrialsCompleted int    `json:"trials_completed"`
+	TrialsAttempted int    `json:"trials_attempted"`
+	StoppedEarly    bool   `json:"stopped_early"`
+	StopReason      string `json:"stop_reason,omitempty"`
 }
 
 type ValidationSummary struct {

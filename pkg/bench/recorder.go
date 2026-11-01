@@ -54,7 +54,27 @@ type RecordingProvider struct {
 }
 
 func NewRecordingProvider(inner providers.LLMProvider, spec TrialSpec) *RecordingProvider {
-	return &RecordingProvider{inner: inner, spec: spec}
+	p := &RecordingProvider{inner: inner, spec: spec}
+	// 005B-R: seed the in-memory meter from the durable ledger so a resumed
+	// segment (new OS process, same trial file) cannot reset the budget.
+	// The ledger is authoritative for this trial; the parent-provided
+	// TrialReportedBefore only covers setups where no ledger exists yet.
+	// max() keeps the base monotonic if either side is stale.
+	if path := UsageLedgerPath(spec); path != "" {
+		if recovery, err := RecoverUsageLedger(path); err == nil {
+			ledgerBase := int64(recovery.Known + recovery.Reserved)
+			if ledgerBase > int64(spec.TrialReportedBefore) {
+				p.reportedTrialTotal = ledgerBase
+			} else {
+				p.reportedTrialTotal = int64(spec.TrialReportedBefore)
+			}
+		} else {
+			p.reportedTrialTotal = int64(spec.TrialReportedBefore)
+		}
+	} else {
+		p.reportedTrialTotal = int64(spec.TrialReportedBefore)
+	}
+	return p
 }
 
 func (p *RecordingProvider) GetDefaultModel() string { return p.inner.GetDefaultModel() }
@@ -63,16 +83,9 @@ func (p *RecordingProvider) GetDefaultModel() string { return p.inner.GetDefault
 // the full context window plus the per-request completion cap. The next
 // request is refused when the metered total plus this allowance would exceed
 // a ceiling, so a ceiling can never be breached by sending one more request.
+// The same value is persisted as the ledger reservation for the request.
 func (p *RecordingProvider) nextRequestAllowance() int64 {
-	window := p.spec.ContextWindow
-	if window <= 0 {
-		window = 32768
-	}
-	maxTokens := p.spec.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = 1024
-	}
-	return int64(window) + int64(maxTokens)
+	return int64(ledgerAllowance(p.spec))
 }
 
 func (p *RecordingProvider) budgetCaps() (perTrial, total, before int64) {
@@ -236,6 +249,14 @@ func (p *RecordingProvider) begin(
 
 	activeChars, activeTokens := retrievalBlockSizes(retrieved, "active")
 	taskText, taskChars, taskTokens, taskEntries := taskStateBlockSizes(messages)
+	allowance := int(p.nextRequestAllowance())
+	// 005B-R: persist the reservation before dispatch. If the process dies
+	// before the response, recovery retains this allowance against the
+	// budget instead of counting the request as zero.
+	_ = appendUsageEvent(UsageLedgerPath(p.spec), UsageEvent{
+		Type: "reservation", RequestID: requestID, TurnID: turnID,
+		Segment: p.spec.Segment, Model: model, Allowance: allowance,
+	})
 	request := RequestRecord{
 		RequestID:               requestID,
 		TurnID:                  turnID,
@@ -311,6 +332,37 @@ func (p *RecordingProvider) finish(
 		request.RequestError = err.Error()
 		raw.Error = err.Error()
 	}
+
+	// 005B-R: persist the response event before returning, so the parent can
+	// reconstruct the outcome even if the process dies before trial
+	// finalization. Only IDs, token counts, status and latency are stored —
+	// never prompt text, response content, credentials or headers.
+	status := "ok"
+	if err != nil {
+		status = "error"
+	}
+	ledgerEvent := UsageEvent{
+		Type: "response", RequestID: requestID, TurnID: request.TurnID,
+		Segment: p.spec.Segment, Model: request.Model, Status: status,
+		Allowance: int(p.nextRequestAllowance()), LatencyMS: latency,
+		Reported: request.Usage.Reported,
+	}
+	if request.Usage.PromptTokens != nil {
+		ledgerEvent.PromptTokens = *request.Usage.PromptTokens
+	}
+	if request.Usage.CompletionTokens != nil {
+		ledgerEvent.CompletionTokens = *request.Usage.CompletionTokens
+	}
+	if request.Usage.TotalTokens != nil {
+		ledgerEvent.TotalTokens = *request.Usage.TotalTokens
+	}
+	if request.Usage.CacheReadTokens != nil {
+		ledgerEvent.CacheReadTokens = *request.Usage.CacheReadTokens
+	}
+	if err != nil {
+		ledgerEvent.Error = firstLines(err.Error(), 2)
+	}
+	_ = appendUsageEvent(UsageLedgerPath(p.spec), ledgerEvent)
 
 	p.mu.Lock()
 	// 005B metering: account provider-reported totals while holding the same

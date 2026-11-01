@@ -337,6 +337,9 @@ func (m *mockProvider) toolName(profileName string) string {
 }
 
 func (m *mockProvider) toolCall(name string, args map[string]any, messages []providers.Message) *providers.LLMResponse {
+	if m.spec.VerboseMock {
+		messages = verbosePadMessages(messages)
+	}
 	raw, _ := json.Marshal(args)
 	return &providers.LLMResponse{
 		FinishReason: "tool_calls",
@@ -353,11 +356,31 @@ func (m *mockProvider) toolCall(name string, args map[string]any, messages []pro
 }
 
 func (m *mockProvider) respond(content string, messages []providers.Message) *providers.LLMResponse {
+	if m.spec.VerboseMock {
+		content = verbosePadCompletion(content)
+	}
 	return &providers.LLMResponse{
 		Content:      content,
 		FinishReason: "stop",
 		Usage:        estimateUsage(messages, content),
 	}
+}
+
+// verbosePadCompletion simulates a verbose live model: every assistant
+// message carries roughly 1000 completion tokens, which is what makes
+// prompts grow fast enough to trigger production threshold compaction.
+// Deterministic filler; never used for capability claims.
+func verbosePadCompletion(content string) string {
+	const target = 4000
+	if len(content) >= target {
+		return content
+	}
+	var b strings.Builder
+	b.WriteString(content)
+	for b.Len() < target {
+		b.WriteString("\nVerbose agent note: re-examining the repository state, tool outputs and remaining failures before deciding the next command. ")
+	}
+	return b.String()
 }
 
 func estimateUsage(messages []providers.Message, completion string) *providers.UsageInfo {
@@ -443,6 +466,9 @@ func (m *mockProvider) codingTaskResponse(messages []providers.Message, lastUser
 	key := m.spec.CodingTask + "|" + turn
 	stage := m.codingStage[key]
 	actions := codingMockActions(m.spec.CodingTask, turn)
+	if m.spec.VerboseMock {
+		actions = verboseCodingMockActions(m.spec.CodingTask, turn, actions, m.spec.VerboseMockIters)
+	}
 	if stage >= len(actions) {
 		return m.respond("Done.", messages)
 	}
@@ -710,4 +736,103 @@ func mockSummaryLine(value string, limit int) string {
 		return value
 	}
 	return value[:limit] + "..."
+}
+
+// ---------------------------------------------------------------------------
+// 005B-R verbose-agent simulation.
+//
+// The aborted live pilot showed a trajectory the deterministic script never
+// produces: ~20 tool iterations per turn with ~1000-token completions,
+// repeated failing checks, and threshold compaction firing on nearly every
+// request. verboseCodingMockActions replays that *shape* deterministically —
+// same action kinds, an order of magnitude more of them — so compaction
+// churn, runaway guards and crash recovery can be exercised offline. It
+// changes no fixture, scoring rule or condition behavior, and the final
+// repository outcome still converges (the fix is applied early, exactly
+// like the live trial that fixed balance.go and then looped).
+
+func verboseCodingMockActions(task, turn string, base []codingMockAction, iters int) []codingMockAction {
+	if task != "compaction_ledger" {
+		return base
+	}
+	// iters <= 0 selects the live shape: 20 tool actions per turn with no
+	// converging response, so the agent-side loop exhausts its iteration
+	// budget exactly like the aborted live trial. Positive iters converges
+	// with the base final response after that many tools, which exercises
+	// automatic-then-explicit compaction sequencing offline.
+	live := iters <= 0
+	if live {
+		iters = 20
+	}
+	filler := []codingMockAction{
+		mockBash("sh check.sh"),
+		mockRead("balance.go"),
+		mockBash("sh check.sh"),
+		mockRead("validate.go"),
+		mockBash("sh check.sh"),
+		mockRead("ledger_test.go"),
+	}
+	tools := func(actions []codingMockAction) []codingMockAction {
+		var out []codingMockAction
+		for _, action := range actions {
+			if action.Say == "" {
+				out = append(out, action)
+			}
+		}
+		return out
+	}
+	finalSay := func(actions []codingMockAction) *codingMockAction {
+		for _, action := range actions {
+			if action.Say != "" {
+				action := action
+				return &action
+			}
+		}
+		return nil
+	}
+	var out []codingMockAction
+	switch turn {
+	case "t1":
+		// t1 applies the balance fix first (as the live agent did).
+		out = append(out, tools(base)...)
+		for len(out) < iters {
+			out = append(out, filler...)
+		}
+		out = out[:iters]
+		if live {
+			return out
+		}
+		if final := finalSay(base); final != nil {
+			out = append(out, *final)
+		}
+		return out
+	case "t2":
+		// t2 only ever re-ran checks and reads.
+		for len(out) < iters {
+			out = append(out, filler...)
+		}
+		out = out[:iters]
+		if live {
+			return out
+		}
+		if final := finalSay(base); final != nil {
+			out = append(out, *final)
+		}
+		return out
+	default:
+		return base
+	}
+}
+
+// verbosePadMessages grows the visible history the way a verbose model's
+// long tool outputs would, so threshold compaction fires as it did live.
+// Deterministic; test-only shape simulation.
+func verbosePadMessages(messages []providers.Message) []providers.Message {
+	out := make([]providers.Message, len(messages))
+	copy(out, messages)
+	if len(out) == 0 {
+		return out
+	}
+	out[len(out)-1].Content += verbosePadCompletion("")
+	return out
 }
