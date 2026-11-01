@@ -6,13 +6,18 @@ milestone stops after deterministic qualification as required.
 
 - Production memory: frozen at 004C
   (`0ebc816eb56ed3c1769342eb4701996921ff0026`); no production behavior changed.
-- Evaluation code commit: `f549e95c60be87b61c2b07f8faf037f3ea525cd7`
-  (`bench: add realistic 005a coding evaluation`).
+- Evaluation code commits:
+  - `f549e95c60be87b61c2b07f8faf037f3ea525cd7`
+    (`bench: add realistic 005a coding evaluation`);
+  - `46e14c2ab8255c6015751312b5c610aa6a877901`
+    (`bench: run 005a restart trials in separate processes`);
+  - `aafe7bdbf897fc8af698bd772c3d66213f30c7f6`
+    (`bench: merge 005a restart metrics across segments`).
 - Previous HEAD: `1e36a5546d5d6cc48b5c3eacafc92d1307e84d7f`.
-- Run checkout: `f549e95c60be87b61c2b07f8faf037f3ea525cd7` (clean at run time;
+- Run checkout: `aafe7bdbf897fc8af698bd772c3d66213f30c7f6` (clean at run time;
   the documentation commit adds only this report).
 - Benchmark binary: `.lab/bin/bench`
-- Binary SHA-256: `c61539c97c03f551d05693b2763adaf803a6f2d53d4338be31af5f93f5cc9976`
+- Binary SHA-256: `4a46f7de5e7f0ed451a4aa10740b4825c6ab7ee766506ad52e3c0fa2f32702f8`
 - Go: `go1.27.3`
 - Fixture qualification: `.lab/bench/005a/fixtures/verification.json`
 - Deterministic run: `.lab/bench/005a/005a-mock-3t`
@@ -231,9 +236,16 @@ different condition metadata and requires an identical verdict.
   turn 3 of `compaction_ledger`. The trial fails if no summary was produced.
   The test asserts that ordinary history was compacted and that the summary is
   non-empty.
-- **Restart** closes the agent loop and constructs a new one with the same
-  session store and workspace before turn 2 of `restart_parser`. The trial
-  fails if the restart flag is not observed.
+- **Restart** is a true process restart, not an in-process loop rebuild. The D
+  runner splits `restart_parser` at `RestartBefore` and executes the turns
+  before and after the split in separate OS processes. Both processes share only
+  the trial workspace, PicoClaw home (session store) and task-state sidecar, and
+  each carries its own turn range, result file, raw trace and request-ID prefix.
+  The parent merges the segment results into one trial record. The trial fails
+  if fewer than two processes ran, if the resumed process cannot find the
+  earlier session, or if the restart flag is not observed. Ordinary history is
+  carried on disk: segment 2 begins with the same session history length that
+  segment 1 ended with.
 - **Hidden tests** are embedded in the bench binary and copied to a post-run
   scoring directory. Preflight and postflight assert that no hidden filename is
   present in the workspace.
@@ -268,6 +280,7 @@ Every trial records, from sources independent of agent claims:
 | Evidence reuse | pre-declared hidden tests |
 | Wrong/unsupported fix | known wrong-fix patterns; diagnosis statements counted separately |
 | Recovery after compaction/restart | full success on the interrupted task |
+| Process starts | subprocesses launched for the trial (restart tasks must be at least two) |
 | Time to full success | trial duration for a successful repository |
 | Task-state prompt residency | rendered `task.state` block per request |
 | Task-state storage | sidecar bytes on disk |
@@ -280,7 +293,9 @@ bearer tokens and key-shaped fields.
 
 ## 7. Evaluation integrity
 
-- One subprocess per trial, fresh filesystem and session state.
+- One subprocess per trial, fresh filesystem and session state. A restart trial
+  uses one subprocess per turn segment, each with fresh process state but the
+  same trial workspace, session store and sidecar.
 - Condition and treatment order randomized within each pair. Pairs themselves
   are shuffled. The seed is recorded in `manifest.json`; the same seed
   reproduces the same order.
@@ -352,6 +367,19 @@ Per-task task-state prompt tokens:
 | `compaction_ledger` | 0 | 1,208 |
 | `restart_parser` | 0 | 768 |
 
+Restart continuity in this run:
+
+- Every `restart_parser` trial in both conditions ran in exactly **two OS
+  processes** (`process_starts = 2`), with separately written segment results
+  and request IDs (`s1-req-*`, `s2-req-*`).
+- Segment 1 ended with 12 messages of history and segment 2 began with the same
+  12, so the restart preserved session state rather than silently starting
+  fresh.
+- The merged effort metrics cover both segments (3 reads, 3 bash calls, 2
+  failed checks per trial). The first segmented implementation reported only
+  the resuming process; the follow-up commit fixes that and a test now guards it.
+- MPM retrieval and resident-cache records remained zero in both conditions.
+
 Interpretation is deliberately narrow:
 
 - The harness, scoring, isolation, reset, pairing and measurements are
@@ -361,7 +389,7 @@ Interpretation is deliberately narrow:
 - The treatment pays a measurable prompt and storage cost exactly on the tasks
   where evidence leaves the visible window. On the short tasks it adds storage
   but no prompt residency.
-- The duration difference (`-87 ms` mean) is process noise, not a speed claim.
+- The duration difference (`-50 ms` mean) is process noise, not a speed claim.
 - The run can reveal help, harm or no difference once a live model is used:
   full success, partial points, constraints, token cost and wasted-effort
   metrics are all independent of the mechanism.
