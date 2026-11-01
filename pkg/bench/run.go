@@ -693,7 +693,18 @@ func mergeTrialSegments(base TrialSpec, results []TrialResult, elapsed time.Dura
 		merged.Error = strings.Join(uniqueStrings(errs), "; ")
 		merged.Status = "error"
 	}
-	if task, err := LoadCodingTask(base.CodingTask); err == nil && task.Interruption == "restart" {
+	task, taskErr := LoadCodingTask(base.CodingTask)
+	if merged.Coding != nil && taskErr == nil {
+		// Effort metrics must cover the whole trial, not only the segment that
+		// ran the final scoring pass.
+		merged.Coding.Metrics = ComputeCodingMetrics(merged, task)
+		merged.Coding.DurationMS = elapsed.Milliseconds()
+		if merged.Coding.FullSuccess {
+			merged.Coding.TimeToFullSuccessMS = elapsed.Milliseconds()
+		}
+		_ = writeJSON(filepath.Join(merged.Coding.ScoringDir, "report.json"), merged.Coding)
+	}
+	if taskErr == nil && task.Interruption == "restart" {
 		merged.Postflight = append(merged.Postflight, Check{
 			Name: "coding_process_restart", Passed: len(results) >= 2,
 			Detail: fmt.Sprintf("segments=%d", len(results)),

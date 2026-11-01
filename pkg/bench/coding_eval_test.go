@@ -305,6 +305,12 @@ func TestExperimentDMockRun(t *testing.T) {
 			if resumedHistory == 0 {
 				t.Fatalf("%s resumed with empty history", trial.TrialID)
 			}
+			// Effort metrics must cover both segments, not only the resuming
+			// process: the scripted trajectory reads three files and runs three
+			// checks across the trial.
+			if trial.Coding.Metrics.Reads < 3 || trial.Coding.Metrics.BashCalls < 3 {
+				t.Fatalf("%s metrics cover only one segment: %+v", trial.TrialID, trial.Coding.Metrics)
+			}
 			if _, err := os.Stat(filepath.Join(filepath.Dir(trial.ResultPath), "result-s2.json")); err != nil {
 				t.Fatalf("%s has no second segment result: %v", trial.TrialID, err)
 			}
