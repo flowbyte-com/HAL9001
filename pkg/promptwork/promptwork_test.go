@@ -64,6 +64,85 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestBuildSectionOrderStable(t *testing.T) {
+	out := Build(Brief{
+		Objective: "Ship it.", Background: "Why.", Requirements: []string{"R"},
+		Constraints: []string{"C"}, Evidence: []string{"E"},
+		Deliverables: []string{"D"}, Acceptance: []string{"A"},
+	})
+	order := []string{
+		"# Task brief", "## Objective", "## Background", "## Requirements",
+		"## Constraints and exclusions", "## Known evidence and open questions",
+		"## Expected deliverables", "## Acceptance criteria",
+	}
+	last := -1
+	for _, section := range order {
+		idx := strings.Index(out, section)
+		if idx < 0 {
+			t.Fatalf("brief missing section %q:\n%s", section, out)
+		}
+		if idx <= last {
+			t.Fatalf("section %q out of order:\n%s", section, out)
+		}
+		last = idx
+	}
+}
+
+// The renderer must preserve both sides of a contradiction verbatim.
+// Semantic contradiction detection is out of scope for the rule-based
+// reviewer (documented limitation); fidelity is the guarantee.
+func TestBuildPreservesContradiction(t *testing.T) {
+	out := Build(Brief{
+		Objective:    "Serve live results.",
+		Requirements: []string{"Results must be real-time, under 100ms."},
+		Constraints:  []string{"No network access of any kind."},
+		Acceptance:   []string{"Demo passes."},
+	})
+	if !strings.Contains(out, "under 100ms") || !strings.Contains(out, "No network access") {
+		t.Fatalf("both contradictory sides must render verbatim:\n%s", out)
+	}
+}
+
+// A generated brief must itself review clean on portability: the workshop
+// never injects vendor-specific language.
+func TestBuildSelfHostingClean(t *testing.T) {
+	briefs := []Brief{
+		{Objective: "Add a canary step to the deploy.", Requirements: []string{"Detect bad canaries fast"}, Acceptance: []string{"Two clean deploys"}},
+		{Objective: "Summarize the outage for leadership.", Background: "Friday incident.", Deliverables: []string{"One-page summary"}, Acceptance: []string{"Approved by on-call"}},
+		{Objective: "Plan the migration.", Constraints: []string{"No downtime"}, Evidence: []string{"Ticket #42"}, Deliverables: []string{"Runbook"}, Acceptance: []string{"Dry run passes"}},
+	}
+	for i, b := range briefs {
+		out := Build(b)
+		for _, f := range Review(out) {
+			if f.Section == "portability" {
+				t.Errorf("brief %d: workshop output flagged itself: %+v\n%s", i, f, out)
+			}
+		}
+		if strings.Contains(out, "claude") || strings.Contains(out, "gpt") {
+			t.Errorf("brief %d contains vendor language:\n%s", i, out)
+		}
+	}
+}
+
+func TestIterativeRefinementReducesFindings(t *testing.T) {
+	messy := "Fix the deploy thing as appropriate etc. Use gpt-4. The password is in the doc."
+	before := Review(messy)
+	fixed := "# Objective\n\nAdd a canary step to the Friday deploy.\n\n" +
+		"# Acceptance criteria\n\nTwo consecutive clean Friday deploys with automatic rollback on canary failure.\n"
+	after := Review(fixed)
+	if len(after) >= len(before) {
+		t.Fatalf("refinement should reduce findings: before=%d after=%d", len(before), len(after))
+	}
+	if len(after) != 0 {
+		t.Fatalf("fixed prompt should review clean, got %+v", after)
+	}
+	for _, f := range after {
+		if f.Section == "wording" {
+			t.Errorf("hedge words should be gone after refinement: %+v", f)
+		}
+	}
+}
+
 func TestReviewFindsHedgesGapsRisks(t *testing.T) {
 	text := "Please fix the thing as appropriate etc. Use gpt-4 to do it. The password is hunter2."
 	findings := Review(text)

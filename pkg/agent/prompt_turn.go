@@ -36,7 +36,10 @@ func promptBuildRequestForTurn(
 	if turnProfileSystemPromptOff(ts.profile) {
 		req.SuppressDefaultSystemPrompt = true
 		req.SuppressSkillContext = true
-		req.ToolUseFallback = hasCallableTools
+		// HAL never receives the always-use-tools fallback: it contradicts
+		// the chat-first profile even when a turn profile suppresses the
+		// identity block. The operator's custom prompt (if any) still applies.
+		req.ToolUseFallback = hasCallableTools && !(ts.agent != nil && ts.agent.Hal9001)
 	}
 	if ts.profile.Enabled && !hasCallableTools {
 		req.SuppressToolUseRule = true
