@@ -586,3 +586,19 @@ func TestParentRecoveryWithoutResultFile(t *testing.T) {
 		t.Fatalf("spend = %d, want 2500", got)
 	}
 }
+
+func TestChangedWorkspaceFilesSemantics(t *testing.T) {
+	if got := changedWorkspaceFiles(nil, map[string]string{"a": "M"}); got != nil {
+		t.Fatalf("git failure must stay unknown (nil), got %v", got)
+	}
+	if got := changedWorkspaceFiles(map[string]string{}, map[string]string{}); got == nil || len(got) != 0 {
+		t.Fatalf("no changes must be explicit empty, got %#v", got)
+	}
+	got := changedWorkspaceFiles(
+		map[string]string{"a": "M", "b": "??"},
+		map[string]string{"a": "M", "c": " M"},
+	)
+	if len(got) != 2 || got[0] != "b" && got[1] != "b" {
+		t.Fatalf("got %v, want [b c] (removed b, added c)", got)
+	}
+}

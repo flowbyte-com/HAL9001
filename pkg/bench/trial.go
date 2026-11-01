@@ -1215,7 +1215,8 @@ func changedWorkspaceFiles(before, after map[string]string) []string {
 		return nil
 	}
 	seen := map[string]bool{}
-	var out []string
+	// Non-nil empty means "no changes"; nil (below) means unknown.
+	out := []string{}
 	for path, status := range after {
 		if before[path] != status && !seen[path] {
 			seen[path] = true
