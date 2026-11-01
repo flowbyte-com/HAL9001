@@ -59,16 +59,41 @@ explore next — never recite transcripts.
 
 ## Write-back (proposed, not implemented)
 
-No in-tree MPM write path exists today, so there is nothing to gate yet.
-When one is proposed, it requires:
+No in-tree MPM write path exists, and none is added here. When one is
+proposed, it must follow the admission design below. **No live MPM
+writes in this milestone.**
 
-1. An explicit operator approval gate (recall is automatic; writes are not).
-2. Provenance on every entry (source turn/session, confirmation status).
-3. Selective admission per this contract — the write path must be able
-   to refuse passing remarks, not just record them.
-4. Correction handling: retractions update or supersede entries; no
-   append-only accumulation of contradicted claims.
+### Proposed admission interface (design for review)
 
-Until then, "remember selectively" is enforced by prompt guidance plus
-the conversation itself, and task state remains opt-in and disabled by
-default.
+Four record types, all durable only with explicit provenance:
+
+- **SparkNote.** An interesting-but-undeveloped observation. Fields:
+  source session/turn, timestamp, text, status=open. Expires rather than
+  promotes; promotion to Developing requires user confirmation.
+- **ThreadUpdate.** The current state of a developing idea: what it is,
+  what remains open, what was considered and set aside. Keyed by thread;
+  each update supersedes the previous (replace, never accumulate).
+- **DecisionRecord.** What was decided, why, on what basis, and the
+  confirmation that promoted it (user confirmation or durability test
+  outcome). Immutable once written; a retraction writes a superseding
+  record, never an edit.
+- **ReviewRecord / OpenQuestion.** Review outcomes and outstanding
+  questions carried across sessions, with the evidence pointers that
+  support them.
+
+Admission rules:
+
+1. **Doubt rule.** Unsure whether something is durable? Ask, or leave it
+   in the conversation. Never store on a guess.
+2. **Sensitive tier.** Credentials, secrets, tokens, and others' private
+   data are never candidates at any tier, however often repeated.
+3. **Speculation vs commitment.** Sparks and developing threads carry
+   their open status in the record itself; nothing is reworded as a
+   conclusion on the way in.
+4. **Correction supersession.** Retractions replace the prior record at
+   every tier; contradicted records are never kept "for the record".
+5. **Operator approval boundary.** Recall is automatic; writes are not.
+   Every write crosses an explicit approval gate (per-write or per-class
+   authorization by the operator). Silent background accumulation is
+   forbidden: no autonomous writes that bypass MPM's trust and
+   authorization boundaries.

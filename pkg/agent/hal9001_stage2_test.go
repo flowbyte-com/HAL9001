@@ -122,8 +122,8 @@ func TestHalCodingProfilePrecedence(t *testing.T) {
 	}
 }
 
-// A model that calls a hidden implementation tool gets a "not found" tool
-// result; the file it targeted is never created.
+// A model that calls a hidden implementation tool is refused by the 444
+// execution gate; the file it targeted is never created.
 func TestHalHiddenToolCallBlocked(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Agents.Defaults.Persona = "hal9001"
@@ -156,10 +156,10 @@ func TestHalHiddenToolCallBlocked(t *testing.T) {
 	history := halHistory(t, agent, "hal-blocked-write")
 	foundDenied := false
 	for _, msg := range history {
-		if msg.Role == "tool" && strings.Contains(msg.Content, "not found") {
+		if msg.Role == "tool" && strings.Contains(msg.Content, "non-implementing") {
 			foundDenied = true
 		}
-		if msg.Role == "tool" && strings.Contains(msg.Content, "pwned") && !strings.Contains(msg.Content, "not found") {
+		if msg.Role == "tool" && strings.Contains(msg.Content, "pwned") && !strings.Contains(msg.Content, "non-implementing") {
 			t.Fatalf("unexpected successful tool result: %q", msg.Content)
 		}
 	}
@@ -535,7 +535,7 @@ func TestHalCodingDiscussionWithoutImplementation(t *testing.T) {
 	history := halHistory(t, agent, "hal-code")
 	denied := false
 	for _, msg := range history {
-		if msg.Role == "tool" && strings.Contains(msg.Content, "not found") {
+		if msg.Role == "tool" && strings.Contains(msg.Content, "non-implementing") {
 			denied = true
 		}
 	}

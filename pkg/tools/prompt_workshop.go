@@ -147,3 +147,48 @@ func itoa(n int) string {
 	}
 	return string(digits)
 }
+
+// ReviewReportTool reviews an implementing agent's work report against
+// its objectives and acceptance criteria. Thin adapter over
+// promptwork.AssessReport: deterministic, rule-based, never an
+// independent verification. Registered only under HAL9001.
+type ReviewReportTool struct{}
+
+func (t *ReviewReportTool) Name() string { return "review_report" }
+
+func (t *ReviewReportTool) Description() string {
+	return "Review an implementor's work report against objectives and " +
+		"acceptance criteria. Returns verified findings, unverified claims, " +
+		"deviations, risks, actions, and a follow-up brief. Without tests " +
+		"or diffs, claims stay unverified. Evaluates work; never implements it."
+}
+
+func (t *ReviewReportTool) Parameters() map[string]any {
+	lines := func(desc string) map[string]any {
+		return map[string]any{"type": "string", "description": desc}
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"objectives":    lines("Original objectives, one per line (required)."),
+			"acceptance":    lines("Acceptance criteria, one per line."),
+			"summary":       map[string]any{"type": "string", "description": "Agent's report: what changed, what was tested, what remains (required)."},
+			"tests_passed":  lines("Passing tests, one per line."),
+			"tests_failed":  lines("Failing tests, one per line."),
+			"changed_files": lines("Changed files, one per line."),
+		},
+		"required": []string{"objectives", "summary"},
+	}
+}
+
+func (t *ReviewReportTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+	report := promptwork.WorkReport{
+		Objectives:   stringListArg(args, "objectives"),
+		Acceptance:   stringListArg(args, "acceptance"),
+		Summary:      workshopStringArg(args, "summary"),
+		TestsPassed:  stringListArg(args, "tests_passed"),
+		TestsFailed:  stringListArg(args, "tests_failed"),
+		ChangedFiles: stringListArg(args, "changed_files"),
+	}
+	return NewToolResult(promptwork.AssessReport(report).Render())
+}

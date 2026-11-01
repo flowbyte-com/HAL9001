@@ -218,3 +218,121 @@ func TestWordBoundaryContainsTerminates(t *testing.T) {
 		t.Fatal("wordBoundaryContains did not terminate (infinite loop)")
 	}
 }
+
+func assessFixture() WorkReport {
+	return WorkReport{
+		Objectives:   []string{"Add a canary step to the Friday deploy."},
+		Acceptance:   []string{"Bad canaries are detected within five minutes", "Two consecutive clean Friday deploys"},
+		Summary:      "Added a canary step that detects bad canaries within five minutes. Two consecutive clean Friday deploys succeeded with no issues. Changed deploy/canary.go and added TestCanaryRollback.",
+		TestsPassed:  []string{"TestCanaryRollback", "TestCanaryDetectFiveMinutes", "TestTwoConsecutiveCleanFridayDeploys"},
+		ChangedFiles: []string{"deploy/canary.go"},
+	}
+}
+
+// A successful report with corroborating tests verifies; no gaps means no
+// follow-up brief.
+func TestAssessSuccessfulReport(t *testing.T) {
+	a := AssessReport(assessFixture())
+	if a.SelfReportOnly {
+		t.Error("evidence was provided; must not be flagged self-report-only")
+	}
+	if len(a.Verified) == 0 {
+		t.Fatalf("expected verified findings, got %+v", a)
+	}
+	if len(a.Deviations) != 0 {
+		t.Errorf("successful report should have no deviations, got %v", a.Deviations)
+	}
+	if strings.TrimSpace(a.FollowUp) != "" {
+		t.Error("no gaps means no follow-up brief")
+	}
+	rendered := a.Render()
+	if !strings.Contains(rendered, "Verified findings") {
+		t.Errorf("render must include verified section:\n%s", rendered)
+	}
+}
+
+// An incomplete report (unaddressed criterion, no tests) stays unverified,
+// gains deviations and actions, and proposes a follow-up brief.
+func TestAssessIncompleteReport(t *testing.T) {
+	r := assessFixture()
+	r.TestsPassed = nil
+	r.Summary = "Added a canary step. Looks good."
+	a := AssessReport(r)
+	if a.SelfReportOnly {
+		t.Error("changed files count as evidence; must not be self-report-only")
+	}
+	if len(a.Unverified) == 0 && len(a.Deviations) == 0 {
+		t.Fatalf("incomplete report must produce findings, got %+v", a)
+	}
+	if len(a.Actions) == 0 {
+		t.Error("gaps must produce corrective actions")
+	}
+	if !strings.Contains(a.FollowUp, "Close the review gaps") {
+		t.Errorf("expected a follow-up brief, got %q", a.FollowUp)
+	}
+	if findings := Review(strings.ReplaceAll(a.FollowUp, "a general-purpose specialist agent", "a specialist")); len(findings) != 0 {
+		t.Errorf("follow-up brief should review clean, got %+v", findings)
+	}
+}
+
+// A misleading report (claimed file with no record, failing test) is
+// flagged as deviations with risks — never laundered into verified.
+func TestAssessMisleadingReport(t *testing.T) {
+	r := assessFixture()
+	r.Summary += " Also rewrote deploy/rollback.go from scratch."
+	r.TestsFailed = []string{"TestCanaryRollback"}
+	a := AssessReport(r)
+	joined := strings.Join(append(append([]string{}, a.Deviations...), a.Risks...), "\n")
+	if !strings.Contains(joined, "deploy/rollback.go") {
+		t.Errorf("unrecorded claimed change must be flagged, got %+v", a.Deviations)
+	}
+	if !strings.Contains(joined, "TestCanaryRollback") {
+		t.Errorf("failing test must be flagged, got %+v", append(a.Deviations, a.Risks...))
+	}
+	for _, v := range a.Verified {
+		if strings.Contains(v, "rollback") {
+			t.Errorf("failing-test criterion must not verify: %q", v)
+		}
+	}
+	if !strings.Contains(strings.Join(a.Actions, "\n"), "Fix") {
+		t.Errorf("expected a fix action, got %v", a.Actions)
+	}
+}
+
+// Self-report only: nothing verifies, the disclaimer renders, and every
+// claim is labeled as such.
+func TestAssessSelfReportOnly(t *testing.T) {
+	a := AssessReport(WorkReport{
+		Objectives: []string{"Migrate the database."},
+		Acceptance: []string{"Zero data loss"},
+		Summary:    "Migrated the database with zero data loss.",
+	})
+	if !a.SelfReportOnly {
+		t.Fatal("must be flagged self-report-only")
+	}
+	if len(a.Verified) != 0 {
+		t.Errorf("nothing may verify without evidence, got %v", a.Verified)
+	}
+	if len(a.Unverified) == 0 {
+		t.Error("addressed criterion must be labeled unverified")
+	}
+	if !strings.Contains(a.Render(), "solely on the agent's self-report") {
+		t.Error("render must carry the self-report disclaimer")
+	}
+}
+
+func TestAssessEmpty(t *testing.T) {
+	a := AssessReport(WorkReport{})
+	if len(a.Deviations) == 0 {
+		t.Error("empty report must deviate")
+	}
+	if len(a.Actions) == 0 {
+		t.Error("empty report must produce actions")
+	}
+	if strings.TrimSpace(a.FollowUp) == "" {
+		t.Error("empty report should still propose a follow-up brief")
+	}
+	if rendered := a.Render(); !strings.Contains(rendered, "Recommended corrective actions") {
+		t.Errorf("render must include actions:\n%s", rendered)
+	}
+}

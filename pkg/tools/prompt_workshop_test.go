@@ -51,3 +51,35 @@ func TestReviewPromptTool(t *testing.T) {
 		t.Errorf("messy prompt should report findings, got:\n%s", messy.ForLLM)
 	}
 }
+
+func TestReviewReportTool(t *testing.T) {
+	tool := &ReviewReportTool{}
+	if tool.Name() != "review_report" {
+		t.Fatalf("Name() = %q", tool.Name())
+	}
+	good := tool.Execute(context.Background(), map[string]any{
+		"objectives":    "Add a canary step.",
+		"acceptance":    "Bad canaries are detected within five minutes",
+		"summary":       "Added a canary that detects bad canaries within five minutes. Changed deploy/canary.go and added TestCanaryDetectFiveMinutes.",
+		"tests_passed":  "TestCanaryDetectFiveMinutes",
+		"changed_files": "deploy/canary.go",
+	})
+	if !strings.Contains(good.ForLLM, "Verified findings") {
+		t.Errorf("corroborated report should verify:\n%s", good.ForLLM)
+	}
+	if strings.Contains(good.ForLLM, "## Deviations") {
+		t.Errorf("clean report should have no deviations section:\n%s", good.ForLLM)
+	}
+
+	selfOnly := tool.Execute(context.Background(), map[string]any{
+		"objectives": "Add a canary step.",
+		"acceptance": "Zero data loss during rollout",
+		"summary":    "Added the canary step. Trust me.",
+	})
+	if !strings.Contains(selfOnly.ForLLM, "self-report") {
+		t.Errorf("unsupported claims must be labeled:\n%s", selfOnly.ForLLM)
+	}
+	if !strings.Contains(selfOnly.ForLLM, "Suggested follow-up brief") {
+		t.Errorf("gaps must propose a follow-up:\n%s", selfOnly.ForLLM)
+	}
+}

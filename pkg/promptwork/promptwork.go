@@ -257,3 +257,268 @@ func wordBoundaryContains(haystack, needle string) bool {
 func isWordChar(c byte) bool {
 	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
+
+// --- Agent-report review (HAL 444: review without implementing) ---
+
+// WorkReport is an implementing agent's self-report plus whatever
+// supporting evidence is available. Evidence is optional; its absence is
+// itself a finding (see Assessment.SelfReportOnly).
+type WorkReport struct {
+	Objectives   []string
+	Acceptance   []string
+	Summary      string
+	TestsPassed  []string
+	TestsFailed  []string
+	ChangedFiles []string
+}
+
+// Assessment is the deterministic outcome of reviewing a WorkReport. It
+// distinguishes what the evidence supports from what is merely claimed.
+// Nothing here is an independent verification: without tests or diffs,
+// the strongest statement available is "self-reported".
+type Assessment struct {
+	Verified       []string
+	Unverified     []string
+	Deviations     []string
+	Risks          []string
+	Actions        []string
+	FollowUp       string
+	SelfReportOnly bool
+}
+
+// reportMatchThreshold is the fraction of a criterion's significant
+// tokens that must appear in a text for the criterion to count as
+// addressed by that text.
+const reportMatchThreshold = 0.5
+
+var fileTokenPattern = regexp.MustCompile(`[A-Za-z0-9_][\w\-./]*\.\w+`)
+
+// reportTokens normalizes text to significant stems: lowercased,
+// split on non-alphanumerics and camelCase boundaries, short tokens
+// dropped, and a tiny deterministic stemmer (plurals, -ed, -ing) so
+// "TestCanaryDetectFiveMinutes" matches the criterion "bad canaries
+// are detected within five minutes". Doubling ("run"/"running") and
+// synonyms ("twice"/"two") are out of scope by design.
+var reportSplitPattern = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+
+// splitCamel cuts s at lower→Upper and acronym→Word boundaries
+// (TestCanaryDetect, HTTPSProxy) without lookahead, which RE2 lacks.
+func splitCamel(s string) []string {
+	var parts []string
+	runes := []rune(s)
+	start := 0
+	cut := func(end int) {
+		if end > start {
+			parts = append(parts, string(runes[start:end]))
+		}
+		start = end
+	}
+	for i := 1; i < len(runes); i++ {
+		prev, cur := runes[i-1], runes[i]
+		lowerToUpper := prev >= 'a' && prev <= 'z' && cur >= 'A' && cur <= 'Z'
+		acronymToWord := i+1 < len(runes) && prev >= 'A' && prev <= 'Z' &&
+			cur >= 'A' && cur <= 'Z' && runes[i+1] >= 'a' && runes[i+1] <= 'z'
+		if lowerToUpper || acronymToWord {
+			cut(i)
+		}
+	}
+	cut(len(runes))
+	return parts
+}
+
+func reportTokens(text string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, chunk := range reportSplitPattern.Split(text, -1) {
+		for _, tok := range splitCamel(chunk) {
+			lowered := strings.ToLower(tok)
+			if len(lowered) < 3 {
+				continue
+			}
+			out[stemToken(lowered)] = struct{}{}
+		}
+	}
+	return out
+}
+
+func stemToken(tok string) string {
+	if strings.HasSuffix(tok, "ies") && len(tok) > 5 {
+		return tok[:len(tok)-3] + "y"
+	}
+	if strings.HasSuffix(tok, "s") && len(tok)-1 >= 3 && !strings.HasSuffix(tok, "ss") {
+		tok = tok[:len(tok)-1]
+	}
+	// Strip -ing/-ed only when a usable stem remains. Consonant doubling
+	// ("run"/"running") and synonyms are out of scope by design.
+	for _, suffix := range []string{"ing", "ed"} {
+		if strings.HasSuffix(tok, suffix) && len(tok)-len(suffix) >= 3 {
+			tok = tok[:len(tok)-len(suffix)]
+			break
+		}
+	}
+	return tok
+}
+
+func reportOverlap(criterion string, textTokens map[string]struct{}) float64 {
+	crit := reportTokens(criterion)
+	if len(crit) == 0 {
+		return 0
+	}
+	hit := 0
+	for tok := range crit {
+		if _, ok := textTokens[tok]; ok {
+			hit++
+		}
+	}
+	return float64(hit) / float64(len(crit))
+}
+
+func reportAddresses(criterion, text string) bool {
+	return reportOverlap(criterion, reportTokens(text)) >= reportMatchThreshold
+}
+
+// AssessReport reviews an implementation report against its objectives
+// and acceptance criteria. It is deliberately shallow and deterministic:
+// it checks addressal, corroboration, and consistency, and never claims
+// independent verification from a self-report alone.
+func AssessReport(r WorkReport) Assessment {
+	var a Assessment
+	summary := strings.TrimSpace(r.Summary)
+	if summary == "" {
+		a.Deviations = append(a.Deviations, "No implementation report provided.")
+		a.Actions = append(a.Actions, "Ask the implementing agent for a written report: what changed, what was tested, what remains.")
+	}
+	for _, objective := range nonEmpty(r.Objectives) {
+		if summary != "" && !reportAddresses(objective, summary) {
+			a.Deviations = append(a.Deviations, fmt.Sprintf("Objective not addressed in report: %q.", objective))
+			a.Actions = append(a.Actions, fmt.Sprintf("Ask for explicit status on objective %q (done, partial, or dropped with reason).", objective))
+		}
+	}
+	if len(nonEmpty(r.Acceptance)) == 0 {
+		a.Risks = append(a.Risks, "No acceptance criteria were provided, so there is nothing to assess completion against.")
+		a.Actions = append(a.Actions, "Define acceptance criteria before judging the work done.")
+	}
+	evidenceTokens := map[string]struct{}{}
+	for _, t := range append(append([]string{}, r.TestsPassed...), r.TestsFailed...) {
+		for tok := range reportTokens(t) {
+			evidenceTokens[tok] = struct{}{}
+		}
+	}
+	for _, f := range r.ChangedFiles {
+		for tok := range reportTokens(f) {
+			evidenceTokens[tok] = struct{}{}
+		}
+	}
+	hasEvidence := len(nonEmpty(r.TestsPassed))+len(nonEmpty(r.TestsFailed))+len(nonEmpty(r.ChangedFiles)) > 0
+	a.SelfReportOnly = summary != "" && !hasEvidence
+	for _, criterion := range nonEmpty(r.Acceptance) {
+		if summary == "" || !reportAddresses(criterion, summary) {
+			a.Deviations = append(a.Deviations, fmt.Sprintf("Acceptance criterion not addressed in report: %q.", criterion))
+			a.Actions = append(a.Actions, fmt.Sprintf("Address or explicitly defer: %q.", criterion))
+			a.Risks = append(a.Risks, fmt.Sprintf("Work may ship without the agreed outcome %q.", criterion))
+			continue
+		}
+		corroborated := ""
+		for _, t := range nonEmpty(r.TestsPassed) {
+			if reportAddresses(criterion, t) {
+				corroborated = t
+				break
+			}
+		}
+		switch {
+		case corroborated != "" && !a.SelfReportOnly:
+			a.Verified = append(a.Verified, fmt.Sprintf("Acceptance %q corroborated by passing test %q.", criterion, corroborated))
+		case reportOverlap(criterion, evidenceTokens) >= reportMatchThreshold && !a.SelfReportOnly:
+			a.Unverified = append(a.Unverified, fmt.Sprintf("Acceptance %q is described and change-evidenced, but no passing test confirms the outcome.", criterion))
+			a.Actions = append(a.Actions, fmt.Sprintf("Provide a passing test for %q; change evidence alone does not confirm behavior.", criterion))
+		default:
+			a.Unverified = append(a.Unverified, fmt.Sprintf("Acceptance %q is self-reported only.", criterion))
+			a.Actions = append(a.Actions, fmt.Sprintf("Provide test results or diffs supporting %q.", criterion))
+		}
+	}
+	for _, t := range nonEmpty(r.TestsFailed) {
+		a.Deviations = append(a.Deviations, fmt.Sprintf("Failing test: %q.", t))
+		a.Actions = append(a.Actions, fmt.Sprintf("Fix %q and re-run before accepting the work.", t))
+		a.Risks = append(a.Risks, "Known test failures ship if the work is accepted as-is.")
+	}
+	changed := map[string]bool{}
+	for _, f := range nonEmpty(r.ChangedFiles) {
+		changed[strings.ToLower(strings.TrimSpace(f))] = true
+	}
+	for _, claimed := range fileTokenPattern.FindAllString(summary, -1) {
+		if !changed[strings.ToLower(claimed)] {
+			a.Deviations = append(a.Deviations, fmt.Sprintf("Report claims a change to %q with no supporting file record.", claimed))
+			a.Actions = append(a.Actions, fmt.Sprintf("Reconcile the claimed change to %q with the provided diffs or file list.", claimed))
+		}
+	}
+	if a.SelfReportOnly {
+		a.Risks = append(a.Risks, "Assessment is based solely on the agent's self-report: nothing here is independently verified.")
+		a.Actions = append(a.Actions, "Treat every claim above as unverified until tests or diffs arrive.")
+	}
+	if len(a.Deviations)+len(a.Unverified) > 0 {
+		objective := "Close the review gaps in the reported work."
+		if first := firstNonEmpty(r.Objectives); first != "" {
+			objective = "Close the review gaps in: " + firstSentence(first)
+		}
+		a.FollowUp = Build(Brief{
+			Objective:    objective,
+			Requirements: append([]string{}, a.Actions...),
+			Acceptance:   unaddressedCriteria(r, summary),
+			Audience:     "a general-purpose specialist agent",
+		})
+	}
+	return a
+}
+
+func unaddressedCriteria(r WorkReport, summary string) []string {
+	var out []string
+	for _, criterion := range nonEmpty(r.Acceptance) {
+		if summary == "" || !reportAddresses(criterion, summary) {
+			out = append(out, criterion)
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, "All review deviations resolved; previously failing tests pass.")
+	}
+	return out
+}
+
+func firstNonEmpty(items []string) string {
+	for _, item := range items {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// Render formats the assessment as Markdown: verified findings first,
+// then claims, deviations, risks, actions, and the suggested follow-up.
+// Empty sections are omitted; the self-report disclaimer is always
+// present when no evidence was available.
+func (a Assessment) Render() string {
+	var sb strings.Builder
+	sb.WriteString("# Work review\n")
+	writeAssessmentList := func(title string, items []string) {
+		items = nonEmpty(items)
+		if len(items) == 0 {
+			return
+		}
+		sb.WriteString("\n## " + title + "\n\n")
+		for _, item := range items {
+			sb.WriteString("- " + item + "\n")
+		}
+	}
+	writeAssessmentList("Verified findings", a.Verified)
+	writeAssessmentList("Unverified claims", a.Unverified)
+	writeAssessmentList("Deviations", a.Deviations)
+	writeAssessmentList("Risks", a.Risks)
+	writeAssessmentList("Recommended corrective actions", a.Actions)
+	if strings.TrimSpace(a.FollowUp) != "" {
+		sb.WriteString("\n## Suggested follow-up brief\n\n" + strings.TrimSpace(a.FollowUp) + "\n")
+	}
+	if a.SelfReportOnly {
+		sb.WriteString("\n_Note: no tests, diffs, or file records were provided. " +
+			"This assessment is based solely on the agent's self-report; nothing above is independently verified._\n")
+	}
+	return sb.String()
+}

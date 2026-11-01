@@ -174,6 +174,24 @@ toolLoop:
 
 		toolName := tc.Name
 		toolArgs := cloneStringAnyMap(tc.Arguments)
+		// 444 boundary (application logic, first check): a restricted HAL
+		// turn never executes implementation or orchestration tools, even
+		// if a profile, hook, or registration quirk made one visible. The
+		// operator-enabled coding profile clears HalRestricted at the
+		// agent, so explicit action mode is unaffected.
+		if ts.agent != nil && ts.agent.HalRestricted && Hal9001ImplementationBlocked(toolName) {
+			reason := fmt.Sprintf("Tool %q is not available under the HAL9001 non-implementing profile.", toolName)
+			al.emitEvent(
+				runtimeevents.KindAgentToolExecSkipped,
+				ts.eventMeta("runTurn", "turn.tool.skipped"),
+				ToolExecSkippedPayload{Tool: toolName, Reason: reason},
+			)
+			// Not a handled delivery: the skip message feeds the next LLM
+			// call, which responds in conversation instead.
+			exec.allResponsesHandled = false
+			persistSkippedToolCall(tc, "hal444", reason+" Prepare a brief for a specialist instead of calling it.")
+			continue
+		}
 		denyByTurnProfile := func() bool {
 			if turnProfileToolAllowed(ts.profile, toolName) {
 				return false

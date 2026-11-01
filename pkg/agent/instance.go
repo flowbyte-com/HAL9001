@@ -62,7 +62,12 @@ type AgentInstance struct {
 	// Hal9001 selects the HAL9001 conversational persona (chat-first
 	// instructions, curated visible tools, Dave-protocol refusals). It
 	// never changes memory boundaries, isolation, or tool availability.
-	Hal9001            bool
+	Hal9001 bool
+	// HalRestricted marks the active 444 non-implementing boundary: HAL
+	// persona without the coding profile. When true, implementation and
+	// orchestration tools are refused at execution time even if they
+	// somehow became visible. Operator-enabled coding profile clears it.
+	HalRestricted      bool
 	Definition         AgentContextDefinition
 	Subagents          *config.SubagentsConfig
 	SkillsFilter       []string
@@ -134,6 +139,9 @@ func NewAgentInstance(
 	// visible tool set. Coding profile (explicit action mode) takes
 	// precedence when enabled.
 	hal9001 := Hal9001Enabled(defaults.Persona)
+	// 444 boundary: restricted unless the operator explicitly enabled the
+	// coding profile, which carries its own implementation authority.
+	halRestricted := hal9001 && !codingProfileEnabled()
 
 	restrict := defaults.RestrictToWorkspace
 	readRestrict := restrict && !defaults.AllowReadOutsideWorkspace
@@ -215,6 +223,7 @@ func NewAgentInstance(
 	if hal9001 {
 		toolsRegistry.Register(&tools.DraftPromptTool{})
 		toolsRegistry.Register(&tools.ReviewPromptTool{})
+		toolsRegistry.Register(&tools.ReviewReportTool{})
 	}
 
 	sessionsDir := filepath.Join(workspace, "sessions")
@@ -470,6 +479,7 @@ func NewAgentInstance(
 		TaskStateBudget:         taskStateBudget,
 		TaskStateResidency:      taskStateResidency,
 		Hal9001:                 hal9001,
+		HalRestricted:           halRestricted,
 		Tools:                   toolsRegistry,
 		Definition:              definition,
 		Subagents:               subagents,

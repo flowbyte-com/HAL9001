@@ -49,9 +49,9 @@ func Hal9001ToolGuidance() string {
 }
 
 // Hal9001DefaultVisibleTools is the chat-first tool profile: lookup,
-// reading, and prompt-crafting tools. Coding and execution tools stay
-// installed but hidden until the user asks for action or the coding
-// profile is enabled.
+// reading, prompt-crafting, and review tools. Coding, execution, and
+// orchestration tools stay installed but hidden until explicitly
+// requested through an authorized non-HAL profile.
 func Hal9001DefaultVisibleTools() []string {
 	return []string{
 		"web_search",
@@ -60,7 +60,34 @@ func Hal9001DefaultVisibleTools() []string {
 		"find_skills",
 		"draft_prompt",
 		"review_prompt",
+		"review_report",
 	}
+}
+
+// hal9001BlockedTools names the implementation and orchestration tools
+// HAL must never execute: shell, file mutation, scheduling, capability
+// changes, and delegation primitives. Both original and coding-profile
+// alias names are listed so the block holds regardless of which
+// registration produced the tool.
+var hal9001BlockedTools = map[string]struct{}{
+	"exec": {}, "bash": {},
+	"write_file": {}, "write": {},
+	"edit_file": {}, "edit": {},
+	"append_file":   {},
+	"spawn":         {},
+	"subagent":      {},
+	"delegate":      {},
+	"cron":          {},
+	"install_skill": {},
+}
+
+// Hal9001ImplementationBlocked reports whether a tool is an implementation
+// or orchestration tool HAL must never execute. This is defense in depth
+// behind the visibility profile: even if a tool somehow became visible,
+// the execution gate still refuses it.
+func Hal9001ImplementationBlocked(name string) bool {
+	_, blocked := hal9001BlockedTools[strings.ToLower(strings.TrimSpace(name))]
+	return blocked
 }
 
 // DaveRefusalLine is the entire user-facing response when HAL9001 must

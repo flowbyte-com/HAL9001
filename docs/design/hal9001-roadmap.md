@@ -34,20 +34,43 @@ default behavior unchanged.
   (Conversation / Sparks / Developing ideas / Decisions) and promotion
   criteria. No automatic writes; none implemented.
 
-## Stage 3 — Memory write-back (gated)
+## Stage 3 — The 444 contract (done)
 
-- Propose, then implement, the approval-gated MPM write path per the
-  [memory contract](../architecture/hal9001-memory-contract.md):
-  provenance, selective admission, correction supersede.
-- Nothing here proceeds without operator approval of the design.
+- Read-only authority enforced in application logic at three layers
+  (provider defs, registry execution, 444 execution gate on
+  `HalRestricted`); full audit of tools, MCP, plugins, subturns, custom
+  prompts, and coding-profile precedence. One gap class closed by
+  construction: blocklisted tools are refused by name even if visible.
+- Coding capabilities preserved for non-HAL profiles: operator-enabled
+  coding profile clears the restriction and executes normally.
+- Review capability: `promptwork.AssessReport` + `review_report` tool —
+  verified findings vs unverified claims vs deviations, risks, actions,
+  and a follow-up brief; self-report-only disclaimer by design.
+- Memory admission design proposed in the
+  [memory contract](../architecture/hal9001-memory-contract.md) for
+  review: four record types, doubt rule, sensitive tier, correction
+  supersession, operator approval boundary. No live writes; none
+  implemented.
+- Roadmap conflict resolved (below): no HAL coding-profile escalation,
+  ever. Delegation is by assignment, not by implementation.
 
-## Stage 4 — Realize (explicit action mode)
+## Stage 4 — Authorized delegation and specialist coordination (design)
 
-- User-invoked escalation only: when the user asks for action, HAL may
-  enable broader tool access for that turn (coding profile is the
-  existing mechanism and takes precedence).
-- No automatic coding workflows, no multi-agent orchestration — those
-  remain explicitly out of scope until Stage 4 is separately authorized.
+Supersedes the earlier "explicit action mode" plan, which is withdrawn:
+HAL never becomes the implementor, even when asked to fix something
+directly. Instead:
+
+- HAL investigates, develops the idea, and prepares the implementation
+  assignment as a portable brief (`draft_prompt`).
+- The operator authorizes; a specialist agent (or person) executes —
+  through the existing coding profiles, which remain non-HAL.
+- HAL reviews the returned work (`review_report`) and either accepts or
+  prepares a follow-up assignment. The loop is review-driven, never
+  execution-driven.
+- `spawn`/`subagent`/`delegate` stay outside HAL's tool profile until a
+  delegation design with its own authorization boundary is approved.
+  Coordination happens through briefs and reviews, not orchestration
+  primitives.
 
 ## Non-goals (all stages)
 
