@@ -7,9 +7,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/isolation"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
+
+// pinUnverifiedIsolation forces the legacy lexical guard path: isolation
+// disabled process-wide, so BubblewrapEnforced() is false regardless of
+// what an earlier test configured. Trial execution configures isolation
+// per trial and never resets it, so bench tests must not assume defaults.
+func pinUnverifiedIsolation(t *testing.T) {
+	t.Helper()
+	isolation.ResetProtectedPaths()
+	isolation.Configure(config.DefaultConfig())
+	t.Cleanup(func() {
+		isolation.ResetProtectedPaths()
+		isolation.Configure(config.DefaultConfig())
+	})
+	if isolation.BubblewrapEnforced() {
+		t.Fatal("isolation unexpectedly enforced in audit test")
+	}
+}
 
 // 005D Phase 4: sandbox usability audit (read-only).
 //
@@ -104,6 +122,7 @@ func runAuditMatrix(t *testing.T, tool *tools.ExecTool, dir string, cases []audi
 // TestSandboxGuardOrdinaryCoding documents the guard's treatment of the
 // exact command shapes the 005B pilot agents used, in a disposable repo.
 func TestSandboxGuardOrdinaryCoding(t *testing.T) {
+	pinUnverifiedIsolation(t)
 	if testing.Short() {
 		t.Skip("sandbox audit runs real tools")
 	}
@@ -160,6 +179,7 @@ func TestSandboxGuardOrdinaryCoding(t *testing.T) {
 // treatment agent attempted: per-command VAR=value assignment must keep
 // working so hermetic Go runs stay expressible without export.
 func TestSandboxGuardEnvAssignment(t *testing.T) {
+	pinUnverifiedIsolation(t)
 	if testing.Short() {
 		t.Skip("sandbox audit runs real tools")
 	}
@@ -184,6 +204,7 @@ func TestSandboxGuardEnvAssignment(t *testing.T) {
 // TestSandboxGuardNegativePaths verifies confinement denials without
 // touching any real MPM state: disposable stand-ins plus the registry.
 func TestSandboxGuardNegativePaths(t *testing.T) {
+	pinUnverifiedIsolation(t)
 	if testing.Short() {
 		t.Skip("sandbox audit runs real tools")
 	}

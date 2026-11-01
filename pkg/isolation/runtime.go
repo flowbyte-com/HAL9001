@@ -506,6 +506,33 @@ func isSupportedOn(goos string) bool {
 	}
 }
 
+// BubblewrapEnforced reports whether child processes launched right now run
+// under the verified Linux bubblewrap backend: isolation enabled, preflight
+// clean for the current configuration, and bwrap available. DeepClaw's
+// coding shell uses it to decide whether OS-level confinement (mounts, PID
+// namespace, env scrub) — rather than lexical command checks — is the
+// active boundary. It is false on non-Linux platforms, when isolation is
+// disabled or unverifiable, and in every default (non-DeepClaw)
+// configuration, where the lexical guard stays in force.
+func BubblewrapEnforced() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	isolationMu.RLock()
+	enabled := currentIsolation.Enabled
+	isolationMu.RUnlock()
+	if !enabled {
+		return false
+	}
+	if err := preflightCached(); err != nil {
+		return false
+	}
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		return false
+	}
+	return true
+}
+
 // Preflight validates the configured isolation state and prepares the instance
 // runtime directories before any child process is launched.
 func Preflight() error {

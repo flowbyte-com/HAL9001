@@ -1334,12 +1334,25 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 	cmd := strings.TrimSpace(command)
 	lower := strings.ToLower(cmd)
 
-	// Deny patterns always apply, even when a command matches a custom allow rule.
-	// Custom allow rules can permit a command, but must not disable secret-safety
-	// deny rules such as jq env access checks (#3079).
-	for _, pattern := range t.denyPatterns {
-		if pattern.MatchString(lower) {
-			return "Command blocked by safety guard (dangerous pattern detected)"
+	// Pi-like syntax inside an OS-enforced boundary: when every child of
+	// this process runs under the verified bubblewrap backend (writable
+	// workspace only, read-only system, masked MPM paths, scrubbed
+	// environment, private PID namespace — or a hard error from
+	// isolation.Start), lexical deny patterns and path-token heuristics
+	// are bypassed. Operator-configured custom allowlists below still
+	// apply, and in-process file tools keep their own protections.
+	bypassLexicalGuard := isolation.BubblewrapEnforced()
+	if bypassLexicalGuard {
+		logger.DebugCF("shell", "lexical command guard bypassed: bubblewrap confinement verified",
+			map[string]any{"command_len": len(cmd)})
+	} else {
+		// Deny patterns always apply, even when a command matches a custom allow rule.
+		// Custom allow rules can permit a command, but must not disable secret-safety
+		// deny rules such as jq env access checks (#3079).
+		for _, pattern := range t.denyPatterns {
+			if pattern.MatchString(lower) {
+				return "Command blocked by safety guard (dangerous pattern detected)"
+			}
 		}
 	}
 
@@ -1347,6 +1360,10 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 		if !t.commandMatchesAllowPattern(lower) {
 			return "Command blocked by safety guard (not in allowlist)"
 		}
+	}
+
+	if bypassLexicalGuard {
+		return ""
 	}
 
 	if t.restrictToWorkspace {
