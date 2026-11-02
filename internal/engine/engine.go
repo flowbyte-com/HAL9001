@@ -21,6 +21,12 @@ import (
 // conversation is still stored; nothing is fabricated in its place.
 var ErrNoProvider = errors.New("no provider configured")
 
+// ErrNoVisibleAnswer reports that the provider finished without any
+// visible answer text — for example it exhausted the output budget while
+// reasoning. Nothing is stored for the assistant side: a note is not an
+// answer, and storing one would pollute the next request's context.
+var ErrNoVisibleAnswer = errors.New("the model produced no visible answer")
+
 // Engine runs one conversation: it stores both sides of every turn and
 // asks the provider for the next assistant message.
 type Engine struct {
@@ -163,13 +169,18 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 		}
 	}
 	if reply == "" {
-		if resp.Reasoning != "" {
-			// The provider spent its turn thinking and returned no
-			// answer. Say so plainly; never surface the reasoning text.
-			reply = "(the model produced reasoning but no answer)"
-		} else {
-			reply = "(no response)"
+		// The provider completed without visible answer text. Report it
+		// honestly and store nothing: an explanation is not an assistant
+		// message, and silently retrying or raising the cap would hide
+		// the cost instead of explaining it.
+		finish := resp.FinishReason
+		if finish == "" {
+			finish = "unknown"
 		}
+		if resp.Reasoning != "" {
+			return "", fmt.Errorf("%w: the output budget was spent on reasoning (finish_reason %s)", ErrNoVisibleAnswer, finish)
+		}
+		return "", fmt.Errorf("%w (finish_reason %s)", ErrNoVisibleAnswer, finish)
 	}
 	if _, err := e.sessions.Append(session.RoleAssistant, reply); err != nil {
 		return "", err

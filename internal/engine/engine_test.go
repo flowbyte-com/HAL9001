@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -311,21 +312,72 @@ func TestProgressEventsReportReasoningWithoutText(t *testing.T) {
 
 // A reply that is entirely reasoning must not be reported as an empty
 // answer: the operator is told what happened, without the reasoning text.
-func TestReasoningOnlyTurnIsExplained(t *testing.T) {
+// A reply that is entirely reasoning is not an answer: the turn fails
+// with a typed error, stores nothing from the assistant side, and never
+// leaks the reasoning text.
+func TestReasoningOnlyTurnIsReportedNotStored(t *testing.T) {
 	st, err := session.Open(t.TempDir(), "chat")
 	if err != nil {
 		t.Fatal(err)
 	}
-	eng := New(st, &progressStreamer{reasoning: []string{"thinking"}, content: ""}, provider.Model{ID: "m"})
+	streamer := &progressStreamer{
+		reasoning: []string{"thinking"},
+		content:   "",
+		stats:     provider.TurnStats{Status: provider.StatusFinished, FinishReason: "length", OutputLimitHit: true},
+	}
+	eng := New(st, streamer, provider.Model{ID: "m"})
 	reply, err := eng.RespondStream(context.Background(), "hi", func(string) {})
+	if !errors.Is(err, ErrNoVisibleAnswer) {
+		t.Fatalf("err = %v, want ErrNoVisibleAnswer", err)
+	}
+	if reply != "" {
+		t.Errorf("reply = %q, want no fabricated answer", reply)
+	}
+	if strings.Contains(err.Error(), "thinking") {
+		t.Errorf("reasoning text leaked: %q", err)
+	}
+	history, err := st.History()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(reply, "reasoning") {
-		t.Errorf("reply = %q, want an explanation", reply)
+	if len(history) != 1 || history[0].Role != session.RoleUser {
+		t.Fatalf("only the user message may be stored, got %+v", history)
 	}
-	if strings.Contains(reply, "thinking") {
-		t.Errorf("reasoning text leaked: %q", reply)
+}
+
+// The diagnostics for an empty answer are emitted before the error, so
+// /diag can explain the finish reason and the token accounting.
+func TestReasoningOnlyTurnEmitsStats(t *testing.T) {
+	st, err := session.Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamer := &progressStreamer{
+		reasoning: []string{"thinking"},
+		content:   "",
+		stats: provider.TurnStats{
+			Status: provider.StatusFinished, FinishReason: "length", OutputLimitHit: true,
+			HasUsage: true, Usage: provider.Usage{PromptTokens: 10, CompletionTokens: 8192, TotalTokens: 8202},
+		},
+	}
+	eng := New(st, streamer, provider.Model{ID: "m"})
+	var stats *provider.TurnStats
+	_, err = eng.RespondStreamEvents(context.Background(), "hi", func(ev Event) {
+		if ev.Stats != nil {
+			stats = ev.Stats
+		}
+	})
+	if !errors.Is(err, ErrNoVisibleAnswer) {
+		t.Fatalf("err = %v", err)
+	}
+	if stats == nil {
+		t.Fatal("stats must be reported even when the answer is empty")
+	}
+	if !stats.OutputLimitHit || stats.FinishReason != "length" {
+		t.Errorf("stats = %+v", stats)
+	}
+	if stats.Usage.CompletionTokens != 8192 {
+		t.Errorf("usage = %+v", stats.Usage)
 	}
 }
 
