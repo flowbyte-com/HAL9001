@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/flowbyte-com/HAL9001/internal/clipboard"
@@ -22,6 +23,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/tui"
+	"github.com/flowbyte-com/HAL9001/internal/usage"
 )
 
 func main() {
@@ -54,6 +56,11 @@ func run(args []string) error {
 		stored: stored,
 		model:  cfg.Model,
 	}
+	// Token accounting is best effort: a failure must never stop the
+	// conversation from starting.
+	if store, err := usage.Open(filepath.Join(config.ConfigDir(), "usage.json")); err == nil {
+		app.usage = store
+	}
 	return app.run()
 }
 
@@ -80,16 +87,91 @@ type app struct {
 	model      string
 	session    string
 	sessionSeq int
+	usage      *usage.Store
 }
 
-func (a *app) run() error {
-	store, err := session.Open(a.cfg.StoreDir, a.cfg.Session)
+// defaultSessionName is the conversation used when nothing has been
+// recorded yet. It matches the name older installations already use.
+const defaultSessionName = "cli"
+
+// resolveSession picks the conversation to open. Precedence: an explicit
+// --session, then the session recorded as active, then the most recently
+// modified stored conversation (for installations that predate the
+// metadata), then an empty default. It never falls back to the earliest
+// session when a newer one is known.
+func (a *app) resolveSession() string {
+	if explicit := strings.TrimSpace(a.cfg.Session); explicit != "" {
+		return explicit
+	}
+	if stored := strings.TrimSpace(a.stored.ActiveSession); stored != "" && session.ValidName(stored) {
+		return stored
+	}
+	if newest := a.newestSession(); newest != "" {
+		return newest
+	}
+	return defaultSessionName
+}
+
+// newestSession returns the most recently modified stored conversation.
+func (a *app) newestSession() string {
+	names, err := config.ListSessions(a.cfg.StoreDir)
+	if err != nil || len(names) == 0 {
+		return ""
+	}
+	best := ""
+	var bestTime time.Time
+	for _, name := range names {
+		if !session.ValidName(name) {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(a.cfg.StoreDir, name+".jsonl"))
+		if err != nil {
+			continue
+		}
+		if best == "" || info.ModTime().After(bestTime) {
+			best, bestTime = name, info.ModTime()
+		}
+	}
+	return best
+}
+
+// persistActiveSession records the conversation for the next launch. It
+// is written before the in-memory switch, so a failure leaves the app and
+// the interface consistent.
+func (a *app) persistActiveSession(name string) error {
+	if a.stored.ActiveSession == name {
+		return nil
+	}
+	previous := a.stored.ActiveSession
+	a.stored.ActiveSession = name
+	if err := config.SaveFile(config.ConfigPath(), a.stored); err != nil {
+		a.stored.ActiveSession = previous
+		return fmt.Errorf("cannot record the active session: %w", err)
+	}
+	return nil
+}
+
+// openSession resolves and opens the conversation for this launch, then
+// records it as the active session for the next one.
+func (a *app) openSession() error {
+	name := a.resolveSession()
+	store, err := session.Open(a.cfg.StoreDir, name)
 	if err != nil {
 		return err
 	}
 	a.store = store
-	a.session = a.cfg.Session
+	a.session = name
+	// Best effort on startup: a read-only configuration must not stop the
+	// conversation from starting.
+	_ = a.persistActiveSession(name)
 	a.rebuildEngine()
+	return nil
+}
+
+func (a *app) run() error {
+	if err := a.openSession(); err != nil {
+		return err
+	}
 
 	hooks := tui.Hooks{
 		SaveOnboard:    a.saveOnboard,
@@ -106,10 +188,13 @@ func (a *app) run() error {
 		Copy:           a.copyText,
 		Effort:         a.currentEffort,
 		SetEffort:      a.setEffort,
+		Usage:          a.currentUsage,
+		RecordTurn:     a.recordTurn,
 	}
 	m := tui.NewWithHooks(a.eng, hooks)
 	m.SetModelName(a.activeModelID())
 	m.SetEffort(a.currentEffort())
+	m.SetUsage(a.currentUsage())
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
 	m.SetTitle(a.session)
 	if history, err := a.store.History(); err == nil {
@@ -348,6 +433,9 @@ func (a *app) newSession() (tui.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := a.persistActiveSession(name); err != nil {
+		return nil, err
+	}
 	a.store = store
 	a.session = name
 	a.rebuildEngine()
@@ -365,6 +453,30 @@ func (a *app) activeModelID() string {
 		return active.ID
 	}
 	return ""
+}
+
+// currentUsage returns the cumulative accounting for the active session.
+func (a *app) currentUsage() usage.Session {
+	if a.usage == nil {
+		return usage.Session{}
+	}
+	return a.usage.Get(a.session)
+}
+
+// recordTurn stores one finished turn. Provider-reported usage is
+// preferred; a turn without it is recorded as incomplete so the counts
+// are never invented.
+func (a *app) recordTurn(stats provider.TurnStats) {
+	if a.usage == nil || stats.StartedAt.IsZero() {
+		return
+	}
+	_ = a.usage.AddTurn(a.session, usage.Turn{
+		Input:     stats.Usage.PromptTokens,
+		Output:    stats.Usage.CompletionTokens,
+		Reasoning: stats.Usage.ReasoningTokens,
+		Cached:    stats.Usage.CachedTokens,
+		At:        time.Now().UTC(),
+	}, stats.HasUsage)
 }
 
 func (a *app) currentTheme() string {
@@ -387,6 +499,9 @@ func (a *app) switchSession(name string) (tui.Engine, []tui.SessionLine, error) 
 	}
 	history, err := store.History()
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := a.persistActiveSession(name); err != nil {
 		return nil, nil, err
 	}
 	a.store = store

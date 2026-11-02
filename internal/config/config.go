@@ -62,6 +62,10 @@ type FileConfig struct {
 	ActiveModel string        `json:"active_model,omitempty"`
 	// Theme names the active TUI preset (empty means HAL Classic).
 	Theme string `json:"theme,omitempty"`
+	// ActiveSession is the conversation HAL opens on the next launch. It
+	// is written whenever a session is started or selected, so /clear and
+	// /sessions survive a restart.
+	ActiveSession string `json:"active_session,omitempty"`
 	// MaxTokens caps one response (0 uses the built-in default).
 	MaxTokens int `json:"max_tokens,omitempty"`
 	// StreamIdleSeconds closes a stream that sends nothing for this long.
@@ -259,11 +263,13 @@ func LoadErr(args []string) (Config, error) {
 	}
 	fs := flag.NewFlagSet("hal9001", flag.ContinueOnError)
 	cfg := Config{
-		Provider:           firstNonEmpty(os.Getenv(EnvProvider), stored.Provider, "openai-compatible"),
-		Endpoint:           firstNonEmpty(os.Getenv(EnvEndpoint), stored.Endpoint),
-		Model:              firstNonEmpty(os.Getenv(EnvModel), stored.ActiveModel),
-		APIKey:             firstNonEmpty(os.Getenv(EnvAPIKey), stored.APIKey),
-		Session:            "cli",
+		Provider: firstNonEmpty(os.Getenv(EnvProvider), stored.Provider, "openai-compatible"),
+		Endpoint: firstNonEmpty(os.Getenv(EnvEndpoint), stored.Endpoint),
+		Model:    firstNonEmpty(os.Getenv(EnvModel), stored.ActiveModel),
+		APIKey:   firstNonEmpty(os.Getenv(EnvAPIKey), stored.APIKey),
+		// Empty unless --session is given: the active session is
+		// resolved from the stored metadata at startup.
+		Session:            "",
 		StoreDir:           DefaultStoreDir(),
 		Models:             append([]ModelRecord(nil), stored.Models...),
 		MaxTokens:          firstNonZero(envInt(EnvMaxTokens), stored.MaxTokens),

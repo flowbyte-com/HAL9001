@@ -38,13 +38,21 @@ type Store struct {
 	path string
 }
 
+// ValidName reports whether a session name is safe to use as a file name.
+func ValidName(session string) bool {
+	if strings.TrimSpace(session) == "" {
+		return false
+	}
+	if strings.ContainsAny(session, `/\`) || strings.Contains(session, "..") {
+		return false
+	}
+	return true
+}
+
 // Open creates the session directory if needed and returns the store for
 // the named session.
 func Open(dir, session string) (*Store, error) {
-	if strings.TrimSpace(session) == "" {
-		return nil, fmt.Errorf("session: empty session name")
-	}
-	if strings.ContainsAny(session, `/\`) || strings.Contains(session, "..") {
+	if !ValidName(session) {
 		return nil, fmt.Errorf("session: invalid session name %q", session)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
