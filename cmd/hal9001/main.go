@@ -106,6 +106,7 @@ func (a *app) run() error {
 	m := tui.NewWithHooks(a.eng, hooks)
 	m.SetModelName(a.activeModelID())
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
+	m.SetTitle(a.session)
 	if history, err := a.store.History(); err == nil {
 		lines := make([]tui.SessionLine, 0, len(history))
 		for _, msg := range history {

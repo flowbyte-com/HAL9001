@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 )
@@ -51,6 +53,13 @@ func sendCurrent(m Model) Model {
 	return drain(m, cmd)
 }
 
+// enterCurrent presses Enter and runs the command it produces.
+func enterCurrent(m Model) Model {
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Text: ""})
+	m = updated.(Model)
+	return drain(m, cmd)
+}
+
 func typeText(m Model, s string) Model {
 	for _, r := range s {
 		m = pressKey(m, r, 0, string(r))
@@ -58,18 +67,77 @@ func typeText(m Model, s string) Model {
 	return m
 }
 
-// Enter inserts a newline and never submits: multiline input does not send
-// each line as a separate message.
-func TestEnterInsertsNewlineWithoutSubmit(t *testing.T) {
+// Enter sends the message. Newlines come from an explicit chord so a
+// multiline prompt never turns into several messages.
+func TestEnterSends(t *testing.T) {
+	m := testModel()
+	m = typeText(m, "hello there")
+	m = sendCurrent(m)
+	if len(m.Lines()) < 1 || m.Lines()[0] != "You > hello there" {
+		t.Fatalf("Enter must send exactly one message, got %v", m.Lines())
+	}
+	if m.Composer().Value() != "" {
+		t.Errorf("composer must be cleared after sending: %q", m.Composer().Value())
+	}
+}
+
+// Ctrl+J inserts a newline and never submits.
+func TestCtrlJInsertsNewlineWithoutSubmit(t *testing.T) {
 	m := testModel()
 	m = typeText(m, "line one")
-	m = pressKey(m, tea.KeyEnter, 0, "")
+	m = pressKey(m, 'j', tea.ModCtrl, "")
 	m = typeText(m, "line two")
 	if got := m.Composer().Value(); got != "line one\nline two" {
 		t.Fatalf("composer = %q, want two lines", got)
 	}
 	if len(m.Lines()) != 0 {
-		t.Fatalf("nothing must be submitted on Enter, got %v", m.Lines())
+		t.Fatalf("nothing must be submitted on Ctrl+J, got %v", m.Lines())
+	}
+}
+
+// Alt+Enter inserts a newline too: terminals report it as ESC CR.
+func TestAltEnterInsertsNewline(t *testing.T) {
+	m := testModel()
+	m = typeText(m, "first")
+	m = pressKey(m, tea.KeyEnter, tea.ModAlt, "")
+	m = typeText(m, "second")
+	if got := m.Composer().Value(); got != "first\nsecond" {
+		t.Fatalf("composer = %q, want two lines", got)
+	}
+	if len(m.Lines()) != 0 {
+		t.Fatalf("nothing must be submitted on Alt+Enter, got %v", m.Lines())
+	}
+}
+
+// Shift+Enter inserts a newline on terminals that report modifiers.
+func TestShiftEnterInsertsNewline(t *testing.T) {
+	m := testModel()
+	m = typeText(m, "first")
+	m = pressKey(m, tea.KeyEnter, tea.ModShift, "")
+	m = typeText(m, "second")
+	if got := m.Composer().Value(); got != "first\nsecond" {
+		t.Fatalf("composer = %q, want two lines", got)
+	}
+	if len(m.Lines()) != 0 {
+		t.Fatalf("nothing must be submitted on Shift+Enter, got %v", m.Lines())
+	}
+}
+
+// A held Enter key must not submit the message twice.
+func TestRepeatedEnterDoesNotDoubleSubmit(t *testing.T) {
+	eng := &scriptEngine{}
+	m := NewWithHooks(eng, Hooks{})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "once")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl, IsRepeat: true})
+	m = updated.(Model)
+	if eng.calls != 0 {
+		t.Fatalf("a repeated key must not submit, calls = %d", eng.calls)
+	}
+	m = sendCurrent(m)
+	if eng.calls != 1 {
+		t.Fatalf("calls = %d, want 1", eng.calls)
 	}
 }
 
@@ -226,7 +294,7 @@ func TestNoProviderNoticeWithoutFabrication(t *testing.T) {
 	}
 }
 
-func TestCtrlMOpensPickerAndEscReturns(t *testing.T) {
+func TestCtrlKOpensPickerAndEscReturns(t *testing.T) {
 	hooks := Hooks{
 		ListModels: func() []ModelInfo {
 			return []ModelInfo{{ID: "a", Active: true}, {ID: "b"}}
@@ -235,7 +303,7 @@ func TestCtrlMOpensPickerAndEscReturns(t *testing.T) {
 	m := NewWithHooks(&scriptEngine{}, hooks)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	m = pressKey(m, 'm', tea.ModCtrl, "")
+	m = pressKey(m, 'k', tea.ModCtrl, "")
 	view := string(m.View().Content)
 	if !strings.Contains(view, "Models") || !strings.Contains(view, "(active)") {
 		t.Fatalf("picker must list models with the active mark:\n%s", view)
@@ -264,7 +332,7 @@ func TestPickerSwitchesModel(t *testing.T) {
 	m := NewWithHooks(&scriptEngine{}, hooks)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	m = pressKey(m, 'm', tea.ModCtrl, "")
+	m = pressKey(m, 'k', tea.ModCtrl, "")
 	m = pressKey(m, tea.KeyDown, 0, "")
 	m = pressKey(m, tea.KeyEnter, 0, "")
 	if switched != "b" {
@@ -816,9 +884,9 @@ func TestNewlineNeverSubmitsMultiline(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	m = typeText(m, "line one\nline two\nline three")
-	m = pressKey(m, tea.KeyEnter, 0, "")
+	m = pressKey(m, 'j', tea.ModCtrl, "")
 	if eng.calls != 0 {
-		t.Fatal("Enter must never submit")
+		t.Fatal("Ctrl+J must never submit")
 	}
 	if got := m.Composer().Value(); got != "line one\nline two\nline three\n" {
 		t.Errorf("composer = %q", got)
@@ -848,5 +916,166 @@ func TestViewportKeepsPositionOnStream(t *testing.T) {
 	}
 	if got := m.Lines(); got[len(got)-1] != "HAL > done" {
 		t.Errorf("content must still arrive: %v", got)
+	}
+}
+
+// The frame must fill the terminal exactly: one row per terminal row, so
+// the alternate screen never scrolls.
+func TestLayoutFillsTerminalHeight(t *testing.T) {
+	for _, size := range []struct{ w, h int }{
+		{80, 24}, {120, 40}, {160, 50}, {40, 10}, {30, 6}, {20, 4}, {200, 8},
+	} {
+		m := testModel()
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size.w, Height: size.h})
+		m = updated.(Model)
+		rows := m.layoutRows()
+		if len(rows) != size.h {
+			t.Errorf("%dx%d: layout has %d rows, want %d", size.w, size.h, len(rows), size.h)
+		}
+		for i, row := range rows {
+			if w := lipgloss.Width(row); w > size.w {
+				t.Errorf("%dx%d: row %d is %d columns wide", size.w, size.h, i, w)
+			}
+		}
+	}
+}
+
+// The header and the footer stay in place while the conversation scrolls.
+func TestHeaderAndFooterArePersistent(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	for i := 0; i < 40; i++ {
+		m.appendLine("filler line")
+	}
+	m = pressKey(m, tea.KeyUp, 0, "")
+	rows := m.layoutRows()
+	if !strings.Contains(rows[0], "HAL9001") {
+		t.Errorf("header must stay on the first row: %q", rows[0])
+	}
+	footer := rows[len(rows)-2]
+	if !strings.Contains(footer, "444 READ ONLY") {
+		t.Errorf("footer must stay on the last-but-one row: %q", footer)
+	}
+	if !strings.Contains(rows[len(rows)-1], "") {
+		t.Errorf("the notice row must be reserved: %q", rows[len(rows)-1])
+	}
+}
+
+// Alternate screen mode is on, so the shell output is hidden while HAL
+// runs and the previous screen comes back on exit.
+func TestAltScreenEnabled(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	if !m.View().AltScreen {
+		t.Error("the interface must run in the alternate screen buffer")
+	}
+}
+
+// A slash command runs when Enter is pressed, and never reaches the
+// model.
+func TestSlashCommandRunsOnEnter(t *testing.T) {
+	eng := &scriptEngine{replies: map[string]string{}}
+	m := NewWithHooks(eng, Hooks{})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/help")
+	m = sendCurrent(m)
+	if eng.calls != 0 {
+		t.Fatalf("a slash command must not reach the model, calls = %d", eng.calls)
+	}
+	if view := string(m.View().Content); !strings.Contains(view, "Keys and commands") {
+		t.Errorf("Enter must run the slash command:\n%s", view)
+	}
+}
+
+// Overlays close with Esc and give the composer its focus and draft back.
+func TestOverlayDismissRestoresComposer(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "draft text")
+	m.enterTheme()
+	if view := string(m.View().Content); !strings.Contains(view, "Themes") {
+		t.Fatalf("the theme picker must open:\n%s", view)
+	}
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	if view := string(m.View().Content); strings.Contains(view, "Themes (Enter applies") {
+		t.Error("Esc must dismiss the theme picker")
+	}
+	if got := m.Composer().Value(); got != "draft text" {
+		t.Errorf("the draft must survive the overlay, got %q", got)
+	}
+	if !m.Composer().Focused() {
+		t.Error("the composer must keep the focus after an overlay")
+	}
+}
+
+// A short window keeps the header, the footer and a usable composer.
+func TestShortWindowStaysUsable(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 6})
+	m = updated.(Model)
+	rows := m.layoutRows()
+	if len(rows) != 6 {
+		t.Fatalf("short window: %d rows, want 6", len(rows))
+	}
+	if !strings.Contains(rows[0], "HAL9001") {
+		t.Errorf("the header must survive a short window: %q", rows[0])
+	}
+	last := rows[len(rows)-1]
+	if !strings.Contains(last, "444 READ ONLY") {
+		t.Errorf("the footer must survive a short window: %q", last)
+	}
+}
+
+// A resize keeps the frame the right size and reflows the conversation.
+func TestResizeKeepsFrameHeight(t *testing.T) {
+	m := testModel()
+	for _, h := range []int{24, 12, 40, 7} {
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: h})
+		m = updated.(Model)
+		if got := len(m.layoutRows()); got != h {
+			t.Errorf("height %d: frame has %d rows", h, got)
+		}
+	}
+}
+
+// A terminal that delivers Alt+Enter as ESC and CR in separate reads must
+// not turn the CR into an accidental send: it becomes a newline instead.
+func TestSplitEscapeSequenceBecomesNewline(t *testing.T) {
+	eng := &scriptEngine{}
+	m := NewWithHooks(eng, Hooks{})
+	base := time.Now()
+	m.now = func() time.Time { return base }
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "first")
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	m = typeText(m, "second")
+	m = pressKey(m, tea.KeyEnter, 0, "")
+	if eng.calls != 0 {
+		t.Fatal("a split escape sequence must not send")
+	}
+	if got := m.Composer().Value(); got != "firstsecond\n" {
+		t.Errorf("composer = %q, want the Enter to become a newline", got)
+	}
+}
+
+// An Enter long after an Escape is a normal send.
+func TestEnterAfterGracePeriodSends(t *testing.T) {
+	eng := &scriptEngine{}
+	m := NewWithHooks(eng, Hooks{})
+	base := time.Now()
+	m.now = func() time.Time { return base }
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "hello")
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	base = base.Add(2 * escapeGrace)
+	m = enterCurrent(m)
+	if eng.calls != 1 {
+		t.Fatalf("calls = %d, want 1", eng.calls)
 	}
 }

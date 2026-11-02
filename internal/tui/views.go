@@ -6,6 +6,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
+	lipgloss "charm.land/lipgloss/v2"
 )
 
 // renderMarkdown renders an assistant reply for the viewport width. On any
@@ -83,7 +84,6 @@ func (m Model) updateOnboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case keyQuit, keyQuit2:
-			m.quitting = true
 			return m, tea.Quit
 		case "esc":
 			if m.hooks.HasConfig == nil || m.hooks.HasConfig() {
@@ -189,10 +189,11 @@ func (m Model) updateOnboardResult(msg onboardTestMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) onboardView() string {
-	var sb strings.Builder
-	sb.WriteString(m.heading())
-	sb.WriteString("\n\nFirst run — three values connect HAL9001:\n\n")
+func (m Model) onboardRows() []string {
+	rows := []string{
+		"First run — three values connect HAL9001:",
+		"",
+	}
 	fields := []struct {
 		label string
 		input textinput.Model
@@ -206,17 +207,14 @@ func (m Model) onboardView() string {
 		if i == m.obFocus {
 			marker = "▸ "
 		}
-		sb.WriteString(marker + f.label + ": " + f.input.View() + "\n")
+		rows = append(rows, marker+f.label+": "+f.input.View())
 	}
-	sb.WriteString("\nTab moves · Enter next · Ctrl+T test connection · Ctrl+S save\n")
+	rows = append(rows, "")
+	rows = append(rows, "Tab moves · Enter next · Ctrl+T test connection · Ctrl+S save")
 	if m.obNotice != "" {
-		sb.WriteString("\n" + m.obNotice + "\n")
+		rows = append(rows, "", m.obNotice)
 	}
-	out := sb.String()
-	if !m.color {
-		out = stripANSI(out)
-	}
-	return out
+	return rows
 }
 
 // enterPicker opens the model picker.
@@ -233,6 +231,7 @@ func (m *Model) enterPicker() {
 		}
 	}
 	m.pickerNotice = ""
+	m.panelOffset = 0
 	m.view = viewPicker
 }
 
@@ -245,7 +244,6 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case keyQuit, keyQuit2:
-			m.quitting = true
 			return m, tea.Quit
 		case "esc":
 			m.view = viewChat
@@ -255,11 +253,13 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.pickerCursor > 0 {
 				m.pickerCursor--
 			}
+			m.ensureVisible(2+m.pickerCursor, len(m.pickerRows()), contentHeight(m.height))
 			return m, nil
 		case "down", "tab":
 			if m.pickerCursor < len(m.pickerModels)-1 {
 				m.pickerCursor++
 			}
+			m.ensureVisible(2+m.pickerCursor, len(m.pickerRows()), contentHeight(m.height))
 			return m, nil
 		case "enter":
 			if len(m.pickerModels) == 0 || m.hooks.SwitchModel == nil {
@@ -292,12 +292,11 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) pickerView() string {
-	var sb strings.Builder
-	sb.WriteString(m.heading())
-	sb.WriteString("\n\nModels (Enter switches, A adds, Esc back):\n\n")
+func (m Model) pickerRows() []string {
+	st := m.theme.styles()
+	rows := []string{"Models (Enter switches, A adds, Esc back):", ""}
 	if len(m.pickerModels) == 0 {
-		sb.WriteString("  (no models configured — press A to add one)\n")
+		rows = append(rows, "  (no models configured — press A to add one)")
 	}
 	for i, info := range m.pickerModels {
 		marker, active := "  ", "        "
@@ -307,16 +306,16 @@ func (m Model) pickerView() string {
 		if info.Active {
 			active = " (active)"
 		}
-		sb.WriteString(marker + info.ID + active + "\n")
+		line := marker + info.ID + active
+		if i == m.pickerCursor {
+			line = st.active.Render(line)
+		}
+		rows = append(rows, line)
 	}
 	if m.pickerNotice != "" {
-		sb.WriteString("\n" + m.pickerNotice + "\n")
+		rows = append(rows, "", m.pickerNotice)
 	}
-	out := sb.String()
-	if !m.color {
-		out = stripANSI(out)
-	}
-	return out
+	return rows
 }
 
 // enterTheme opens the theme picker with a live preview.
@@ -340,6 +339,7 @@ func (m *Model) enterTheme() {
 		m.themePreview = Themes()[m.themeCursor]
 	}
 	m.themeNotice = ""
+	m.panelOffset = 0
 	m.view = viewTheme
 }
 
@@ -352,7 +352,6 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case keyQuit, keyQuit2:
-			m.quitting = true
 			return m, tea.Quit
 		case "esc":
 			m.view = viewChat
@@ -363,12 +362,14 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.themeCursor--
 			}
 			m.themePreview = Themes()[m.themeCursor]
+			m.ensureVisible(2+m.themeCursor, len(m.themeRows()), contentHeight(m.height))
 			return m, nil
 		case "down", "tab":
 			if m.themeCursor < len(Themes())-1 {
 				m.themeCursor++
 			}
 			m.themePreview = Themes()[m.themeCursor]
+			m.ensureVisible(2+m.themeCursor, len(m.themeRows()), contentHeight(m.height))
 			return m, nil
 		case "enter":
 			name := Themes()[m.themeCursor].Name
@@ -387,11 +388,9 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) themeView() string {
+func (m Model) themeRows() []string {
 	st := m.themePreview.styles()
-	var sb strings.Builder
-	sb.WriteString(st.header.Render("● HAL9001"))
-	sb.WriteString("\n\nThemes (Enter applies, Esc back) — live preview:\n\n")
+	rows := []string{"Themes (Enter applies, Esc back) — live preview:", ""}
 	for i, t := range Themes() {
 		marker := "  "
 		if i == m.themeCursor {
@@ -401,21 +400,17 @@ func (m Model) themeView() string {
 		if i == m.themeCursor {
 			line = st.active.Render(line)
 		}
-		sb.WriteString(line + "\n")
+		rows = append(rows, line)
 	}
-	sb.WriteString("\n" + st.header.Render("● HAL9001") + "\n")
-	sb.WriteString(st.user.Render("You > ") + "preview message\n")
-	sb.WriteString(st.hal.Render("HAL > ") + "preview reply\n")
-	sb.WriteString(st.footer.Render("[444 read-only] " + m.modelNameOr("model")))
-	sb.WriteString("\n")
+	rows = append(rows, "", "Preview:")
+	rows = append(rows, st.header.Render("● HAL9001"))
+	rows = append(rows, st.user.Render("You > ")+"preview message")
+	rows = append(rows, st.hal.Render("HAL > ")+"preview reply")
+	rows = append(rows, st.footer.Render("444 READ ONLY · "+m.modelNameOr("model")))
 	if m.themeNotice != "" {
-		sb.WriteString("\n" + m.themeNotice + "\n")
+		rows = append(rows, "", m.themeNotice)
 	}
-	out := sb.String()
-	if !m.color {
-		out = stripANSI(out)
-	}
-	return out
+	return rows
 }
 
 // enterSessions opens the stored-conversation picker.
@@ -431,6 +426,7 @@ func (m *Model) enterSessions() {
 			m.sessionNames = names
 		}
 	}
+	m.panelOffset = 0
 	m.view = viewSessions
 }
 
@@ -443,7 +439,6 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case keyQuit, keyQuit2:
-			m.quitting = true
 			return m, tea.Quit
 		case "esc":
 			m.view = viewChat
@@ -453,11 +448,13 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.sessionCursor > 0 {
 				m.sessionCursor--
 			}
+			m.ensureVisible(2+m.sessionCursor, len(m.sessionsRows()), contentHeight(m.height))
 			return m, nil
 		case "down", "tab":
 			if m.sessionCursor < len(m.sessionNames)-1 {
 				m.sessionCursor++
 			}
+			m.ensureVisible(2+m.sessionCursor, len(m.sessionsRows()), contentHeight(m.height))
 			return m, nil
 		case "enter":
 			if len(m.sessionNames) == 0 || m.hooks.SwitchSession == nil {
@@ -474,6 +471,7 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.engine = eng
 			}
 			m.SetHistory(lines)
+			m.title = name
 			m.view = viewChat
 			m.notice = "Resumed: " + name
 			return m, nil
@@ -482,67 +480,126 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) sessionsView() string {
+func (m Model) sessionsRows() []string {
 	st := m.theme.styles()
-	var sb strings.Builder
-	sb.WriteString(st.header.Render("● HAL9001"))
-	sb.WriteString("\n\nSessions (Enter resumes, Esc back):\n\n")
+	rows := []string{"Sessions (Enter resumes, Esc back):", ""}
 	if len(m.sessionNames) == 0 {
-		sb.WriteString("  (no stored conversations)\n")
+		rows = append(rows, "  (no stored conversations)")
 	}
 	for i, name := range m.sessionNames {
 		line := "  " + name
 		if i == m.sessionCursor {
 			line = st.active.Render("▸ " + name)
 		}
-		sb.WriteString(line + "\n")
+		rows = append(rows, line)
 	}
 	if m.sessionNotice != "" {
-		sb.WriteString("\n" + m.sessionNotice + "\n")
+		rows = append(rows, "", m.sessionNotice)
 	}
-	out := sb.String()
-	if !m.color {
-		out = stripANSI(out)
-	}
-	return out
+	return rows
 }
 
-func (m Model) helpView() string {
-	st := m.theme.styles()
-	rows := [][2]string{
-		{"Enter", "newline in the composer"},
-		{"Ctrl+S", "send (slash commands run locally, never sent to the model)"},
-		{"Ctrl+M", "model picker"},
+func (m Model) helpRows() []string {
+	keys := [][2]string{
+		{"Enter", "send the message"},
+		{"Ctrl+J", "newline (any terminal)"},
+		{"Alt+Enter", "newline (xterm-style)"},
+		{"Ctrl+S", "send (alternative)"},
+		{"Ctrl+K", "model picker"},
 		{"Ctrl+N", "new conversation"},
 		{"Ctrl+C", "quit"},
-		{"Esc", "cancel a stream / close a panel"},
-		{"PgUp / PgDn", "scroll the conversation"},
-		{"paste", "bracketed paste is inserted, never submitted"},
-		{"", ""},
+		{"Esc", "cancel stream / close"},
+		{"PgUp/PgDn", "scroll conversation"},
+		{"paste", "inserted, never sent"},
+		{"//", "literal slash message"},
+	}
+	commands := [][2]string{
 		{"/help", "this panel"},
-		{"/copy", "copy the last HAL response to the clipboard"},
-		{"/copy code", "copy the latest fenced code block"},
-		{"/theme", "theme picker with live preview"},
+		{"/copy", "copy the last response"},
+		{"/copy code", "copy the latest block"},
+		{"/theme", "theme picker, preview"},
 		{"/model", "model picker"},
 		{"/new", "new conversation"},
-		{"/sessions", "resume a stored conversation"},
+		{"/sessions", "resume a stored session"},
 	}
-	var sb strings.Builder
-	sb.WriteString(st.header.Render("● HAL9001"))
-	sb.WriteString("\n\nKeys and commands (Esc back):\n\n")
-	for _, r := range rows {
-		if r[0] == "" {
-			sb.WriteString("\n")
-			continue
+
+	var rows []string
+	if m.width >= 78 {
+		rows = m.helpRowsTwoColumns(keys, commands)
+	} else {
+		rows = m.helpRowsOneColumn(keys, commands)
+	}
+	if !m.keyDisambiguation {
+		rows = append(rows,
+			"",
+			"This terminal does not report modifier combinations, so",
+			"Shift+Enter arrives as a plain Enter and sends instead.",
+			"Use Ctrl+J for a newline.",
+		)
+	}
+	return rows
+}
+
+// helpRowsOneColumn stacks the keys and the commands vertically.
+func (m Model) helpRowsOneColumn(keys, commands [][2]string) []string {
+	st := m.theme.styles()
+	rows := []string{"Keys and commands (Esc back):", ""}
+	for _, r := range keys {
+		rows = append(rows, "  "+st.active.Render(r[0])+"  "+r[1])
+	}
+	rows = append(rows, "")
+	for _, r := range commands {
+		rows = append(rows, "  "+st.active.Render(r[0])+"  "+r[1])
+	}
+	return rows
+}
+
+// helpRowsTwoColumns puts the keys and the commands side by side so the
+// whole panel fits a 24-row terminal.
+func (m Model) helpRowsTwoColumns(keys, commands [][2]string) []string {
+	st := m.theme.styles()
+	const label = 13
+	const column = 39
+	left := make([]string, 0, len(keys))
+	for _, r := range keys {
+		left = append(left, "  "+padTo(st.active.Render(r[0]), label)+r[1])
+	}
+	right := make([]string, 0, len(commands))
+	for _, r := range commands {
+		right = append(right, padTo(st.active.Render(r[0]), label)+r[1])
+	}
+	rows := []string{"Keys and commands (Esc back):", ""}
+	count := len(left)
+	if len(right) > count {
+		count = len(right)
+	}
+	for i := 0; i < count; i++ {
+		l, r := "", ""
+		if i < len(left) {
+			l = left[i]
 		}
-		sb.WriteString("  " + st.active.Render(r[0]) + "  " + r[1] + "\n")
+		if i < len(right) {
+			r = right[i]
+		}
+		switch {
+		case l != "" && r != "":
+			rows = append(rows, padTo(l, column)+r)
+		case l != "":
+			rows = append(rows, l)
+		default:
+			rows = append(rows, r)
+		}
 	}
-	sb.WriteString("\n" + st.footer.Render("[444 read-only]"))
-	out := sb.String()
-	if !m.color {
-		out = stripANSI(out)
+	return rows
+}
+
+// padTo pads a styled string to a visible width.
+func padTo(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
 	}
-	return out
+	return s + strings.Repeat(" ", width-w)
 }
 
 func (m Model) modelNameOr(fallback string) string {
@@ -561,14 +618,38 @@ func (m Model) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case keyQuit, keyQuit2:
-			m.quitting = true
 			return m, tea.Quit
 		case "esc", "enter", "q":
 			m.view = viewChat
 			return m, nil
+		case "up", "shift+tab":
+			m.scrollPanel(-1)
+			return m, nil
+		case "down", "tab":
+			m.scrollPanel(1)
+			return m, nil
+		case "pgup":
+			m.scrollPanel(-contentHeight(m.height))
+			return m, nil
+		case "pgdown":
+			m.scrollPanel(contentHeight(m.height))
+			return m, nil
 		}
 	}
 	return m, nil
+}
+
+// scrollPanel moves the overlay panel by delta rows.
+func (m *Model) scrollPanel(delta int) {
+	total := len(m.helpRows())
+	n := contentHeight(m.height)
+	m.panelOffset += delta
+	if m.panelOffset > total-n {
+		m.panelOffset = total - n
+	}
+	if m.panelOffset < 0 {
+		m.panelOffset = 0
+	}
 }
 func (m *Model) newSession() {
 	if m.hooks.NewSession == nil {
@@ -586,6 +667,7 @@ func (m *Model) newSession() {
 	m.lines = nil
 	m.display = nil
 	m.pending = ""
+	m.title = ""
 	m.renderConversation()
 	m.notice = "New conversation started."
 }

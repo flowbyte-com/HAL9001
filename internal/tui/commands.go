@@ -18,6 +18,7 @@ func (m *Model) dispatchSlash(input string) tea.Cmd {
 	switch cmd {
 	case "/help":
 		m.view = viewHelp
+		m.panelOffset = 0
 		return nil
 	case "/theme":
 		m.enterTheme()
