@@ -10,8 +10,26 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal"
+	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/cliui"
 	"github.com/sipeed/picoclaw/pkg/config"
 )
+
+// The CLI help text follows the active brand: under HAL9001 the lobster
+// emoji is absent, otherwise it is unchanged.
+func TestCommandHelpBrandAware(t *testing.T) {
+	previous := cliui.CurrentBrand()
+	t.Cleanup(func() { cliui.SetBrand(previous) })
+
+	cliui.SetBrand(cliui.PicoClawBrand())
+	cmd := NewPicoclawCommand()
+	assert.Contains(t, cmd.Short, internal.Logo)
+
+	cliui.SetBrand(cliui.Hal9001Brand())
+	cmd = NewPicoclawCommand()
+	assert.NotContains(t, cmd.Short, "🦞")
+	assert.NotContains(t, cmd.Long, "🦞")
+	assert.Contains(t, cmd.Short, "PicoClaw")
+}
 
 func TestNewPicoclawCommand(t *testing.T) {
 	cmd := NewPicoclawCommand()

@@ -80,7 +80,7 @@ func onboard(encrypt bool) {
 	workspace := cfg.WorkspacePath()
 	createWorkspaceTemplates(workspace)
 
-	cliui.PrintOnboardComplete(internal.Logo, encrypt, configPath)
+	cliui.PrintOnboardComplete(cliui.CurrentBrand().Logo, encrypt, configPath)
 }
 
 // promptPassphrase reads the encryption passphrase twice from the terminal

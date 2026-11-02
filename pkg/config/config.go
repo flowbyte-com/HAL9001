@@ -1653,7 +1653,13 @@ func LoadConfig(path string) (*Config, error) {
 				"config file not found, using default config",
 				map[string]any{"path": path},
 			)
-			return DefaultConfig(), nil
+			defaultCfg := DefaultConfig()
+			// No config file means the generic env parser never runs, so
+			// apply the persona override explicitly. Otherwise the CLI
+			// branding (which honours EnvPersona) could disagree with the
+			// persona that actually runs.
+			applyPersonaEnvOverride(defaultCfg)
+			return defaultCfg, nil
 		}
 		return nil, err
 	}
@@ -1914,6 +1920,19 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.Session.DeriveDmScope()
 
 	return cfg, nil
+}
+
+// applyPersonaEnvOverride applies EnvPersona to a config that was not
+// produced by the generic env parser (the no-config-file path). The env
+// value wins over the config file, matching how caarlos0/env resolves
+// every other env-tagged field.
+func applyPersonaEnvOverride(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if value := strings.TrimSpace(os.Getenv(EnvPersona)); value != "" {
+		cfg.Agents.Defaults.Persona = value
+	}
 }
 
 func applySkillsRegistryEnvCompat(cfg *Config) {

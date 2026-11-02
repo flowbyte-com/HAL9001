@@ -29,7 +29,7 @@ func statusCmd() {
 	wsOK := wsErr == nil
 
 	report := cliui.StatusReport{
-		Logo:          internal.Logo,
+		Logo:          cliui.CurrentBrand().Logo,
 		Version:       config.FormatVersion(),
 		Build:         build,
 		ConfigPath:    configPath,

@@ -41,6 +41,12 @@ const (
 	// EnvGatewayHost overrides the host address for the gateway server.
 	// Default: "localhost"
 	EnvGatewayHost = "PICOCLAW_GATEWAY_HOST"
+
+	// EnvPersona selects the agent persona. "hal9001" enables the HAL9001
+	// conversational persona. It overrides agents.defaults.persona from
+	// the config file and is read by both the runtime and the CLI branding
+	// layer, so branding always matches the running persona.
+	EnvPersona = "PICOCLAW_AGENTS_DEFAULTS_PERSONA"
 )
 
 func GetHome() string {

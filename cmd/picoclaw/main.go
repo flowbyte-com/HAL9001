@@ -15,7 +15,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/sipeed/picoclaw/cmd/picoclaw/internal"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/agent"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/auth"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/cliui"
@@ -100,10 +99,13 @@ func earlyColorDisabled() bool {
 }
 
 func NewPicoclawCommand() *cobra.Command {
-	short := fmt.Sprintf("%s PicoClaw — personal AI assistant", internal.Logo)
+	// The brand logo is persona-aware: under HAL9001 the lobster emoji is
+	// not used anywhere in the terminal output.
+	logo := cliui.CurrentBrand().Logo
+	short := fmt.Sprintf("%s PicoClaw — personal AI assistant", logo)
 	long := fmt.Sprintf(`%s PicoClaw is a lightweight personal AI assistant.
 
-Version: %s`, internal.Logo, config.FormatVersion())
+Version: %s`, logo, config.FormatVersion())
 
 	cmd := &cobra.Command{
 		Use:   "picoclaw",
@@ -149,27 +151,6 @@ picoclaw --no-color status`,
 	return cmd
 }
 
-const (
-	colorBlue = "\033[1;38;2;62;93;185m"
-	colorRed  = "\033[1;38;2;213;70;70m"
-	banner    = "\r\n" +
-		colorBlue + "██████╗ ██╗ ██████╗ ██████╗ " + colorRed + " ██████╗██╗      █████╗ ██╗    ██╗\n" +
-		colorBlue + "██╔══██╗██║██╔════╝██╔═══██╗" + colorRed + "██╔════╝██║     ██╔══██╗██║    ██║\n" +
-		colorBlue + "██████╔╝██║██║     ██║   ██║" + colorRed + "██║     ██║     ███████║██║ █╗ ██║\n" +
-		colorBlue + "██╔═══╝ ██║██║     ██║   ██║" + colorRed + "██║     ██║     ██╔══██║██║███╗██║\n" +
-		colorBlue + "██║     ██║╚██████╗╚██████╔╝" + colorRed + "╚██████╗███████╗██║  ██║╚███╔███╔╝\n" +
-		colorBlue + "╚═╝     ╚═╝ ╚═════╝ ╚═════╝ " + colorRed + " ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\n " +
-		"\033[0m\r\n"
-	plainBanner = "\r\n" +
-		"██████╗ ██╗ ██████╗ ██████╗  ██████╗██╗      █████╗ ██╗    ██╗\n" +
-		"██╔══██╗██║██╔════╝██╔═══██╗██╔════╝██║     ██╔══██╗██║    ██║\n" +
-		"██████╔╝██║██║     ██║   ██║██║     ██║     ███████║██║ █╗ ██║\n" +
-		"██╔═══╝ ██║██║     ██║   ██║██║     ██║     ██╔══██║██║███╗██║\n" +
-		"██║     ██║╚██████╗╚██████╔╝╚██████╗███████╗██║  ██║╚███╔███╔╝\n" +
-		"╚═╝     ╚═╝ ╚═════╝ ╚═════╝  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\n " +
-		"\r\n"
-)
-
 func main() {
 	// Initialize Termux SSL certificate detection before anything else
 	initTermuxSSL()
@@ -177,13 +158,14 @@ func main() {
 	// Apply memory/GC tuning from the environment before any work starts.
 	memlimit.Apply()
 
-	cliui.Init(earlyColorDisabled())
+	colorEnabled := !earlyColorDisabled()
+	cliui.Init(!colorEnabled)
 
-	if earlyColorDisabled() {
-		fmt.Print(plainBanner)
-	} else {
-		fmt.Printf("%s", banner)
-	}
+	// Resolve the branding before any output is rendered, so the startup
+	// banner and the conversation labels always match the persona that is
+	// going to run (config file or PICOCLAW_AGENTS_DEFAULTS_PERSONA).
+	cliui.SetBrand(cliui.DetectBrand())
+	cliui.PrintStartupBanner(colorEnabled)
 
 	tzEnv := os.Getenv("TZ")
 	if tzEnv != "" {

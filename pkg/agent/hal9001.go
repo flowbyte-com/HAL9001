@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -11,12 +12,12 @@ import (
 // agents.defaults.persona = "hal9001" (or
 // PICOCLAW_AGENTS_DEFAULTS_PERSONA=hal9001); every other value keeps the
 // default picoclaw behavior unchanged.
-const Hal9001PersonaName = "hal9001"
+const Hal9001PersonaName = config.PersonaHal9001
 
 // Hal9001Enabled reports whether the HAL9001 persona is selected. Unknown
 // values fall back to the default persona.
 func Hal9001Enabled(persona string) bool {
-	return strings.EqualFold(strings.TrimSpace(persona), Hal9001PersonaName)
+	return config.IsHal9001Persona(persona)
 }
 
 // Hal9001Identity returns the kernel identity block for the HAL9001

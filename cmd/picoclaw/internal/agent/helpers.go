@@ -12,6 +12,7 @@ import (
 	"github.com/ergochat/readline"
 
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal"
+	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/cliui"
 	"github.com/sipeed/picoclaw/pkg/agent"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -80,18 +81,25 @@ func agentCmd(message, sessionKey, model string, debug bool) error {
 		if err != nil {
 			return fmt.Errorf("error processing message: %w", err)
 		}
-		fmt.Printf("\n%s %s\n", internal.Logo, response)
+		fmt.Printf("\n%s\n", formatResponse(response))
 		return nil
 	}
 
-	fmt.Printf("%s Interactive mode (Ctrl+C to exit)\n\n", internal.Logo)
+	cliui.PrintInteractiveNotice()
 	interactiveMode(agentLoop, sessionKey)
 
 	return nil
 }
 
+// formatResponse renders an assistant reply with the active brand label:
+// "HAL > ..." for the HAL9001 persona, the lobster logo otherwise.
+func formatResponse(response string) string {
+	return cliui.CurrentBrand().AgentLabel + response
+}
+
 func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
-	prompt := fmt.Sprintf("%s You: ", internal.Logo)
+	brand := cliui.CurrentBrand()
+	prompt := brand.UserLabel
 
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          prompt,
@@ -136,14 +144,14 @@ func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 			continue
 		}
 
-		fmt.Printf("\n%s %s\n\n", internal.Logo, response)
+		fmt.Printf("\n%s\n\n", formatResponse(response))
 	}
 }
 
 func simpleInteractiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print(fmt.Sprintf("%s You: ", internal.Logo))
+		fmt.Print(cliui.CurrentBrand().UserLabel)
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
@@ -171,6 +179,6 @@ func simpleInteractiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 			continue
 		}
 
-		fmt.Printf("\n%s %s\n\n", internal.Logo, response)
+		fmt.Printf("\n%s\n\n", formatResponse(response))
 	}
 }

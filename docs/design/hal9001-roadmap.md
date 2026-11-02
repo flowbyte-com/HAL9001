@@ -53,7 +53,6 @@ default behavior unchanged.
   ever. Delegation is by assignment, not by implementation.
 
 ## Stage 3.1 — Unconditional 444 (done)
-
 - The boundary no longer depends on configuration: HAL plus coding
   profile is explicitly rejected (warning, HAL keeps its restricted
   profile); non-HAL agents keep full coding functionality.
@@ -65,6 +64,19 @@ default behavior unchanged.
   (`TrustedEvidence`: CI or operator-run tests) can verify; supplied
   tests support; prose claims; contradictions and missing evidence are
   distinct. Capabilities and limits documented in code and architecture.
+
+## Stage 3.2 — Terminal branding (done)
+
+- HAL CLI identity: compact `● HAL9001` heading instead of the ASCII
+  lobster banner, no lobster emoji in session output, `You >` / `HAL >`
+  conversation labels, minimal startup output.
+- Branding is resolved (env var, then config file) before any startup
+  output is rendered; color handling honours `--no-color`, `NO_COLOR`
+  and `TERM=dumb`.
+- PicoClaw branding unchanged for non-HAL configurations; product panels
+  keep the PicoClaw name but drop the logo under HAL.
+- Presentation only: prompts, the 444 boundary, model configuration,
+  memory and conversation behaviour are untouched.
 
 ## Stage 4 — Authorized delegation and specialist coordination (design)
 
