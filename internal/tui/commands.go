@@ -59,6 +59,15 @@ var commandTable = []*command{
 		},
 	},
 	{
+		name:        "/usage",
+		description: "Session token usage",
+		run: func(m *Model, _ []string) tea.Cmd {
+			m.view = viewUsage
+			m.panelOffset = 0
+			return nil
+		},
+	},
+	{
 		name:        "/quit",
 		aliases:     []string{"/q", "/exit"},
 		description: "Quit HAL9001 (/q, /exit)",

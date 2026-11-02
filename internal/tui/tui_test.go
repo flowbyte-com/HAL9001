@@ -13,6 +13,7 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/usage"
 )
 
 type scriptEngine struct {
@@ -1404,14 +1405,14 @@ func TestDiagPanelIsContentFree(t *testing.T) {
 		OutputLimitHit:  true,
 		MaxTokens:       15000,
 		IdleTimeout:     45 * time.Second,
-		TurnTimeout:     120 * time.Second,
+		TurnTimeout:     240 * time.Second,
 	}
 	m = typeText(m, "/diag")
 	m = enterCurrent(m)
 	view := string(m.View().Content)
 	for _, want := range []string{
 		"diagnostics", "done", "812", "5084",
-		"max_tokens 15000", "idle 45s", "turn 2m0s",
+		"max_tokens 15000", "idle 45s", "turn 4m0s",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("diag missing %q:\n%s", want, view)
@@ -2452,5 +2453,169 @@ func TestReachingBottomRestoresFollowing(t *testing.T) {
 	m = updated.(Model)
 	if !m.viewport.AtBottom() {
 		t.Error("returning to the bottom must restore following")
+	}
+}
+
+// The footer shows a compact cumulative token indicator when data exists.
+func TestFooterShowsUsage(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, Hooks{})
+	m.SetColor(false)
+	m.SetModelName("MiniMax-M3.1-Flash")
+	m.SetEffort("high", true)
+	m.SetUsage(usage.Session{Input: 12400, Output: 3200, Turns: 3})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 110, Height: 30})
+	m = updated.(Model)
+	view := string(m.View().Content)
+	if !strings.Contains(view, "Tokens: 12.4k in / 3.2k out") {
+		t.Errorf("footer missing usage:\n%s", view)
+	}
+	if !strings.Contains(view, "444 READ ONLY") || !strings.Contains(view, "MiniMax-M3.1-Flash · high") {
+		t.Errorf("footer lost its existing parts:\n%s", view)
+	}
+}
+
+// Narrow terminals shed usage before the model or the permission marker.
+func TestFooterNarrowHidesUsageFirst(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, Hooks{})
+	m.SetColor(false)
+	m.SetModelName("MiniMax-M3.1-Flash")
+	m.SetEffort("high", true)
+	m.SetUsage(usage.Session{Input: 12400, Output: 3200, Turns: 3})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 58, Height: 24})
+	m = updated.(Model)
+	footer := m.layoutRows()[len(m.layoutRows())-2]
+	if strings.Contains(footer, "Tokens:") {
+		t.Errorf("usage should be hidden at width 58: %q", footer)
+	}
+	if !strings.Contains(footer, "444 READ ONLY") || !strings.Contains(footer, "MiniMax-M3.1-Flash") {
+		t.Errorf("permission or model lost: %q", footer)
+	}
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 20, Height: 24})
+	m = updated.(Model)
+	footer = m.layoutRows()[len(m.layoutRows())-2]
+	if !strings.Contains(footer, "444 READ ONLY") {
+		t.Errorf("permission marker lost at width 20: %q", footer)
+	}
+}
+
+func TestCompactTokens(t *testing.T) {
+	cases := map[int]string{
+		0: "0", 812: "812", 1000: "1k", 3200: "3.2k",
+		12400: "12.4k", 99900: "99.9k", 100000: "100k",
+		1_200_000: "1.2m",
+	}
+	for n, want := range cases {
+		if got := compactTokens(n); got != want {
+			t.Errorf("compactTokens(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// /usage reports the session totals without duplicating /diag.
+func TestUsagePanel(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, Hooks{})
+	m.SetColor(false)
+	m.SetUsage(usage.Session{
+		Input: 12400, Output: 3200, Reasoning: 900, Cached: 400,
+		Turns: 3, Incomplete: 1,
+		Last: usage.Turn{Input: 1204, Output: 3880, Reasoning: 3400, Cached: 200, At: time.Now()},
+	})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	m = typeText(m, "/usage")
+	m = enterCurrent(m)
+	if m.view != viewUsage {
+		t.Fatal("/usage did not open the panel")
+	}
+	view := string(m.View().Content)
+	for _, want := range []string{
+		"input", "12,400", "output", "3,200", "reasoning", "900",
+		"cached input", "400", "3 completed · 1 incomplete",
+		"1,204", "3,880", "provider", "does not estimate",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("usage panel missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "elapsed") || strings.Contains(view, "sse events") {
+		t.Error("the usage panel duplicates /diag")
+	}
+}
+
+// The usage of one turn is recorded once, when the turn ends.
+func TestUsageRecordedOncePerTurn(t *testing.T) {
+	recorded := 0
+	hooks := Hooks{RecordTurn: func(provider.TurnStats) { recorded++ }}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	m.turnStats = nil
+	updated, _ = m.Update(streamStatsMsg{id: 1, stats: provider.TurnStats{
+		StartedAt: time.Now(), HasUsage: true,
+		Usage: provider.Usage{PromptTokens: 10, CompletionTokens: 5},
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(responseMsg{id: 1, text: "done"})
+	m = updated.(Model)
+	if recorded != 1 {
+		t.Fatalf("recorded %d times, want 1", recorded)
+	}
+	// A later message must not record the same turn again.
+	updated, _ = m.Update(responseMsg{id: 1, text: "late"})
+	m = updated.(Model)
+	if recorded != 1 {
+		t.Errorf("turn recorded twice: %d", recorded)
+	}
+}
+
+// A failed turn still records usage when the provider reported it, and an
+// unreported failure records an incomplete turn.
+func TestUsageRecordedForFailedTurn(t *testing.T) {
+	var got []provider.TurnStats
+	hooks := Hooks{RecordTurn: func(s provider.TurnStats) { got = append(got, s) }}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	stats := provider.TurnStats{StartedAt: time.Now(), HasUsage: true, Usage: provider.Usage{PromptTokens: 9, CompletionTokens: 4}}
+	updated, _ = m.Update(streamStatsMsg{id: 1, stats: stats})
+	m = updated.(Model)
+	updated, _ = m.Update(errorMsg{id: 1, err: provider.ErrTurnTimeout})
+	m = updated.(Model)
+	if len(got) != 1 || got[0].Usage.CompletionTokens != 4 {
+		t.Fatalf("failed turn usage = %+v", got)
+	}
+
+	// No stats at all: the turn still ends, but nothing is invented here.
+	m2 := NewWithHooks(&scriptEngine{}, hooks)
+	updated, _ = m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m2 = updated.(Model)
+	m2.streamID = 2
+	m2.sending = true
+	before := len(got)
+	updated, _ = m2.Update(errorMsg{id: 2, err: provider.ErrStreamIdle})
+	m2 = updated.(Model)
+	if len(got) != before {
+		t.Errorf("a turn without stats recorded tokens: %+v", got[before:])
+	}
+}
+
+// A new session resets the displayed totals.
+func TestClearResetsUsageDisplay(t *testing.T) {
+	hooks := Hooks{
+		NewSession: func() (Engine, error) { return nil, nil },
+		Usage:      func() usage.Session { return usage.Session{} },
+	}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	m.SetUsage(usage.Session{Input: 900, Output: 100, Turns: 1})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/clear")
+	m = enterCurrent(m)
+	if m.tokens.Total() {
+		t.Errorf("usage not reset after clear: %+v", m.tokens)
 	}
 }

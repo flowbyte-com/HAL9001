@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -511,6 +512,7 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.SetHistory(lines)
 			m.title = name
+			m.refreshUsage()
 			m.view = viewChat
 			m.notice = "Resumed: " + name
 			return m, nil
@@ -952,7 +954,128 @@ func (m *Model) startFreshConversation(notice string) {
 	m.title = ""
 	m.lastStats = nil
 	m.lastResponse = ""
+	m.refreshUsage()
 	m.renderConversation()
 	m.viewport.GotoBottom()
 	m.notice = notice
+}
+
+// usageRows renders the session's token accounting. It reports only what
+// the provider said and never estimates or prices anything.
+func (m Model) usageRows() []string {
+	st := m.theme.styles()
+	rows := []string{"Session usage (Esc back)", ""}
+	row := func(label, value string) {
+		rows = append(rows, "  "+padTo(st.active.Render(label), 15)+value)
+	}
+	t := m.tokens
+	row("session", m.titleOr(m.sessionTitle()))
+	row("input", tokenCount(t.Input))
+	row("output", tokenCount(t.Output))
+	if t.Reasoning > 0 {
+		row("reasoning", tokenCount(t.Reasoning)+"  (included in output)")
+	} else {
+		row("reasoning", "not reported")
+	}
+	if t.Cached > 0 {
+		row("cached input", tokenCount(t.Cached))
+	} else {
+		row("cached input", "not reported")
+	}
+	row("turns", fmt.Sprintf("%d completed · %d incomplete", t.Turns, t.Incomplete))
+	if t.Total() {
+		row("last turn", fmt.Sprintf("input %s · output %s",
+			tokenCount(t.Last.Input), tokenCount(t.Last.Output)))
+		if t.Last.Reasoning > 0 {
+			rows = append(rows, "                 reasoning "+tokenCount(t.Last.Reasoning))
+		}
+		if t.Last.Cached > 0 {
+			rows = append(rows, "                 cached input "+tokenCount(t.Last.Cached))
+		}
+		if !t.Last.At.IsZero() {
+			rows = append(rows, "                 at "+t.Last.At.Local().Format("2006-01-02 15:04"))
+		}
+	}
+	rows = append(rows, "")
+	rows = append(rows, "  Counts are what the provider reported; HAL does not estimate")
+	rows = append(rows, "  tokens, price them, or store prompt content in this record.")
+	if t.Incomplete > 0 {
+		rows = append(rows, "")
+		rows = append(rows, "  Incomplete turns ended without reported usage (cancelled,")
+		rows = append(rows, "  timed out or provider error); their tokens are unknown.")
+	}
+	return rows
+}
+
+// sessionTitle is the conversation name shown in the header.
+func (m Model) sessionTitle() string { return strings.TrimSpace(m.title) }
+
+func (m Model) titleOr(fallback string) string {
+	if fallback != "" {
+		return fallback
+	}
+	return "(none)"
+}
+
+// tokenCount renders a token count with thousands separators.
+func tokenCount(n int) string {
+	if n <= 0 {
+		return "0"
+	}
+	s := strconv.Itoa(n)
+	var out []byte
+	for i, c := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, c)
+	}
+	return string(out)
+}
+
+// compactTokens renders a count for the footer: 812, 12.4k, 1.2m.
+func compactTokens(n int) string {
+	switch {
+	case n < 1000:
+		return strconv.Itoa(n)
+	case n < 100_000:
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1000), ".0") + "k"
+	case n < 1_000_000:
+		return fmt.Sprintf("%dk", n/1000)
+	default:
+		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1_000_000), ".0") + "m"
+	}
+}
+
+// usageLabel is the compact footer indicator, empty when nothing has been
+// reported yet.
+func (m Model) usageLabel() string {
+	if !m.tokens.Total() {
+		return ""
+	}
+	return "Tokens: " + compactTokens(m.tokens.Input) + " in / " + compactTokens(m.tokens.Output) + " out"
+}
+
+func (m Model) updateUsage(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.ready = true
+		return m, nil
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case keyQuit, keyQuit2:
+			return m, m.quit()
+		case "esc", "enter", "q":
+			m.view = viewChat
+			return m, nil
+		case "up", "shift+tab":
+			m.scrollPanel(-1)
+			return m, nil
+		case "down", "tab":
+			m.scrollPanel(1)
+			return m, nil
+		}
+	}
+	return m, nil
 }

@@ -23,6 +23,7 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/usage"
 )
 
 // Keys.
@@ -139,6 +140,11 @@ type Hooks struct {
 	// Effort returns the active reasoning level and whether the active
 	// model supports effort control at all.
 	Effort func() (string, bool)
+	// Usage returns the cumulative accounting for the active session.
+	Usage func() usage.Session
+	// RecordTurn stores one finished turn's usage. A turn without
+	// provider-reported usage is recorded as incomplete by the callee.
+	RecordTurn func(stats provider.TurnStats)
 	// SetEffort persists a level for the active model and returns the
 	// engine for subsequent requests.
 	SetEffort func(level string) (Engine, error)
@@ -169,6 +175,7 @@ const (
 	viewSessions
 	viewDiag
 	viewEffort
+	viewUsage
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -182,7 +189,7 @@ type SessionLine struct {
 const (
 	maxComposerHeight = 8
 	minComposerRows   = 3
-	maxSuggestions    = 9
+	maxSuggestions    = 10
 )
 
 // Long user prompts are collapsed to a short preview: a pasted prompt is
@@ -259,6 +266,10 @@ type Model struct {
 	// Effort picker state.
 	effortCursor int
 	effortNotice string
+	// tokens is the cumulative accounting for the active session, and
+	// turnStats is the usage of the turn that is finishing.
+	tokens    usage.Session
+	turnStats *provider.TurnStats
 	// Slash-command suggestions.
 	suggestOpen   bool
 	suggestItems  []*command
@@ -301,7 +312,7 @@ func New(engine Engine) Model {
 // NewWithHooks builds the interface with application hooks.
 func NewWithHooks(engine Engine, hooks Hooks) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message — Enter sends, Ctrl+J adds a line"
+	ta.Placeholder = "Message HAL..."
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.SetHeight(minComposerRows)
@@ -345,6 +356,16 @@ func (m Model) Theme() Theme { return m.theme }
 
 // SetModelName sets the footer model label.
 func (m *Model) SetModelName(name string) { m.model = name }
+
+// SetUsage sets the cumulative accounting shown in the footer and /usage.
+func (m *Model) SetUsage(u usage.Session) { m.tokens = u }
+
+// refreshUsage reloads the active session's totals after a session change.
+func (m *Model) refreshUsage() {
+	if m.hooks.Usage != nil {
+		m.tokens = m.hooks.Usage()
+	}
+}
 
 // SetEffort sets the active reasoning level and whether the model
 // supports it, for the footer and the selector.
@@ -483,6 +504,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateDiag(msg)
 	case viewEffort:
 		return m.updateEffort(msg)
+	case viewUsage:
+		return m.updateUsage(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -625,6 +648,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		stats := msg.stats
 		m.lastStats = &stats
+		m.turnStats = &stats
 		return m, nil
 	case tickMsg:
 		if !m.sending || m.sender == nil {
@@ -641,6 +665,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending = ""
 		m.reasoningSeen = false
 		m.lastResponse = msg.text
+		m.recordTurn()
 		if m.lastStats != nil && m.lastStats.OutputLimitHit {
 			m.notice = "output limit reached — the reply was cut at max_tokens"
 		} else {
@@ -660,6 +685,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stopStream()
 		m.reasoningSeen = false
 		m.pending = ""
+		m.recordTurn()
 		switch {
 		case errors.Is(msg.err, context.Canceled):
 			m.notice = "cancelled — stored nothing from the assistant"
@@ -757,6 +783,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.sending = true
 	m.streamStarted = m.clock()
 	m.reasoningSeen = false
+	m.turnStats = nil
 	m.notice = m.streamingNotice()
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
@@ -840,6 +867,22 @@ func (m *Model) fitComposer() {
 	}
 	m.desiredComposer = want
 	m.resizeFrame()
+}
+
+// recordTurn reports the finished turn's usage once, then refreshes the
+// totals. Without provider-reported usage the callee records the turn as
+// incomplete rather than inventing numbers.
+func (m *Model) recordTurn() {
+	if m.turnStats == nil {
+		return
+	}
+	if m.hooks.RecordTurn != nil {
+		m.hooks.RecordTurn(*m.turnStats)
+	}
+	m.turnStats = nil
+	if m.hooks.Usage != nil {
+		m.tokens = m.hooks.Usage()
+	}
 }
 
 // quit cancels any live turn and asks the program to exit. Ctrl+C and the
@@ -1477,6 +1520,8 @@ func (m Model) activePanel() []string {
 		return m.diagRows()
 	case viewEffort:
 		return m.effortRows()
+	case viewUsage:
+		return m.usageRows()
 	}
 	return nil
 }
@@ -1660,28 +1705,72 @@ func (m Model) rule() string {
 func (m Model) statusBar() string {
 	st := m.theme.styles()
 	left := "444 READ ONLY · /help"
-	right := strings.TrimSpace(m.model)
+	model := strings.TrimSpace(m.model)
+	effort := ""
 	if m.effortSupported && m.effort != "" {
-		right += " · " + m.effort
+		effort = m.effort
 	}
-	room := m.width - len(left) - len(right) - 1
-	if room < 1 {
-		// Narrow terminal: the 444 indicator always survives.
-		left = "444 READ ONLY"
-		right = ""
-		if m.width > 0 && len(left) > m.width {
-			left = left[:m.width]
-		}
-		if !m.color {
-			return left
-		}
-		return st.footer.Render(left)
+	right := model
+	if effort != "" {
+		right = strings.TrimSpace(model + " · " + effort)
 	}
-	bar := left + strings.Repeat(" ", room) + right
+	// Narrow terminals shed detail in this order: effort, then the token
+	// usage, then the help hint, then the model. The permission indicator
+	// is the last thing to go.
+	candidates := []struct{ left, mid, right string }{
+		{left, m.usageLabel(), right},
+		{left, m.usageLabel(), model},
+		{left, "", model},
+		{"444 READ ONLY", "", model},
+		{"444 READ ONLY", "", ""},
+	}
+	for _, c := range candidates {
+		if bar, ok := fitStatusBar(c.left, c.mid, c.right, m.width); ok {
+			if !m.color {
+				return bar
+			}
+			return st.footer.Render(bar)
+		}
+	}
+	bar := "444 READ ONLY"
+	if m.width > 0 && len(bar) > m.width {
+		bar = bar[:m.width]
+	}
 	if !m.color {
 		return bar
 	}
 	return st.footer.Render(bar)
+}
+
+// fitStatusBar lays out left, an optional middle section and right within
+// width, reporting whether they fit.
+func fitStatusBar(left, mid, right string, width int) (string, bool) {
+	if width < 1 {
+		return "", false
+	}
+	switch {
+	case mid == "" && right == "":
+		if len(left) > width {
+			return "", false
+		}
+		return left, true
+	case mid == "":
+		if len(left)+len(right)+1 > width {
+			return "", false
+		}
+		return left + strings.Repeat(" ", width-len(left)-len(right)) + right, true
+	case right == "":
+		if len(left)+len(mid)+1 > width {
+			return "", false
+		}
+		return left + " " + mid, true
+	default:
+		pad := width - len(left) - len(mid) - len(right) - 1
+		if pad < 1 {
+			return "", false
+		}
+		return left + " " + mid + strings.Repeat(" ", pad) + right, true
+	}
 }
 
 var ansiSequence = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
