@@ -13,14 +13,15 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 )
 
-// renderMarkdown renders an assistant reply for the viewport width. On any
-// failure it returns the raw text: formatting must never lose content.
-func renderMarkdown(text string, width int) string {
+// renderMarkdown renders an assistant reply for the viewport width in
+// the active theme. On any failure it returns the raw text: formatting
+// must never lose content.
+func (m Model) renderMarkdown(text string, width int) string {
 	if width < 20 {
 		width = 80
 	}
 	renderer, err := glamour.NewTermRenderer(
-		glamour.WithEnvironmentConfig(),
+		glamour.WithStyles(m.theme.glamourStyle()),
 		glamour.WithWordWrap(width-2),
 	)
 	if err != nil {
@@ -349,8 +350,23 @@ func (m *Model) enterTheme() {
 		m.themePreview = Themes()[m.themeCursor]
 	}
 	m.themeNotice = ""
+	m.themeOriginal = m.theme
 	m.panelOffset = 0
 	m.view = viewTheme
+	m.applyThemePreview()
+}
+
+// applyThemePreview recolours the whole interface — including Markdown
+// already on screen — for the highlighted preset.
+func (m *Model) applyThemePreview() {
+	if m.theme == m.themePreview {
+		return
+	}
+	anchor := m.anchor()
+	m.theme = m.themePreview
+	m.rewrap()
+	m.renderConversation()
+	m.restoreAnchor(anchor)
 }
 
 func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -364,6 +380,10 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case keyQuit, keyQuit2:
 			return m, tea.Quit
 		case "esc":
+			// Dismiss the preview: the previously active theme returns.
+			m.theme = m.themeOriginal
+			m.rewrap()
+			m.renderConversation()
 			m.view = viewChat
 			m.themeNotice = ""
 			return m, nil
@@ -372,6 +392,7 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.themeCursor--
 			}
 			m.themePreview = Themes()[m.themeCursor]
+			m.applyThemePreview()
 			m.ensureVisible(2+m.themeCursor, len(m.themeRows()), contentHeight(m.height))
 			return m, nil
 		case "down", "tab":
@@ -379,6 +400,7 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.themeCursor++
 			}
 			m.themePreview = Themes()[m.themeCursor]
+			m.applyThemePreview()
 			m.ensureVisible(2+m.themeCursor, len(m.themeRows()), contentHeight(m.height))
 			return m, nil
 		case "enter":
@@ -390,6 +412,8 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.theme = Themes()[m.themeCursor]
+			m.rewrap()
+			m.renderConversation()
 			m.view = viewChat
 			m.notice = "Theme: " + name
 			return m, nil
@@ -417,6 +441,10 @@ func (m Model) themeRows() []string {
 	rows = append(rows, st.user.Render("You > ")+"preview message")
 	rows = append(rows, st.hal.Render("HAL > ")+"preview reply")
 	rows = append(rows, st.footer.Render("444 READ ONLY · "+m.modelNameOr("model")))
+	if !m.color {
+		rows = append(rows, "", "Colour is disabled (NO_COLOR), so themes cannot be previewed.")
+		rows = append(rows, "The selection is still saved and used when colour is enabled.")
+	}
 	if m.themeNotice != "" {
 		rows = append(rows, "", m.themeNotice)
 	}
@@ -527,19 +555,15 @@ func (m Model) helpRows() []string {
 		{"paste", "inserted, never sent"},
 		{"//", "literal slash message"},
 	}
-	commands := [][2]string{
-		{"/help", "this panel"},
-		{"/copy", "copy the last response"},
-		{"/copy code", "copy the latest block"},
-		{"/theme", "theme picker, preview"},
-		{"/model", "model picker"},
-		{"/new", "new conversation"},
-		{"/sessions", "resume a stored session"},
-		{"/effort", "reasoning effort"},
-		{"/clear", "clear, keep old session"},
-		{"/expand", "expand long prompts"},
-		{"/collapse", "collapse long prompts"},
-		{"/diag", "last turn diagnostics"},
+	// The command list is generated from the dispatcher's own table, so
+	// help, autocomplete and dispatch cannot disagree.
+	commands := make([][2]string, 0, len(commandTable))
+	for _, c := range commandTable {
+		label := c.usage
+		if label == "" {
+			label = c.name
+		}
+		commands = append(commands, [2]string{label, c.description})
 	}
 
 	var rows []string

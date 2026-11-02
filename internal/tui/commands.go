@@ -12,6 +12,7 @@ import (
 // so they cannot drift apart.
 type command struct {
 	name        string
+	aliases     []string
 	usage       string
 	description string
 	takesArgs   bool
@@ -32,7 +33,7 @@ var commandTable = []*command{
 	{
 		name:        "/copy",
 		usage:       "/copy [code]",
-		description: "Copy HAL's last response",
+		description: "Copy the last response (/copy code)",
 		takesArgs:   true,
 		run: func(m *Model, args []string) tea.Cmd {
 			if len(args) > 0 && args[0] == "code" {
@@ -55,6 +56,14 @@ var commandTable = []*command{
 			}
 			m.clearConversation()
 			return nil
+		},
+	},
+	{
+		name:        "/quit",
+		aliases:     []string{"/q", "/exit"},
+		description: "Quit HAL9001 (/q, /exit)",
+		run: func(m *Model, _ []string) tea.Cmd {
+			return m.quit()
 		},
 	},
 	{
@@ -136,15 +145,34 @@ var commandTable = []*command{
 	},
 }
 
-// commandByName finds a command exactly.
+// commandByName finds a command by its name or one of its aliases.
 func commandByName(name string) (*command, bool) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	for _, c := range commandTable {
 		if c.name == name {
 			return c, true
 		}
+		for _, alias := range c.aliases {
+			if alias == name {
+				return c, true
+			}
+		}
 	}
 	return nil, false
+}
+
+// matches reports whether a command matches a typed prefix by name or
+// alias, so "/q" finds the quit command.
+func (c *command) matches(prefix string) bool {
+	if strings.HasPrefix(c.name, prefix) {
+		return true
+	}
+	for _, alias := range c.aliases {
+		if strings.HasPrefix(alias, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // suggestionList filters the table by the leading token of the composer.
@@ -161,7 +189,7 @@ func suggestionList(value string) []*command {
 	prefix := strings.ToLower(value)
 	out := make([]*command, 0, len(commandTable))
 	for _, c := range commandTable {
-		if strings.HasPrefix(c.name, prefix) {
+		if c.matches(prefix) {
 			out = append(out, c)
 		}
 	}
@@ -239,6 +267,17 @@ func (m Model) suggestRows() int {
 func (m Model) suggestionRows(n int) []string {
 	st := m.theme.styles()
 	items := m.suggestItems
+	start := 0
+	if m.suggestCursor >= n && n > 0 {
+		start = m.suggestCursor - n + 1
+	}
+	if start > len(items)-n {
+		start = len(items) - n
+	}
+	if start < 0 {
+		start = 0
+	}
+	items = items[start:]
 	if len(items) > n {
 		items = items[:n]
 	}
@@ -258,7 +297,7 @@ func (m Model) suggestionRows(n int) []string {
 			}
 			line = padTo("  "+st.active.Render(label), column) + c.description
 		}
-		if i == m.suggestCursor {
+		if start+i == m.suggestCursor {
 			line = st.active.Render("▸ " + strings.TrimPrefix(line, "  "))
 		}
 		rows = append(rows, m.fitWidth(line, m.width))
@@ -275,16 +314,12 @@ func (m *Model) moveSuggestion(delta int) {
 	if !m.suggestOpen || len(m.suggestItems) == 0 {
 		return
 	}
-	limit := len(m.suggestItems)
-	if limit > maxSuggestions {
-		limit = maxSuggestions
-	}
 	m.suggestCursor += delta
 	if m.suggestCursor < 0 {
 		m.suggestCursor = 0
 	}
-	if m.suggestCursor >= limit {
-		m.suggestCursor = limit - 1
+	if m.suggestCursor >= len(m.suggestItems) {
+		m.suggestCursor = len(m.suggestItems) - 1
 	}
 }
 

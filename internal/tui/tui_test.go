@@ -423,7 +423,7 @@ func TestEscapeCancelsStream(t *testing.T) {
 }
 
 func TestRenderMarkdownFallback(t *testing.T) {
-	if got := renderMarkdown("**bold** and text", 0); !strings.Contains(got, "bold") {
+	if got := testModel().renderMarkdown("**bold** and text", 0); !strings.Contains(got, "bold") {
 		t.Errorf("fallback must keep content, got %q", got)
 	}
 }
@@ -644,7 +644,7 @@ func TestPasteInsertsWithoutSubmit(t *testing.T) {
 
 func TestMarkdownWhitespacePreserved(t *testing.T) {
 	md := "# Title\n\nParagraph with *emphasis*.\n\n- one\n- two\n\n```go\ncode()\n```\n"
-	out := stripANSI(renderMarkdown(md, 80))
+	out := stripANSI(testModel().renderMarkdown(md, 80))
 	// Glamour restyles markers (headings lose '#', bullets become dots),
 	// but every word must survive with readable structure.
 	for _, want := range []string{"Title", "Paragraph", "emphasis", "one", "two", "code", "()"} {
@@ -663,7 +663,7 @@ func TestMarkdownWhitespacePreserved(t *testing.T) {
 
 func TestMarkdownFallbackKeepsContent(t *testing.T) {
 	// Width 0 falls back to a sane default rather than failing.
-	if got := renderMarkdown("# Hi", 0); !strings.Contains(got, "Hi") {
+	if got := testModel().renderMarkdown("# Hi", 0); !strings.Contains(got, "Hi") {
 		t.Errorf("fallback lost content: %q", got)
 	}
 }
@@ -1176,8 +1176,12 @@ func TestLongUserMessageCollapses(t *testing.T) {
 	if user.text != want {
 		t.Error("the full prompt must be kept in the entry")
 	}
-	if got, want := len(user.rows), userPreviewRows+1; got != want {
-		t.Errorf("collapsed rows = %d, want %d (preview + hint)", got, want)
+	limit := m.Viewport().Height() / 3
+	if got := len(user.rows); got > limit {
+		t.Errorf("collapsed rows = %d, want at most %d (one third of the viewport)", got, limit)
+	}
+	if got := len(user.rows); got < 2 || got > userPreviewRows+1 {
+		t.Errorf("collapsed rows = %d, want between 2 and %d", got, userPreviewRows+1)
 	}
 	view := m.viewport.View()
 	if !strings.Contains(view, "Ctrl+O to expand") {
@@ -2117,5 +2121,308 @@ func TestShortTerminalDegrades(t *testing.T) {
 		if !strings.Contains(tail, "444 READ ONLY") {
 			t.Errorf("height %d: footer lost: %q", h, rows[len(rows)-1])
 		}
+	}
+}
+
+// PgUp/PgDn work whatever modifier bits the terminal attaches: laptop
+// Fn+PageUp arrives as shift+pgup and used to be ignored.
+func TestPageKeysWithModifiers(t *testing.T) {
+	for _, mod := range []tea.KeyMod{0, tea.ModShift, tea.ModCtrl, tea.ModAlt} {
+		m := longConversation(t, 60)
+		start := m.viewport.YOffset()
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp, Mod: mod})
+		m = updated.(Model)
+		up := m.viewport.YOffset()
+		if up >= start {
+			t.Errorf("PgUp with mod %v did not scroll: %d -> %d", mod, start, up)
+			continue
+		}
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown, Mod: mod})
+		m = updated.(Model)
+		if down := m.viewport.YOffset(); down <= up {
+			t.Errorf("PgDn with mod %v did not scroll back: %d -> %d", mod, up, down)
+		}
+	}
+}
+
+// Repeated page presses walk through the conversation one screen at a
+// time, and Home/End still jump.
+func TestPageKeysIncremental(t *testing.T) {
+	m := longConversation(t, 120)
+	var offsets []int
+	for i := 0; i < 5; i++ {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+		m = updated.(Model)
+		offsets = append(offsets, m.viewport.YOffset())
+	}
+	for i := 1; i < len(offsets); i++ {
+		if offsets[i] >= offsets[i-1] {
+			t.Fatalf("pages did not decrease monotonically: %v", offsets)
+		}
+		if delta := offsets[i-1] - offsets[i]; delta != m.viewport.Height() {
+			t.Errorf("page step = %d, want the viewport height %d", delta, m.viewport.Height())
+		}
+	}
+	m = pressKey(m, tea.KeyHome, 0, "")
+	if !m.viewport.AtTop() {
+		t.Error("Home must still reach the top")
+	}
+	m = pressKey(m, tea.KeyEnd, 0, "")
+	if !m.viewport.AtBottom() {
+		t.Error("End must still reach the bottom")
+	}
+}
+
+// Each theme produces different ANSI output, and sets its own background.
+func TestThemesRenderDifferently(t *testing.T) {
+	seen := map[string]string{}
+	for _, theme := range Themes() {
+		m := NewWithHooks(&scriptEngine{}, Hooks{})
+		m.SetTheme(theme)
+		m.SetColor(true)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = updated.(Model)
+		m.SetHistory([]SessionLine{
+			{Role: "user", Text: "question"},
+			{Role: "assistant", Text: "## Heading\n\nSome **bold** body text with `code`."},
+		})
+		v := m.View()
+		if v.BackgroundColor == nil {
+			t.Errorf("%s: no background colour set", theme.Name)
+		}
+		if seen[string(v.Content)] != "" {
+			t.Errorf("%s renders identically to %s", theme.Name, seen[string(v.Content)])
+		}
+		seen[string(v.Content)] = theme.Name
+		if !strings.Contains(string(v.Content), "\x1b[") {
+			t.Errorf("%s: no colours rendered", theme.Name)
+		}
+	}
+}
+
+// Markdown follows the palette: the body text and heading colours differ
+// between themes instead of using glamour's fixed style.
+func TestMarkdownFollowsTheme(t *testing.T) {
+	render := func(theme Theme) string {
+		m := NewWithHooks(&scriptEngine{}, Hooks{})
+		m.SetTheme(theme)
+		m.SetColor(true)
+		return m.renderMarkdown("## Heading\n\nbody text", 60)
+	}
+	classic := render(ThemeHALClassic)
+	paper := render(ThemePaper)
+	if classic == paper {
+		t.Fatal("Paper and HAL Classic render Markdown identically")
+	}
+	if !strings.Contains(paper, "184;67;71") && !strings.Contains(paper, "38;5;") {
+		t.Errorf("Paper does not use its accent: %q", paper)
+	}
+	if !strings.Contains(classic, "236;83;89") && !strings.Contains(classic, "38;5;") {
+		t.Errorf("HAL Classic does not use its accent: %q", classic)
+	}
+}
+
+// Changing the theme recolours history that is already on screen.
+func TestThemeChangeRecoloursHistory(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, Hooks{})
+	m.SetColor(true)
+	m.SetTheme(ThemeHALClassic)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.SetHistory([]SessionLine{
+		{Role: "assistant", Text: "## Heading\n\nbody text"},
+	})
+	before := m.viewport.GetContent()
+	m.SetTheme(ThemePaper)
+	m.rewrap()
+	m.renderConversation()
+	after := m.viewport.GetContent()
+	if before == after {
+		t.Fatal("history kept the old theme colours")
+	}
+	if !strings.Contains(after, "184;67;71") && !strings.Contains(after, "38;5;") {
+		t.Error("history was not rendered with the new accent")
+	}
+}
+
+// NO_COLOR gives a clean monochrome view with an explanation.
+func TestNoColorThemePicker(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, Hooks{})
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.enterTheme()
+	view := string(m.View().Content)
+	if strings.Contains(view, "\x1b[") {
+		t.Errorf("NO_COLOR view contains escapes:\n%q", view)
+	}
+	if !strings.Contains(view, "NO_COLOR") {
+		t.Errorf("NO_COLOR explanation missing:\n%s", view)
+	}
+	if m.View().BackgroundColor != nil {
+		t.Error("NO_COLOR must not set a background colour")
+	}
+}
+
+// Short conversations sit at the bottom of the conversation area.
+func TestShortConversationBottomAnchored(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.SetHistory([]SessionLine{{Role: "user", Text: "hello"}})
+	rows := m.layoutRows()
+
+	top := -1
+	for i, row := range rows {
+		if strings.HasPrefix(row, "╭") {
+			top = i
+		}
+	}
+	if top < 0 {
+		t.Fatal("composer border missing")
+	}
+	// The user message must be immediately above the separator, not at
+	// the top of the viewport.
+	messageRow := -1
+	for i := 0; i < top; i++ {
+		if strings.Contains(rows[i], "You > hello") {
+			messageRow = i
+		}
+	}
+	if messageRow < 0 {
+		t.Fatalf("message not visible:\n%s", strings.Join(rows, "\n"))
+	}
+	if messageRow < top-2 {
+		t.Errorf("message at row %d, want it near the bottom (border at %d)", messageRow, top)
+	}
+	// The conversation still starts at the top of its own content.
+	if !m.viewport.AtTop() || !m.viewport.AtBottom() {
+		t.Error("bottom padding must not change the viewport offsets")
+	}
+}
+
+// An empty conversation leaves the whole viewport blank, with no stray
+// content and no offset change.
+func TestEmptyConversationBottomAnchored(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	rows := m.layoutRows()
+	top := -1
+	for i, row := range rows {
+		if strings.HasPrefix(row, "╭") {
+			top = i
+		}
+	}
+	for i := 2; i < top; i++ {
+		if strings.TrimSpace(rows[i]) != "" {
+			t.Errorf("row %d is not blank in an empty conversation: %q", i, rows[i])
+		}
+	}
+}
+
+// A collapsed prompt may use at most a third of the viewport, at every
+// size.
+func TestCollapsedPromptOneThird(t *testing.T) {
+	for _, h := range []int{40, 30, 24, 18, 14} {
+		m := testModel()
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: h})
+		m = updated.(Model)
+		m = paste(m, strings.Repeat("museum line\n", 30))
+		m = enterCurrent(m)
+		user := m.Entries()[0]
+		// One third of the viewport, but always allow the minimum of a
+		// one-line preview plus its hint.
+		limit := m.frame.viewport / 3
+		if limit < 2 {
+			limit = 2
+		}
+		if len(user.rows) > limit {
+			t.Errorf("height %d: collapsed rows = %d, limit %d", h, len(user.rows), limit)
+		}
+		if len(user.rows) > userPreviewRows+1 {
+			t.Errorf("height %d: more preview rows than the cap", h)
+		}
+		// Expanding restores the full text.
+		m = pressKey(m, 'o', tea.ModCtrl, "")
+		if len(m.Entries()[0].rows) <= limit {
+			t.Errorf("height %d: expansion did not restore the message", h)
+		}
+	}
+}
+
+// /q, /quit and /exit all exit through the same path.
+func TestExitCommands(t *testing.T) {
+	for _, name := range []string{"/q", "/quit", "/exit"} {
+		m := testModel()
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = updated.(Model)
+		m = typeText(m, name)
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = updated.(Model)
+		if cmd == nil {
+			t.Fatalf("%s: no quit command", name)
+		}
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); !ok {
+			t.Errorf("%s: cmd returned %T, want tea.QuitMsg", name, msg)
+		}
+	}
+}
+
+// Exiting during a stream cancels it and discards the partial answer.
+func TestExitDuringStream(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	cancelled := false
+	m.sending = true
+	m.pending = "half an answer"
+	m.cancel = func() { cancelled = true }
+	m = typeText(m, "/q")
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if !cancelled {
+		t.Error("/q must cancel the live request")
+	}
+	if m.Sending() {
+		t.Error("sending flag must clear")
+	}
+	if m.pending != "" {
+		t.Error("partial output must be discarded")
+	}
+	if cmd == nil {
+		t.Fatal("no quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("want tea.QuitMsg")
+	}
+}
+
+// The exit commands are discoverable.
+func TestExitCommandsDiscoverable(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/")
+	panel := string(m.View().Content)
+	if !strings.Contains(panel, "/quit") || !strings.Contains(panel, "/q") {
+		t.Errorf("quit command not in suggestions:\n%s", panel)
+	}
+	m2 := testModel()
+	updated, _ = m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m2 = updated.(Model)
+	m2 = typeText(m2, "/q")
+	if !m2.suggestOpen || !strings.Contains(string(m2.View().Content), "/quit") {
+		t.Errorf("typing /q does not suggest the quit command:\n%s", m2.View().Content)
+	}
+	m3 := testModel()
+	updated, _ = m3.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m3 = updated.(Model)
+	m3 = typeText(m3, "/help")
+	m3 = enterCurrent(m3)
+	help := string(m3.View().Content)
+	if !strings.Contains(help, "/quit") {
+		t.Errorf("help does not list the exit commands:\n%s", help)
 	}
 }

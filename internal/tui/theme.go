@@ -2,7 +2,11 @@ package tui
 
 import (
 	"image/color"
+	"strconv"
+	"strings"
 
+	"charm.land/glamour/v2/ansi"
+	glamourstyles "charm.land/glamour/v2/styles"
 	lipgloss "charm.land/lipgloss/v2"
 )
 
@@ -64,4 +68,71 @@ func (t Theme) styles() styles {
 		active: lipgloss.NewStyle().Bold(true).Foreground(fg(t.Accent)),
 		notice: lipgloss.NewStyle().Foreground(fg(t.Muted)),
 	}
+}
+
+// dark reports whether the palette is a dark one, from the luminance of
+// its own background rather than from its name.
+func (t Theme) dark() bool {
+	r, g, b, ok := parseHex(t.Background)
+	if !ok {
+		return true
+	}
+	lum := 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
+	return lum < 128
+}
+
+func parseHex(s string) (r, g, b int, ok bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
+	if len(s) != 6 {
+		return 0, 0, 0, false
+	}
+	v, err := strconv.ParseUint(s, 16, 32)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return int(v >> 16 & 0xff), int(v >> 8 & 0xff), int(v & 0xff), true
+}
+
+// glamourStyle maps the semantic palette onto glamour's Markdown style.
+// Every colour-bearing rule is overridden, so the conversation body is
+// themed too — the body is most of the screen, and leaving it on
+// glamour's built-in palette is what made the themes look identical.
+//
+// Background colours are cleared: the view paints the terminal
+// background, so Markdown must not paint a second one.
+func (t Theme) glamourStyle() ansi.StyleConfig {
+	cfg := glamourstyles.DarkStyleConfig
+	if !t.dark() {
+		cfg = glamourstyles.LightStyleConfig
+	}
+	text, accent, muted := t.Text, t.Accent, t.Muted
+
+	cfg.Document.Color = &text
+	cfg.Document.BackgroundColor = nil
+	cfg.Paragraph.Color = &text
+	cfg.Heading.Color = &accent
+	for _, h := range []*ansi.StyleBlock{&cfg.H1, &cfg.H2, &cfg.H3, &cfg.H4, &cfg.H5, &cfg.H6} {
+		h.Color = &accent
+		h.BackgroundColor = nil
+	}
+	cfg.Text.Color = &text
+	cfg.Emph.Color = &text
+	cfg.Strong.Color = &accent
+	cfg.Strikethrough.Color = &muted
+	cfg.Link.Color = &accent
+	cfg.LinkText.Color = &accent
+	cfg.Code.Color = &accent
+	cfg.Code.BackgroundColor = nil
+	cfg.CodeBlock.Color = &text
+	cfg.CodeBlock.BackgroundColor = nil
+	cfg.CodeBlock.Theme = "dracula"
+	if !t.dark() {
+		cfg.CodeBlock.Theme = "github"
+	}
+	cfg.Item.Color = &accent
+	cfg.Enumeration.Color = &accent
+	cfg.HorizontalRule.Color = &muted
+	cfg.BlockQuote.Color = &muted
+	cfg.BlockQuote.IndentToken = nil
+	return cfg
 }

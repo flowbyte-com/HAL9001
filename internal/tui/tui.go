@@ -182,18 +182,16 @@ type SessionLine struct {
 const (
 	maxComposerHeight = 8
 	minComposerRows   = 3
-	maxSuggestions    = 8
+	maxSuggestions    = 9
 )
 
 // Long user prompts are collapsed to a short preview: a pasted prompt is
 // often a whole page, and it would otherwise push HAL's answer out of
 // view. The full text is always kept in the entry and in the session.
 const (
-	// userPreviewRows is how many rows of a long message stay visible.
+	// userPreviewRows is the most rows a collapsed message may show,
+	// before the viewport-relative budget is applied.
 	userPreviewRows = 4
-	// collapseAt is the row count above which a message is collapsed on
-	// submission.
-	collapseAt = 6
 )
 
 // entry is one conversation turn. Text is the original, untouched: user
@@ -282,6 +280,8 @@ type Model struct {
 	themeCursor  int
 	themePreview Theme
 	themeNotice  string
+	// themeOriginal restores the appearance when a preview is dismissed.
+	themeOriginal Theme
 	// Last completed assistant reply (raw Markdown), for /copy.
 	lastResponse string
 	// Sessions view state.
@@ -509,6 +509,19 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key != "esc" && key != keyEnter && key != keySend {
 			m.escapedAt = time.Time{}
 		}
+		// Page keys are matched by code, not by their string form. A
+		// terminal may report them with modifier bits set (Fn+PageUp on
+		// a laptop arrives as shift+pgup, some VTE builds as ctrl+pgup)
+		// and the key is still Page Up. Matching the string alone was
+		// why paging appeared dead while Home/End worked.
+		switch msg.Code {
+		case tea.KeyPgUp:
+			m.viewport.PageUp()
+			return m, nil
+		case tea.KeyPgDown:
+			m.viewport.PageDown()
+			return m, nil
+		}
 		if m.suggestOpen {
 			switch key {
 			case "up", "shift+tab":
@@ -528,8 +541,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch key {
 		case keyQuit, keyQuit2:
-			m.stopStream()
-			return m, tea.Quit
+			return m, m.quit()
 		case keyPicker:
 			m.enterPicker()
 			return m, nil
@@ -565,12 +577,6 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch key {
-		case "pgup":
-			m.viewport.PageUp()
-			return m, nil
-		case "pgdown":
-			m.viewport.PageDown()
-			return m, nil
 		case "home":
 			m.viewport.GotoTop()
 			return m, nil
@@ -834,6 +840,15 @@ func (m *Model) fitComposer() {
 	}
 	m.desiredComposer = want
 	m.resizeFrame()
+}
+
+// quit cancels any live turn and asks the program to exit. Ctrl+C and the
+// exit commands share this path, so there is one shutdown implementation.
+func (m *Model) quit() tea.Cmd {
+	m.stopStream()
+	m.sending = false
+	m.pending = ""
+	return tea.Quit
 }
 
 func (m *Model) stopStream() {
@@ -1136,7 +1151,7 @@ func (m *Model) renderEntry(i int) {
 	default:
 		label := "HAL > "
 		indent := strings.Repeat(" ", len(label))
-		body := renderMarkdown(e.text, m.assistantWidth())
+		body := m.renderMarkdown(e.text, m.assistantWidth())
 		lines := strings.Split(body, "\n")
 		rows := make([]string, 0, len(lines))
 		for j, line := range lines {
@@ -1167,14 +1182,15 @@ func (m Model) renderUser(e *entry) []string {
 		}
 		rows = append(rows, strings.Repeat(" ", len("You > "))+line)
 	}
-	if len(rows) <= collapseAt {
+	preview := m.collapsedPreviewRows()
+	if len(rows) <= preview {
 		return rows
 	}
 	if e.expanded {
 		return append(rows, m.collapseHint("Ctrl+O to collapse"))
 	}
-	visible := rows[:userPreviewRows]
-	hidden := len(rows) - userPreviewRows
+	visible := rows[:preview]
+	hidden := len(rows) - preview
 	hint := fmt.Sprintf("… %d more line(s) · Ctrl+O to expand", hidden)
 	if hidden == 1 {
 		hint = "… 1 more line · Ctrl+O to expand"
@@ -1192,14 +1208,40 @@ func (m Model) collapseHint(text string) string {
 	return strings.Repeat(" ", len("You > ")) + m.theme.styles().footer.Render(text)
 }
 
-// collapsible reports whether the entry is long enough to collapse.
+// collapsible reports whether the entry is longer than the preview the
+// current viewport allows. Short prompts stay fully visible.
 func (m Model) collapsible(i int) bool {
 	e := m.entries[i]
 	if e.role != "user" {
 		return false
 	}
 	full := m.renderUser(&entry{role: e.role, text: e.text, expanded: true})
-	return len(full) > collapseAt
+	return len(full) > m.collapsedPreviewRows()
+}
+
+// collapsedPreviewRows bounds a collapsed prompt to roughly one third of
+// the conversation viewport, including its expansion hint. It shrinks on
+// small terminals and is recomputed on resize.
+func (m Model) collapsedPreviewRows() int {
+	h := m.frame.viewport
+	if h <= 0 {
+		h = m.viewHeight
+	}
+	if h <= 0 {
+		return userPreviewRows
+	}
+	budget := h / 3
+	if budget < 2 {
+		budget = 2
+	}
+	rows := budget - 1 // reserve one row for the hint
+	if rows > userPreviewRows {
+		rows = userPreviewRows
+	}
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
 }
 
 // toggleLastUser expands or collapses the most recent user message and
@@ -1301,6 +1343,13 @@ func (m Model) View() tea.View {
 	}
 	v := tea.NewView(content)
 	v.AltScreen = true
+	if m.color {
+		// Paint the application background and default text colour for
+		// this theme. The renderer restores the terminal's own colours
+		// on exit, so the palette is never permanently modified.
+		v.BackgroundColor = lipgloss.Color(m.theme.Background)
+		v.ForegroundColor = lipgloss.Color(m.theme.Text)
+	}
 	return v
 }
 
@@ -1330,7 +1379,7 @@ func (m Model) chatLayout() []string {
 	if f.rule {
 		rows = append(rows, m.rule())
 	}
-	rows = append(rows, splitRows(m.viewport.View(), f.viewport)...)
+	rows = append(rows, m.viewportRows(f.viewport)...)
 	if f.blank {
 		rows = append(rows, "")
 	}
@@ -1343,6 +1392,43 @@ func (m Model) chatLayout() []string {
 		rows = append(rows, m.noticeRow())
 	}
 	return rows
+}
+
+// viewportRows renders the conversation bottom-aligned: a short
+// conversation sits just above the composer, with the spare rows left
+// blank above it. The padding is visual only — the viewport's own offsets
+// are untouched, so Home/End and the scroll anchor are unaffected.
+func (m Model) viewportRows(n int) []string {
+	rows := splitRows(m.viewport.View(), n)
+	if !m.viewport.AtTop() || !m.viewport.AtBottom() {
+		return rows
+	}
+	pad := n - m.contentRows()
+	if pad <= 0 || pad >= n {
+		if pad >= n {
+			return make([]string, n)
+		}
+		return rows
+	}
+	out := make([]string, 0, n)
+	for i := 0; i < pad; i++ {
+		out = append(out, "")
+	}
+	return append(out, rows[:n-pad]...)
+}
+
+// contentRows is how many screen rows the conversation occupies at the
+// current width, counting soft-wrapped lines.
+func (m Model) contentRows() int {
+	content := m.viewport.GetContent()
+	if strings.TrimSpace(stripANSI(content)) == "" {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(content, "\n") {
+		n += m.wrappedHeight(line)
+	}
+	return n
 }
 
 func (m Model) overlayLayout() []string {
