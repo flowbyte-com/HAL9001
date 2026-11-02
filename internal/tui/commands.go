@@ -32,6 +32,24 @@ func (m *Model) dispatchSlash(input string) tea.Cmd {
 	case "/sessions":
 		m.enterSessions()
 		return nil
+	case "/clear":
+		if len(args) > 0 {
+			m.notice = "Usage: /clear"
+			return nil
+		}
+		m.clearConversation()
+		return nil
+	case "/effort":
+		if len(args) == 0 {
+			m.enterEffort()
+			return nil
+		}
+		if len(args) > 1 {
+			m.notice = "Usage: /effort [low|medium|high|xhigh|max]"
+			return nil
+		}
+		m.applyEffort(args[0])
+		return nil
 	case "/expand":
 		m.setAllUserExpanded(true)
 		m.notice = "Long messages expanded."

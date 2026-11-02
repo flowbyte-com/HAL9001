@@ -9,6 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 	lipgloss "charm.land/lipgloss/v2"
+
+	"github.com/flowbyte-com/HAL9001/internal/provider"
 )
 
 // renderMarkdown renders an assistant reply for the viewport width. On any
@@ -278,6 +280,9 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.engine = eng
 			}
 			m.model = id
+			if m.hooks.Effort != nil {
+				m.SetEffort(m.hooks.Effort())
+			}
 			m.enterPicker()
 			m.view = viewChat
 			m.notice = "Model: " + id + " (applies to the next request)"
@@ -524,6 +529,8 @@ func (m Model) helpRows() []string {
 		{"/model", "model picker"},
 		{"/new", "new conversation"},
 		{"/sessions", "resume a stored session"},
+		{"/effort", "reasoning effort"},
+		{"/clear", "clear, keep old session"},
 		{"/expand", "expand long prompts"},
 		{"/collapse", "collapse long prompts"},
 		{"/diag", "last turn diagnostics"},
@@ -716,6 +723,112 @@ func fmtDuration(d time.Duration) string {
 	return d.Round(time.Millisecond).String()
 }
 
+// enterEffort opens the reasoning-effort selector. Models without effort
+// control get an explanation instead of a meaningless picker.
+func (m *Model) enterEffort() {
+	if !m.effortSupported {
+		m.notice = "This model does not expose reasoning effort — nothing to configure."
+		return
+	}
+	m.effortCursor = 0
+	for i, level := range provider.EffortLevels {
+		if level == m.effort {
+			m.effortCursor = i
+		}
+	}
+	m.effortNotice = ""
+	m.panelOffset = 0
+	m.view = viewEffort
+}
+
+func (m Model) updateEffort(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.ready = true
+		return m, nil
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case keyQuit, keyQuit2:
+			return m, tea.Quit
+		case "esc":
+			m.view = viewChat
+			m.effortNotice = ""
+			return m, nil
+		case "up", "shift+tab":
+			if m.effortCursor > 0 {
+				m.effortCursor--
+			}
+			m.ensureVisible(2+m.effortCursor, len(m.effortRows()), contentHeight(m.height))
+			return m, nil
+		case "down", "tab":
+			if m.effortCursor < len(provider.EffortLevels)-1 {
+				m.effortCursor++
+			}
+			m.ensureVisible(2+m.effortCursor, len(m.effortRows()), contentHeight(m.height))
+			return m, nil
+		case "enter":
+			level := provider.EffortLevels[m.effortCursor]
+			m.view = viewChat
+			m.applyEffort(level)
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+// applyEffort changes the level for the active model and confirms it.
+func (m *Model) applyEffort(level string) {
+	if !m.effortSupported {
+		m.notice = "This model does not expose reasoning effort — nothing to configure."
+		return
+	}
+	normalized := provider.NormalizeEffort(level)
+	if normalized == "" {
+		m.notice = "Unknown effort level " + level + " — use low, medium, high, xhigh or max."
+		return
+	}
+	if m.hooks.SetEffort == nil {
+		m.notice = "Effort is not wired up."
+		return
+	}
+	eng, err := m.hooks.SetEffort(normalized)
+	if err != nil {
+		m.notice = "Effort unchanged: " + err.Error()
+		return
+	}
+	if eng != nil {
+		m.engine = eng
+	}
+	m.effort = normalized
+	m.notice = "Effort: " + normalized + " (applies to the next request)"
+}
+
+func (m Model) effortRows() []string {
+	st := m.theme.styles()
+	rows := []string{
+		"Reasoning effort (Enter applies, Esc back)",
+		"",
+	}
+	for i, level := range provider.EffortLevels {
+		line := "  " + level
+		if i == m.effortCursor {
+			line = st.active.Render("▸ " + level)
+		} else if level == m.effort {
+			line += "  (current)"
+		}
+		rows = append(rows, line)
+	}
+	rows = append(rows, "",
+		"MiniMax reasoning models apply max effort when the parameter is",
+		"omitted; HAL sends medium explicitly. Higher levels think longer",
+		"and spend more of the output budget on reasoning.")
+	if m.effortNotice != "" {
+		rows = append(rows, "", m.effortNotice)
+	}
+	return rows
+}
+
 // shortDuration renders a limit compactly (45s, 2m0s).
 func shortDuration(d time.Duration) string {
 	if d <= 0 {
@@ -768,6 +881,28 @@ func (m *Model) scrollPanel(delta int) {
 }
 
 func (m *Model) newSession() {
+	m.startFreshConversation("New conversation started.")
+}
+
+// clearConversation empties the visible conversation and starts a fresh
+// context. /clear and /new share the machinery; only the confirmation
+// differs, so the operator knows an old session is still recoverable.
+func (m *Model) clearConversation() {
+	m.startFreshConversation("Conversation cleared — the previous session is kept in /sessions.")
+}
+
+// startFreshConversation cancels any live turn, asks the application for
+// a new session store and resets the visible conversation. The previous
+// session file is never deleted; it stays available through /sessions.
+func (m *Model) startFreshConversation(notice string) {
+	if m.sending {
+		m.stopStream()
+		m.sending = false
+		m.pending = ""
+		m.reasoningSeen = false
+	}
+	// Invalidate any message still in flight from the cancelled turn.
+	m.streamID++
 	if m.hooks.NewSession == nil {
 		m.notice = "New sessions are not wired up."
 		return
@@ -784,6 +919,8 @@ func (m *Model) newSession() {
 	m.pending = ""
 	m.title = ""
 	m.lastStats = nil
+	m.lastResponse = ""
 	m.renderConversation()
-	m.notice = "New conversation started."
+	m.viewport.GotoBottom()
+	m.notice = notice
 }

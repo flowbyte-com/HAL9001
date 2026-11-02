@@ -1466,3 +1466,263 @@ func TestTurnTimeoutNotice(t *testing.T) {
 		t.Errorf("partial output presented as an answer: %q", lines[0])
 	}
 }
+
+// effortHooks wires the effort callbacks with an in-memory store.
+func effortHooks(level string, supported bool, set func(string)) Hooks {
+	return Hooks{
+		Effort: func() (string, bool) { return level, supported },
+		SetEffort: func(l string) (Engine, error) {
+			if set != nil {
+				set(l)
+			}
+			level = l
+			return nil, nil
+		},
+	}
+}
+
+// /effort opens the selector and Enter applies the highlighted level.
+func TestEffortSelector(t *testing.T) {
+	chosen := ""
+	m := NewWithHooks(&scriptEngine{}, effortHooks("medium", true, func(l string) { chosen = l }))
+	m.SetEffort("medium", true)
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	m = typeText(m, "/effort")
+	m = enterCurrent(m)
+	view := string(m.View().Content)
+	for _, level := range []string{"low", "medium", "high", "xhigh", "max"} {
+		if !strings.Contains(view, level) {
+			t.Errorf("selector missing %q:\n%s", level, view)
+		}
+	}
+	// Move to "high" (medium is the second entry).
+	m = pressKey(m, tea.KeyDown, 0, "")
+	m = pressKey(m, tea.KeyEnter, 0, "")
+	if chosen != "high" {
+		t.Fatalf("chosen = %q, want high", chosen)
+	}
+	if !strings.Contains(m.Notice(), "Effort: high") {
+		t.Errorf("notice = %q", m.Notice())
+	}
+	if m.Theme().Name == "" {
+		t.Error("theme must survive an effort change")
+	}
+}
+
+// /effort <level> applies directly.
+func TestEffortDirectArgument(t *testing.T) {
+	chosen := ""
+	m := NewWithHooks(&scriptEngine{}, effortHooks("medium", true, func(l string) { chosen = l }))
+	m.SetEffort("medium", true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/effort max")
+	m = enterCurrent(m)
+	if chosen != "max" {
+		t.Fatalf("chosen = %q", chosen)
+	}
+	if !strings.Contains(m.Notice(), "next request") {
+		t.Errorf("notice = %q", m.Notice())
+	}
+}
+
+// An unsupported model gets a clear explanation, not an empty picker.
+func TestEffortUnsupportedModel(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, effortHooks("", false, nil))
+	m.SetEffort("", false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/effort")
+	m = enterCurrent(m)
+	if m.view != viewChat {
+		t.Error("no selector may open for an unsupported model")
+	}
+	if !strings.Contains(m.Notice(), "does not expose reasoning effort") {
+		t.Errorf("notice = %q", m.Notice())
+	}
+	m = typeText(m, "/effort max")
+	m = enterCurrent(m)
+	if !strings.Contains(m.Notice(), "does not expose reasoning effort") {
+		t.Errorf("direct level must explain too, notice = %q", m.Notice())
+	}
+}
+
+// An unknown level is rejected without changing anything.
+func TestEffortRejectsUnknownLevel(t *testing.T) {
+	chosen := ""
+	m := NewWithHooks(&scriptEngine{}, effortHooks("medium", true, func(l string) { chosen = l }))
+	m.SetEffort("medium", true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/effort turbo")
+	m = enterCurrent(m)
+	if chosen != "" {
+		t.Errorf("an unknown level reached the hook: %q", chosen)
+	}
+	if !strings.Contains(m.Notice(), "Unknown effort level") {
+		t.Errorf("notice = %q", m.Notice())
+	}
+}
+
+// The footer shows the effort only when the model supports it.
+func TestFooterShowsEffort(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, Hooks{})
+	m.SetColor(false)
+	m.SetModelName("MiniMax-M3.1-Flash")
+	m.SetEffort("medium", true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	if view := string(m.View().Content); !strings.Contains(view, "MiniMax-M3.1-Flash · medium") {
+		t.Errorf("footer missing effort:\n%s", view)
+	}
+
+	m2 := NewWithHooks(&scriptEngine{}, Hooks{})
+	m2.SetColor(false)
+	m2.SetModelName("gpt-4o")
+	m2.SetEffort("", false)
+	updated, _ = m2.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m2 = updated.(Model)
+	if view := string(m2.View().Content); strings.Contains(view, "gpt-4o · ") {
+		t.Errorf("unsupported model must not show an effort:\n%s", view)
+	}
+}
+
+// /clear empties the view, starts a new session and keeps the old one
+// recoverable. Model, effort and theme are untouched.
+func TestClearConversation(t *testing.T) {
+	sessions := 0
+	hooks := Hooks{
+		NewSession: func() (Engine, error) { sessions++; return nil, nil },
+		Effort:     func() (string, bool) { return "medium", true },
+	}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	m.SetModelName("MiniMax-M3.1-Flash")
+	m.SetEffort("medium", true)
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, "first question")
+	m = enterCurrent(m)
+	if len(m.Entries()) == 0 {
+		t.Fatal("precondition: conversation should have entries")
+	}
+	m = typeText(m, "/clear")
+	m = enterCurrent(m)
+	if sessions != 1 {
+		t.Errorf("NewSession calls = %d, want 1", sessions)
+	}
+	if len(m.Entries()) != 0 {
+		t.Errorf("conversation not cleared: %v", m.Lines())
+	}
+	if !strings.Contains(m.Notice(), "/sessions") {
+		t.Errorf("notice must point at session recovery, got %q", m.Notice())
+	}
+	if m.model != "MiniMax-M3.1-Flash" || m.effort != "medium" || m.Theme().Name == "" {
+		t.Error("clearing must preserve model, effort and theme")
+	}
+	if m.LastStats() != nil {
+		t.Error("diagnostics must not describe a cleared conversation")
+	}
+}
+
+// Clearing during an active stream cancels it and ignores its late
+// messages.
+func TestClearDuringActiveStream(t *testing.T) {
+	sessions := 0
+	hooks := Hooks{NewSession: func() (Engine, error) { sessions++; return nil, nil }}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	cancelled := false
+	m.sending = true
+	m.streamID = 7
+	m.cancel = func() { cancelled = true }
+	m.pending = "half an answer"
+
+	m = typeText(m, "/clear")
+	m = enterCurrent(m)
+
+	if !cancelled {
+		t.Error("/clear must cancel the active generation")
+	}
+	if m.Sending() {
+		t.Error("sending must stop")
+	}
+	if m.pending != "" || len(m.Entries()) != 0 {
+		t.Errorf("stream residue left behind: pending %q entries %v", m.pending, m.Lines())
+	}
+	if sessions != 1 {
+		t.Errorf("NewSession calls = %d", sessions)
+	}
+	// A message from the cancelled turn must not reappear.
+	updated, _ = m.Update(responseMsg{id: 7, text: "late answer"})
+	m = updated.(Model)
+	if len(m.Entries()) != 0 {
+		t.Errorf("late stream message applied after clear: %v", m.Lines())
+	}
+}
+
+// A slash command still runs while a turn is in flight; a plain message
+// does not.
+func TestSlashCommandDuringStream(t *testing.T) {
+	sessions := 0
+	hooks := Hooks{NewSession: func() (Engine, error) { sessions++; return nil, nil }}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.sending = true
+	m.cancel = func() {}
+	m = typeText(m, "/clear")
+	m = enterCurrent(m)
+	if sessions != 1 {
+		t.Error("/clear must work while streaming")
+	}
+
+	m2 := NewWithHooks(&scriptEngine{}, Hooks{})
+	updated, _ = m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m2 = updated.(Model)
+	m2.sending = true
+	m2 = paste(m2, "another message")
+	m2 = enterCurrent(m2)
+	if got := m2.Composer().Value(); got != "another message" {
+		t.Errorf("a message must not be sent while streaming: %q", got)
+	}
+}
+
+// An empty answer is explained with the provider's own numbers and never
+// presented as a stored answer.
+func TestEmptyAnswerExplanation(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 3
+	m.sending = true
+	updated, _ = m.Update(streamStatsMsg{id: 3, stats: provider.TurnStats{
+		Status: provider.StatusFinished, FinishReason: "length", OutputLimitHit: true,
+		ReasoningChunks: 812, HasUsage: true,
+		Usage: provider.Usage{PromptTokens: 1204, CompletionTokens: 8192, TotalTokens: 9396},
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(errorMsg{id: 3, err: engine.ErrNoVisibleAnswer})
+	m = updated.(Model)
+
+	if m.Sending() {
+		t.Error("the turn must end")
+	}
+	lines := m.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("expected one explanation, got %v", lines)
+	}
+	note := lines[0]
+	for _, want := range []string{"no visible answer", "output budget", "finish_reason=length", "8192", "/diag"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("explanation missing %q: %q", want, note)
+		}
+	}
+	if !strings.Contains(m.Notice(), "/diag") {
+		t.Errorf("notice = %q", m.Notice())
+	}
+}

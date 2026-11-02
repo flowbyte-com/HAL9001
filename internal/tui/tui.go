@@ -136,6 +136,12 @@ type Hooks struct {
 	// Copy writes text to the system clipboard (OSC 52). Nil means
 	// clipboard access is unavailable.
 	Copy func(text string) error
+	// Effort returns the active reasoning level and whether the active
+	// model supports effort control at all.
+	Effort func() (string, bool)
+	// SetEffort persists a level for the active model and returns the
+	// engine for subsequent requests.
+	SetEffort func(level string) (Engine, error)
 }
 
 // Engine runs the conversation behind the interface. It matches
@@ -162,6 +168,7 @@ const (
 	viewHelp
 	viewSessions
 	viewDiag
+	viewEffort
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -238,6 +245,13 @@ type Model struct {
 	reasoningSeen bool
 	// lastStats is the content-free telemetry of the last finished turn.
 	lastStats *provider.TurnStats
+	// effort is the active reasoning level and effortSupported reports
+	// whether the active model exposes effort control at all.
+	effort          string
+	effortSupported bool
+	// Effort picker state.
+	effortCursor int
+	effortNotice string
 	// Onboarding form.
 	obEndpoint textinput.Model
 	obModel    textinput.Model
@@ -317,6 +331,16 @@ func (m Model) Theme() Theme { return m.theme }
 
 // SetModelName sets the footer model label.
 func (m *Model) SetModelName(name string) { m.model = name }
+
+// SetEffort sets the active reasoning level and whether the model
+// supports it, for the footer and the selector.
+func (m *Model) SetEffort(level string, supported bool) {
+	m.effort = provider.NormalizeEffort(level)
+	m.effortSupported = supported
+	if !supported {
+		m.effort = ""
+	}
+}
 
 // SetTitle sets the conversation title shown next to the header.
 func (m *Model) SetTitle(title string) { m.title = title }
@@ -443,6 +467,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateSessions(msg)
 	case viewDiag:
 		return m.updateDiag(msg)
+	case viewEffort:
+		return m.updateEffort(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -592,6 +618,9 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "cancelled — stored nothing from the assistant"
 		case errors.Is(msg.err, engine.ErrNoProvider):
 			m.notice = "No provider configured — message stored in this session."
+		case errors.Is(msg.err, engine.ErrNoVisibleAnswer):
+			m.notice = "no visible answer — see /diag"
+			m.appendEntry("assistant", m.emptyAnswerNote(msg.err))
 		case errors.Is(msg.err, provider.ErrStreamIdle):
 			m.notice = "the provider went silent — the request was closed to avoid a silent charge"
 			m.appendEntry("assistant", "(the provider stopped sending data; the request was closed)")
@@ -639,9 +668,6 @@ func (m Model) completesEscape() bool {
 // repeated key event never submits twice, and a slash command is handled
 // locally instead of reaching the model.
 func (m Model) submit() (tea.Model, tea.Cmd) {
-	if m.sending {
-		return m, nil
-	}
 	raw := m.composer.Value()
 	// Only trailing whitespace is dropped: leading indentation belongs to
 	// the prompt and must survive.
@@ -649,15 +675,21 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	if strings.TrimSpace(input) == "" {
 		return m, nil
 	}
-	if strings.HasPrefix(input, "/") {
+	// Slash commands are local, so they may run while a turn is in
+	// flight: /clear and /effort are most useful exactly then. A "//"
+	// escape is a message, not a command, and stays subject to the
+	// in-flight guard below.
+	if strings.HasPrefix(input, "/") && !strings.HasPrefix(input, "//") {
 		m.composer.Reset()
 		m.fitComposer()
-		if strings.HasPrefix(input, "//") {
-			// "//" escapes to a literal slash-prefixed message.
-			input = strings.TrimSpace(input[1:])
-		} else {
-			return m, m.dispatchSlash(input)
-		}
+		return m, m.dispatchSlash(input)
+	}
+	if m.sending {
+		return m, nil
+	}
+	if strings.HasPrefix(input, "//") {
+		// "//" escapes to a literal slash-prefixed message.
+		input = strings.TrimSpace(input[1:])
 	}
 	m.composer.Reset()
 	m.fitComposer()
@@ -677,6 +709,32 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, tea.Batch(cmd, tickCmd())
+}
+
+// emptyAnswerNote explains a turn that produced no visible text. It uses
+// the diagnostics already collected: no retry, no invented answer, just
+// what the provider reported.
+func (m Model) emptyAnswerNote(err error) string {
+	parts := []string{"no visible answer"}
+	s := m.lastStats
+	if s != nil {
+		if s.OutputLimitHit {
+			parts = append(parts, "the output budget was exhausted during reasoning")
+		}
+		if s.FinishReason != "" {
+			parts = append(parts, "finish_reason="+s.FinishReason)
+		}
+		if s.HasUsage && s.Usage.CompletionTokens > 0 {
+			parts = append(parts, fmt.Sprintf("completion tokens %d", s.Usage.CompletionTokens))
+		}
+		if s.ReasoningChunks > 0 {
+			parts = append(parts, fmt.Sprintf("reasoning events %d", s.ReasoningChunks))
+		}
+	} else if err != nil {
+		parts = append(parts, err.Error())
+	}
+	parts = append(parts, "see /diag")
+	return "(" + strings.Join(parts, " · ") + ")"
 }
 
 // streamingNotice describes the turn without exposing private reasoning:
@@ -1038,6 +1096,8 @@ func (m Model) contentRows(n int) []string {
 		return m.panelRows(m.sessionsRows(), n)
 	case viewDiag:
 		return m.panelRows(m.diagRows(), n)
+	case viewEffort:
+		return m.panelRows(m.effortRows(), n)
 	}
 	return m.chatRows(n)
 }
@@ -1179,6 +1239,9 @@ func (m Model) statusBar() string {
 	st := m.theme.styles()
 	left := "444 READ ONLY · /help"
 	right := strings.TrimSpace(m.model)
+	if m.effortSupported && m.effort != "" {
+		right += " · " + m.effort
+	}
 	room := m.width - len(left) - len(right) - 1
 	if room < 1 {
 		// Narrow terminal: the 444 indicator always survives.
