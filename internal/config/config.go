@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +23,13 @@ const (
 	EnvModel    = "HAL9001_MODEL"
 	EnvAPIKey   = "HAL9001_API_KEY"
 	EnvHome     = "HAL9001_HOME"
+	// EnvMaxTokens caps one response. Zero means the default.
+	EnvMaxTokens = "HAL9001_MAX_TOKENS"
+	// EnvStreamIdleTimeout aborts a stream that sends nothing for this
+	// many seconds.
+	EnvStreamIdleTimeout = "HAL9001_STREAM_IDLE_TIMEOUT"
+	// EnvTurnTimeout bounds one whole turn, in seconds.
+	EnvTurnTimeout = "HAL9001_TURN_TIMEOUT"
 )
 
 // ModelRecord is one configured model. The record is intentionally small
@@ -51,6 +59,12 @@ type FileConfig struct {
 	ActiveModel string        `json:"active_model,omitempty"`
 	// Theme names the active TUI preset (empty means HAL Classic).
 	Theme string `json:"theme,omitempty"`
+	// MaxTokens caps one response (0 uses the built-in default).
+	MaxTokens int `json:"max_tokens,omitempty"`
+	// StreamIdleSeconds closes a stream that sends nothing for this long.
+	StreamIdleSeconds int `json:"stream_idle_timeout_seconds,omitempty"`
+	// TurnTimeoutSeconds bounds one whole turn.
+	TurnTimeoutSeconds int `json:"turn_timeout_seconds,omitempty"`
 }
 
 // Active returns the active model record (first model when unset).
@@ -160,17 +174,25 @@ func ListSessions(storeDir string) ([]string, error) {
 
 // Config is the resolved runtime configuration.
 type Config struct {
-	Provider   string
-	Endpoint   string
-	Model      string
-	APIKey     string
-	Session    string
-	StoreDir   string
-	NoColor    bool
-	ShowHelp   bool
-	List       bool
-	Models     []ModelRecord
-	configured bool
+	Provider string
+	Endpoint string
+	Model    string
+	APIKey   string
+	Session  string
+	StoreDir string
+	NoColor  bool
+	ShowHelp bool
+	List     bool
+	Models   []ModelRecord
+	// MaxTokens caps one response. Zero means the provider default is
+	// replaced by the built-in sensible cap.
+	MaxTokens int
+	// StreamIdleSeconds aborts a stream that sends nothing for this long.
+	// Zero means the default.
+	StreamIdleSeconds int
+	// TurnTimeoutSeconds bounds one whole turn. Zero means the default.
+	TurnTimeoutSeconds int
+	configured         bool
 }
 
 // DefaultStoreDir returns the conversation storage directory.
@@ -202,13 +224,16 @@ func LoadErr(args []string) (Config, error) {
 	}
 	fs := flag.NewFlagSet("hal9001", flag.ContinueOnError)
 	cfg := Config{
-		Provider: firstNonEmpty(os.Getenv(EnvProvider), stored.Provider, "openai-compatible"),
-		Endpoint: firstNonEmpty(os.Getenv(EnvEndpoint), stored.Endpoint),
-		Model:    firstNonEmpty(os.Getenv(EnvModel), stored.ActiveModel),
-		APIKey:   firstNonEmpty(os.Getenv(EnvAPIKey), stored.APIKey),
-		Session:  "cli",
-		StoreDir: DefaultStoreDir(),
-		Models:   append([]ModelRecord(nil), stored.Models...),
+		Provider:           firstNonEmpty(os.Getenv(EnvProvider), stored.Provider, "openai-compatible"),
+		Endpoint:           firstNonEmpty(os.Getenv(EnvEndpoint), stored.Endpoint),
+		Model:              firstNonEmpty(os.Getenv(EnvModel), stored.ActiveModel),
+		APIKey:             firstNonEmpty(os.Getenv(EnvAPIKey), stored.APIKey),
+		Session:            "cli",
+		StoreDir:           DefaultStoreDir(),
+		Models:             append([]ModelRecord(nil), stored.Models...),
+		MaxTokens:          firstNonZero(envInt(EnvMaxTokens), stored.MaxTokens),
+		StreamIdleSeconds:  firstNonZero(envInt(EnvStreamIdleTimeout), stored.StreamIdleSeconds),
+		TurnTimeoutSeconds: firstNonZero(envInt(EnvTurnTimeout), stored.TurnTimeoutSeconds),
 	}
 	fs.StringVar(&cfg.Provider, "provider", cfg.Provider, "model provider adapter")
 	fs.StringVar(&cfg.Endpoint, "endpoint", cfg.Endpoint, "provider API endpoint")
@@ -217,6 +242,9 @@ func LoadErr(args []string) (Config, error) {
 	fs.StringVar(&cfg.StoreDir, "store", cfg.StoreDir, "conversation storage directory")
 	fs.BoolVar(&cfg.NoColor, "no-color", os.Getenv("NO_COLOR") != "", "disable colors")
 	fs.BoolVar(&cfg.List, "list-sessions", false, "list stored sessions and exit")
+	fs.IntVar(&cfg.MaxTokens, "max-tokens", cfg.MaxTokens, "cap one response (0 uses the default)")
+	fs.IntVar(&cfg.StreamIdleSeconds, "stream-idle-timeout", cfg.StreamIdleSeconds, "seconds of silence before a stream is closed")
+	fs.IntVar(&cfg.TurnTimeoutSeconds, "turn-timeout", cfg.TurnTimeoutSeconds, "seconds one turn may run")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -224,6 +252,30 @@ func LoadErr(args []string) (Config, error) {
 		strings.TrimSpace(cfg.Model) != "" &&
 		strings.TrimSpace(cfg.APIKey) != ""
 	return cfg, nil
+}
+
+// envInt parses a non-negative integer from the environment, ignoring
+// anything malformed so a typo cannot disable a safeguard silently.
+func envInt(name string) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// firstNonZero returns the first positive value.
+func firstNonZero(values ...int) int {
+	for _, v := range values {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func firstNonEmpty(values ...string) string {

@@ -172,3 +172,70 @@ func TestThemeRoundTrip(t *testing.T) {
 		t.Errorf("theme = %q, want Amber", loaded.Theme)
 	}
 }
+
+func TestSafeguardDefaultsAndEnvOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL9001_HOME", dir)
+	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("HAL9001_MAX_TOKENS", "")
+	t.Setenv("HAL9001_STREAM_IDLE_TIMEOUT", "")
+	t.Setenv("HAL9001_TURN_TIMEOUT", "")
+
+	cfg, err := LoadErr(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxTokens != 0 || cfg.StreamIdleSeconds != 0 || cfg.TurnTimeoutSeconds != 0 {
+		t.Errorf("zero must mean 'use the built-in default': %+v", cfg)
+	}
+
+	t.Setenv("HAL9001_MAX_TOKENS", "4096")
+	t.Setenv("HAL9001_STREAM_IDLE_TIMEOUT", "90")
+	t.Setenv("HAL9001_TURN_TIMEOUT", "600")
+	cfg, err = LoadErr(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxTokens != 4096 || cfg.StreamIdleSeconds != 90 || cfg.TurnTimeoutSeconds != 600 {
+		t.Errorf("environment not applied: %+v", cfg)
+	}
+
+	// A malformed value must not silently disable a safeguard.
+	t.Setenv("HAL9001_MAX_TOKENS", "lots")
+	cfg, err = LoadErr(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxTokens != 0 {
+		t.Errorf("malformed value accepted: %d", cfg.MaxTokens)
+	}
+}
+
+func TestSafeguardFlagsWin(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL9001_HOME", dir)
+	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("HAL9001_MAX_TOKENS", "4096")
+	cfg, err := LoadErr([]string{"--max-tokens", "2048", "--stream-idle-timeout", "45", "--turn-timeout", "300"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxTokens != 2048 || cfg.StreamIdleSeconds != 45 || cfg.TurnTimeoutSeconds != 300 {
+		t.Errorf("flags not applied: %+v", cfg)
+	}
+}
+
+func TestSafeguardsRoundTripInFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	fc := FileConfig{MaxTokens: 8192, StreamIdleSeconds: 120, TurnTimeoutSeconds: 900}
+	if err := SaveFile(path, fc); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.MaxTokens != 8192 || loaded.StreamIdleSeconds != 120 || loaded.TurnTimeoutSeconds != 900 {
+		t.Errorf("file round-trip lost the safeguards: %+v", loaded)
+	}
+}

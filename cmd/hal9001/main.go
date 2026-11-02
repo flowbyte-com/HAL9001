@@ -146,7 +146,22 @@ func (a *app) providerFor() *provider.OpenAICompatible {
 	if endpoint == "" || key == "" {
 		return nil
 	}
-	return &provider.OpenAICompatible{Endpoint: endpoint, APIKey: key}
+	return &provider.OpenAICompatible{
+		Endpoint:         endpoint,
+		APIKey:           key,
+		DefaultMaxTokens: a.cfg.MaxTokens,
+		IdleTimeout:      seconds(a.cfg.StreamIdleSeconds),
+		TurnTimeout:      seconds(a.cfg.TurnTimeoutSeconds),
+	}
+}
+
+// seconds converts a configured second count to a duration, leaving zero
+// as "use the built-in default".
+func seconds(n int) time.Duration {
+	if n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
 }
 
 func (a *app) modelFor() provider.Model {
