@@ -275,6 +275,7 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if eng != nil {
 				m.engine = eng
 			}
+			m.model = id
 			m.enterPicker()
 			m.view = viewChat
 			m.notice = "Model: " + id + " (applies to the next request)"
@@ -318,7 +319,257 @@ func (m Model) pickerView() string {
 	return out
 }
 
-// newSession starts a fresh conversation through the application hook.
+// enterTheme opens the theme picker with a live preview.
+func (m *Model) enterTheme() {
+	current := ThemeHALClassic.Name
+	if m.hooks.Theme != nil {
+		if name := m.hooks.Theme(); name != "" {
+			current = name
+		}
+	}
+	m.themeCursor = 0
+	for i, t := range Themes() {
+		if t.Name == current || (current == "" && i == 0) {
+			m.themeCursor = i
+		}
+		if t.Name == m.theme.Name {
+			m.themePreview = t
+		}
+	}
+	if m.themePreview.Name == "" {
+		m.themePreview = Themes()[m.themeCursor]
+	}
+	m.themeNotice = ""
+	m.view = viewTheme
+}
+
+func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.ready = true
+		return m, nil
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case keyQuit, keyQuit2:
+			m.quitting = true
+			return m, tea.Quit
+		case "esc":
+			m.view = viewChat
+			m.themeNotice = ""
+			return m, nil
+		case "up", "shift+tab":
+			if m.themeCursor > 0 {
+				m.themeCursor--
+			}
+			m.themePreview = Themes()[m.themeCursor]
+			return m, nil
+		case "down", "tab":
+			if m.themeCursor < len(Themes())-1 {
+				m.themeCursor++
+			}
+			m.themePreview = Themes()[m.themeCursor]
+			return m, nil
+		case "enter":
+			name := Themes()[m.themeCursor].Name
+			if m.hooks.SaveTheme != nil {
+				if err := m.hooks.SaveTheme(name); err != nil {
+					m.themeNotice = "Save failed: " + err.Error()
+					return m, nil
+				}
+			}
+			m.theme = Themes()[m.themeCursor]
+			m.view = viewChat
+			m.notice = "Theme: " + name
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+func (m Model) themeView() string {
+	st := m.themePreview.styles()
+	var sb strings.Builder
+	sb.WriteString(st.header.Render("● HAL9001"))
+	sb.WriteString("\n\nThemes (Enter applies, Esc back) — live preview:\n\n")
+	for i, t := range Themes() {
+		marker := "  "
+		if i == m.themeCursor {
+			marker = "▸ "
+		}
+		line := marker + t.Name
+		if i == m.themeCursor {
+			line = st.active.Render(line)
+		}
+		sb.WriteString(line + "\n")
+	}
+	sb.WriteString("\n" + st.header.Render("● HAL9001") + "\n")
+	sb.WriteString(st.user.Render("You > ") + "preview message\n")
+	sb.WriteString(st.hal.Render("HAL > ") + "preview reply\n")
+	sb.WriteString(st.footer.Render("[444 read-only] " + m.modelNameOr("model")))
+	sb.WriteString("\n")
+	if m.themeNotice != "" {
+		sb.WriteString("\n" + m.themeNotice + "\n")
+	}
+	out := sb.String()
+	if !m.color {
+		out = stripANSI(out)
+	}
+	return out
+}
+
+// enterSessions opens the stored-conversation picker.
+func (m *Model) enterSessions() {
+	m.sessionNames = nil
+	m.sessionCursor = 0
+	m.sessionNotice = ""
+	if m.hooks.ListSessions != nil {
+		names, err := m.hooks.ListSessions()
+		if err != nil {
+			m.sessionNotice = "List failed: " + err.Error()
+		} else {
+			m.sessionNames = names
+		}
+	}
+	m.view = viewSessions
+}
+
+func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.ready = true
+		return m, nil
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case keyQuit, keyQuit2:
+			m.quitting = true
+			return m, tea.Quit
+		case "esc":
+			m.view = viewChat
+			m.sessionNotice = ""
+			return m, nil
+		case "up", "shift+tab":
+			if m.sessionCursor > 0 {
+				m.sessionCursor--
+			}
+			return m, nil
+		case "down", "tab":
+			if m.sessionCursor < len(m.sessionNames)-1 {
+				m.sessionCursor++
+			}
+			return m, nil
+		case "enter":
+			if len(m.sessionNames) == 0 || m.hooks.SwitchSession == nil {
+				m.sessionNotice = "Switching is not wired up."
+				return m, nil
+			}
+			name := m.sessionNames[m.sessionCursor]
+			eng, lines, err := m.hooks.SwitchSession(name)
+			if err != nil {
+				m.sessionNotice = "Switch failed: " + err.Error()
+				return m, nil
+			}
+			if eng != nil {
+				m.engine = eng
+			}
+			m.SetHistory(lines)
+			m.view = viewChat
+			m.notice = "Resumed: " + name
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+func (m Model) sessionsView() string {
+	st := m.theme.styles()
+	var sb strings.Builder
+	sb.WriteString(st.header.Render("● HAL9001"))
+	sb.WriteString("\n\nSessions (Enter resumes, Esc back):\n\n")
+	if len(m.sessionNames) == 0 {
+		sb.WriteString("  (no stored conversations)\n")
+	}
+	for i, name := range m.sessionNames {
+		line := "  " + name
+		if i == m.sessionCursor {
+			line = st.active.Render("▸ " + name)
+		}
+		sb.WriteString(line + "\n")
+	}
+	if m.sessionNotice != "" {
+		sb.WriteString("\n" + m.sessionNotice + "\n")
+	}
+	out := sb.String()
+	if !m.color {
+		out = stripANSI(out)
+	}
+	return out
+}
+
+func (m Model) helpView() string {
+	st := m.theme.styles()
+	rows := [][2]string{
+		{"Enter", "newline in the composer"},
+		{"Ctrl+S", "send (slash commands run locally, never sent to the model)"},
+		{"Ctrl+M", "model picker"},
+		{"Ctrl+N", "new conversation"},
+		{"Ctrl+C", "quit"},
+		{"Esc", "cancel a stream / close a panel"},
+		{"PgUp / PgDn", "scroll the conversation"},
+		{"paste", "bracketed paste is inserted, never submitted"},
+		{"", ""},
+		{"/help", "this panel"},
+		{"/copy", "copy the last HAL response to the clipboard"},
+		{"/copy code", "copy the latest fenced code block"},
+		{"/theme", "theme picker with live preview"},
+		{"/model", "model picker"},
+		{"/new", "new conversation"},
+		{"/sessions", "resume a stored conversation"},
+	}
+	var sb strings.Builder
+	sb.WriteString(st.header.Render("● HAL9001"))
+	sb.WriteString("\n\nKeys and commands (Esc back):\n\n")
+	for _, r := range rows {
+		if r[0] == "" {
+			sb.WriteString("\n")
+			continue
+		}
+		sb.WriteString("  " + st.active.Render(r[0]) + "  " + r[1] + "\n")
+	}
+	sb.WriteString("\n" + st.footer.Render("[444 read-only]"))
+	out := sb.String()
+	if !m.color {
+		out = stripANSI(out)
+	}
+	return out
+}
+
+func (m Model) modelNameOr(fallback string) string {
+	if strings.TrimSpace(m.model) != "" {
+		return m.model
+	}
+	return fallback
+}
+
+func (m Model) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.ready = true
+		return m, nil
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case keyQuit, keyQuit2:
+			m.quitting = true
+			return m, tea.Quit
+		case "esc", "enter", "q":
+			m.view = viewChat
+			return m, nil
+		}
+	}
+	return m, nil
+}
 func (m *Model) newSession() {
 	if m.hooks.NewSession == nil {
 		m.notice = "New sessions are not wired up."

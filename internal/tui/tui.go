@@ -17,7 +17,6 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 )
@@ -98,6 +97,18 @@ type Hooks struct {
 	CurrentOnboard func() OnboardData
 	// NewSession starts a fresh conversation, returning the engine.
 	NewSession func() (Engine, error)
+	// Theme returns the persisted theme name (empty means default).
+	Theme func() string
+	// SaveTheme persists the theme name.
+	SaveTheme func(name string) error
+	// ListSessions returns stored conversation names, oldest first.
+	ListSessions func() ([]string, error)
+	// SwitchSession loads a stored conversation, returning the engine
+	// and its lines (user text raw, assistant text raw Markdown).
+	SwitchSession func(name string) (Engine, []SessionLine, error)
+	// Copy writes text to the system clipboard (OSC 52). Nil means
+	// clipboard access is unavailable.
+	Copy func(text string) error
 }
 
 // Engine runs the conversation behind the interface. It matches
@@ -113,7 +124,19 @@ const (
 	viewChat View = iota
 	viewOnboard
 	viewPicker
+	viewTheme
+	viewHelp
+	viewSessions
 )
+
+// SessionLine is one stored conversation turn, for session resume.
+type SessionLine struct {
+	Role string
+	Text string
+}
+
+// maxComposerHeight caps the growing composer; the viewport keeps the rest.
+const maxComposerHeight = 8
 
 // Model is the Bubble Tea application state.
 type Model struct {
@@ -131,9 +154,11 @@ type Model struct {
 	quitting bool
 	notice   string
 	color    bool
+	theme    Theme
 	view     View
 	sender   func(tea.Msg)
 	cancel   context.CancelFunc
+	model    string
 	// Onboarding form.
 	obEndpoint textinput.Model
 	obModel    textinput.Model
@@ -144,6 +169,18 @@ type Model struct {
 	pickerModels []ModelInfo
 	pickerCursor int
 	pickerNotice string
+	// Theme picker state.
+	themeCursor  int
+	themePreview Theme
+	themeNotice  string
+	// Last completed assistant reply (raw Markdown), for /copy.
+	lastResponse string
+	// Sessions view state.
+	sessionNames  []string
+	sessionCursor int
+	sessionNotice string
+	// Help view state.
+	helpNotice string
 }
 
 // New builds the interface. Color follows ColorEnabled at construction so
@@ -156,8 +193,39 @@ func New(engine Engine) Model {
 func NewWithHooks(engine Engine, hooks Hooks) Model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message (Enter newline, Ctrl+S send, Ctrl+C quit)"
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	ta.SetHeight(1)
 	ta.Focus()
-	return Model{engine: engine, hooks: hooks, composer: ta, color: ColorEnabled()}
+	return Model{engine: engine, hooks: hooks, composer: ta, color: ColorEnabled(), theme: ThemeHALClassic}
+}
+
+// SetTheme applies a preset; used by the picker and tests.
+func (m *Model) SetTheme(t Theme) { m.theme = t }
+
+// Theme returns the active preset, for tests.
+func (m Model) Theme() Theme { return m.theme }
+
+// SetModelName sets the footer model label.
+func (m *Model) SetModelName(name string) { m.model = name }
+
+// SetHistory replaces the conversation view with stored turns (raw user
+// text, raw assistant Markdown rendered on display).
+func (m *Model) SetHistory(lines []SessionLine) {
+	m.lines = nil
+	m.display = nil
+	m.pending = ""
+	for _, line := range lines {
+		if line.Role == "user" {
+			m.lines = append(m.lines, "You > "+line.Text)
+			m.display = append(m.display, "You > "+line.Text)
+		} else {
+			m.lines = append(m.lines, "HAL > "+line.Text)
+			m.display = append(m.display, "HAL > "+renderMarkdown(line.Text, m.width))
+		}
+	}
+	m.renderConversation()
+	m.viewport.GotoBottom()
 }
 
 // SetColor overrides color mode; used by tests.
@@ -219,6 +287,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateOnboard(msg)
 	case viewPicker:
 		return m.updatePicker(msg)
+	case viewTheme:
+		return m.updateTheme(msg)
+	case viewHelp:
+		return m.updateHelp(msg)
+	case viewSessions:
+		return m.updateSessions(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -229,6 +303,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.ready = true
 		m.sizePanes()
+		m.rewrap()
 		m.renderConversation()
 		return m, nil
 	case tea.KeyPressMsg:
@@ -259,7 +334,17 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if input == "" {
 				return m, nil
 			}
+			if strings.HasPrefix(input, "/") {
+				m.composer.Reset()
+				m.fitComposer()
+				if strings.HasPrefix(input, "//") {
+					input = strings.TrimSpace(input[1:])
+				} else {
+					return m, m.dispatchSlash(input)
+				}
+			}
 			m.composer.Reset()
+			m.fitComposer()
 			m.appendLine("You > " + input)
 			m.pending = ""
 			m.sending = true
@@ -274,18 +359,28 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.PageDown()
 			return m, nil
 		}
+	case tea.PasteMsg:
+		m.composer.InsertString(msg.Content)
+		m.fitComposer()
+		return m, nil
 	case streamDeltaMsg:
+		stick := m.viewport.AtBottom()
 		m.pending += msg.text
 		m.renderConversation()
-		m.viewport.GotoBottom()
+		if stick {
+			m.viewport.GotoBottom()
+		}
 		return m, nil
 	case responseMsg:
 		m.sending = false
 		m.stopStream()
 		m.notice = ""
 		m.pending = ""
+		m.lastResponse = msg.text
 		m.replaceLast(msg.text)
 		return m, nil
+	case copyResultMsg:
+		return m.updateCopyResult(msg)
 	case errorMsg:
 		m.sending = false
 		m.stopStream()
@@ -304,15 +399,39 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.ready {
 		var cmds []tea.Cmd
 		var cmd tea.Cmd
+		before := m.composer.LineCount()
 		m.composer, cmd = m.composer.Update(msg)
 		cmds = append(cmds, cmd)
+		if m.composer.LineCount() != before {
+			m.fitComposer()
+		}
 		m.viewport, cmd = m.viewport.Update(msg)
 		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
 	}
 	var cmd tea.Cmd
 	m.composer, cmd = m.composer.Update(msg)
+	m.fitComposer()
 	return m, cmd
+}
+
+// fitComposer grows or shrinks the composer with its content, within a
+// reasonable maximum, and reclaims the space for the viewport.
+func (m *Model) fitComposer() {
+	if !m.ready {
+		return
+	}
+	want := m.composer.LineCount() + 1
+	if want < 1 {
+		want = 1
+	}
+	if want > maxComposerHeight {
+		want = maxComposerHeight
+	}
+	if want != m.composer.Height() {
+		m.composer.SetHeight(want)
+		m.sizePanes()
+	}
 }
 
 func (m *Model) stopStream() {
@@ -323,8 +442,14 @@ func (m *Model) stopStream() {
 }
 
 func (m *Model) sizePanes() {
-	compHeight := 5
-	viewHeight := m.height - compHeight - 5
+	// Fixed chrome: header + blank, top rule, bottom rule, footer,
+	// and one reserved notice line so status text never moves layout.
+	const chrome = 2 + 1 + 1 + 1 + 1
+	compHeight := m.composer.Height()
+	if compHeight < 1 {
+		compHeight = 1
+	}
+	viewHeight := m.height - chrome - compHeight
 	if viewHeight < 1 {
 		viewHeight = 1
 	}
@@ -335,7 +460,6 @@ func (m *Model) sizePanes() {
 		m.viewport.SetHeight(viewHeight)
 	}
 	m.composer.SetWidth(m.width - 2)
-	m.composer.SetHeight(3)
 }
 
 func (m *Model) appendLine(line string) {
@@ -347,17 +471,55 @@ func (m *Model) appendLine(line string) {
 
 // replaceLast swaps the pending raw stream for the final rendered answer.
 func (m *Model) replaceLast(text string) {
+	stick := m.viewport.AtBottom()
 	rendered := renderMarkdown(text, m.width)
 	m.lines = append(m.lines, "HAL > "+text)
 	m.display = append(m.display, "HAL > "+rendered)
 	m.renderConversation()
-	m.viewport.GotoBottom()
+	if stick {
+		m.viewport.GotoBottom()
+	}
 }
 
+// rewrap re-renders stored assistant messages for the current width so
+// resizing reflows Markdown instead of leaving stale wrapping.
+func (m *Model) rewrap() {
+	if len(m.lines) == 0 {
+		return
+	}
+	m.display = make([]string, 0, len(m.lines))
+	for _, line := range m.lines {
+		if rest, ok := strings.CutPrefix(line, "HAL > "); ok {
+			m.display = append(m.display, "HAL > "+renderMarkdown(rest, m.width))
+			continue
+		}
+		m.display = append(m.display, line)
+	}
+}
 func (m *Model) renderConversation() {
-	content := append([]string(nil), m.display...)
+	st := m.theme.styles()
+	styleLine := func(line string) string {
+		if !m.color {
+			return line
+		}
+		if rest, ok := strings.CutPrefix(line, "You > "); ok {
+			return st.user.Render("You > ") + rest
+		}
+		if rest, ok := strings.CutPrefix(line, "HAL > "); ok {
+			return st.hal.Render("HAL > ") + rest
+		}
+		return line
+	}
+	content := make([]string, 0, len(m.display)+1)
+	for _, line := range m.display {
+		content = append(content, styleLine(line))
+	}
 	if m.pending != "" {
-		content = append(content, "HAL > "+m.pending)
+		pending := "HAL > " + m.pending
+		if m.color {
+			pending = st.hal.Render("HAL > ") + m.pending
+		}
+		content = append(content, pending)
 	}
 	m.viewport.SetContent(strings.Join(content, "\n"))
 }
@@ -369,29 +531,58 @@ func (m Model) View() tea.View {
 		return tea.NewView(m.onboardView())
 	case viewPicker:
 		return tea.NewView(m.pickerView())
+	case viewTheme:
+		return tea.NewView(m.themeView())
+	case viewHelp:
+		return tea.NewView(m.helpView())
+	case viewSessions:
+		return tea.NewView(m.sessionsView())
 	}
 	return tea.NewView(m.chatView())
 }
 
 func (m Model) heading() string {
+	st := m.theme.styles()
+	eye := "●"
 	if !m.color {
-		return "● HAL9001"
+		return eye + " HAL9001"
 	}
-	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render("● HAL9001")
+	return st.header.Render(eye + " HAL9001")
+}
+
+func (m Model) rule() string {
+	line := strings.Repeat("─", m.width)
+	if line == "" {
+		return ""
+	}
+	if !m.color {
+		return line
+	}
+	return m.theme.styles().rule.Render(line)
 }
 
 func (m Model) statusBar() string {
-	left := "Enter newline · Ctrl+S send · Ctrl+M models · Ctrl+N new · Ctrl+C quit"
-	right := "[444 read-only]"
-	gap := m.width - len(left) - len(right) - 1
-	if gap < 1 {
-		gap = 1
+	st := m.theme.styles()
+	left := "444 READ ONLY · /help"
+	right := strings.TrimSpace(m.model)
+	room := m.width - len(left) - len(right) - 1
+	if room < 1 {
+		// Narrow terminal: the 444 indicator always survives.
+		left = "444 READ ONLY"
+		right = ""
+		if m.width > 0 && len(left) > m.width {
+			left = left[:m.width]
+		}
+		if !m.color {
+			return left
+		}
+		return st.footer.Render(left)
 	}
-	bar := left + strings.Repeat(" ", gap) + right
+	bar := left + strings.Repeat(" ", room) + right
 	if !m.color {
 		return bar
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(bar)
+	return st.footer.Render(bar)
 }
 
 var ansiSequence = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
@@ -414,11 +605,16 @@ func (m Model) chatView() string {
 	sb.WriteString("\n\n")
 	sb.WriteString(m.viewport.View())
 	sb.WriteString("\n")
+	sb.WriteString(m.rule())
+	sb.WriteString("\n")
 	sb.WriteString(m.composer.View())
 	sb.WriteString("\n")
+	sb.WriteString(m.rule())
+	sb.WriteString("\n")
 	sb.WriteString(m.statusBar())
+	sb.WriteString("\n")
 	if m.notice != "" {
-		sb.WriteString("\n" + m.notice)
+		sb.WriteString(m.notice)
 	}
 	sb.WriteString("\n")
 	out := sb.String()

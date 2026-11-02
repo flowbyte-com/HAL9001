@@ -49,6 +49,8 @@ type FileConfig struct {
 	APIKey      string        `json:"api_key,omitempty"`
 	Models      []ModelRecord `json:"models,omitempty"`
 	ActiveModel string        `json:"active_model,omitempty"`
+	// Theme names the active TUI preset (empty means HAL Classic).
+	Theme string `json:"theme,omitempty"`
 }
 
 // Active returns the active model record (first model when unset).

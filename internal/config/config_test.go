@@ -157,3 +157,18 @@ func TestListSessions(t *testing.T) {
 		t.Errorf("sessions = %v", names)
 	}
 }
+
+func TestThemeRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	fc := FileConfig{Theme: "Amber"}
+	if err := SaveFile(path, fc); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Theme != "Amber" {
+		t.Errorf("theme = %q, want Amber", loaded.Theme)
+	}
+}
