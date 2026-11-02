@@ -57,10 +57,10 @@ type Provider interface {
 type Model struct {
 	// ID is the provider-side model identifier.
 	ID string `json:"id"`
-	// Thinking is an optional per-model reasoning control. Empty means
-	// "provider default". Adapters translate it only when the API has a
-	// matching parameter; otherwise they leave it unset.
-	Thinking string `json:"thinking,omitempty"`
+	// Effort is the reasoning level for models whose API accepts
+	// reasoning_effort (see EffortCapable). Empty means the adapter
+	// default, or no effort control at all.
+	Effort string `json:"effort,omitempty"`
 	// MaxTokens caps the response length. Zero means provider default.
 	MaxTokens int `json:"max_tokens,omitempty"`
 }

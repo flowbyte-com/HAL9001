@@ -80,10 +80,10 @@ func TestChatStreamAssemblesDeltas(t *testing.T) {
 		t.Errorf("stream flag missing: %v", captured.body)
 	}
 	if _, ok := captured.body["reasoning_effort"]; ok {
-		t.Error("no reasoning parameters may be sent")
+		t.Error("reasoning_effort must not be sent to a model that does not document it")
 	}
 	if _, ok := captured.body["thinking"]; ok {
-		t.Error("no thinking parameters may be sent")
+		t.Error("no thinking parameter may be sent")
 	}
 	if got := captured.header.Get("Authorization"); got != "Bearer k" {
 		t.Errorf("auth header = %q", got)

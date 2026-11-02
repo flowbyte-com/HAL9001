@@ -79,6 +79,9 @@ type openAIRequest struct {
 	Messages  []openAIMessage `json:"messages"`
 	Stream    bool            `json:"stream"`
 	MaxTokens *int            `json:"max_tokens,omitempty"`
+	// ReasoningEffort is sent only for models whose API documents it.
+	// The adapter never guesses: see EffortCapable.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type openAIChoice struct {
@@ -123,6 +126,11 @@ func (o *OpenAICompatible) requestBody(messages []Message, model Model, stream b
 	}
 	if maxTokens > 0 {
 		out.MaxTokens = &maxTokens
+	}
+	// Capability first: a level is only ever sent to a model whose API
+	// documents reasoning_effort.
+	if EffortCapable(model.ID) {
+		out.ReasoningEffort = NormalizeEffort(model.Effort)
 	}
 	return json.Marshal(out)
 }
