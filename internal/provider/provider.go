@@ -30,9 +30,13 @@ type ToolCall struct {
 	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
-// Response is one provider turn.
+// Response is one provider turn. Reasoning carries provider thinking
+// metadata when the API returns it (for example a reasoning_content
+// field). It is never displayed as the answer and never stored as
+// conversation content: user-facing text comes only from Content.
 type Response struct {
 	Content      string     `json:"content"`
+	Reasoning    string     `json:"reasoning,omitempty"`
 	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
 	FinishReason string     `json:"finish_reason,omitempty"`
 }
