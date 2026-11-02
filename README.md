@@ -65,6 +65,7 @@ footer stay at the bottom.
 | `Ctrl+N` | New conversation |
 | `Ctrl+C` | Quit |
 | `Esc` | Cancel a stream / close a panel |
+| `Ctrl+O` | Expand or collapse the last long prompt |
 | `PgUp` / `PgDn` | Scroll the conversation |
 
 `Enter` and `Ctrl+M` are the same byte on a terminal, so the model
@@ -74,12 +75,27 @@ instead of breaking the line — use `Ctrl+J` there. HAL detects whether
 the terminal reports modifier combinations and says so in `/help`.
 
 Slash commands run locally and never reach the model: `/help`,
-`/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/sessions`. A
-leading `//` sends a literal slash-prefixed message. Pasting never
-submits: multiline pastes keep their line breaks, indentation and code
-fences in the composer, where you can edit them before sending.
-Switching models keeps the conversation history and the unsent draft:
-the session store is model-independent.
+`/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/sessions`,
+`/expand`, `/collapse`, `/diag`. A leading `//` sends a literal
+slash-prefixed message. Pasting never submits: multiline pastes keep
+their line breaks, indentation and code fences in the composer, where
+you can edit them before sending. Switching models keeps the
+conversation history and the unsent draft: the session store is
+model-independent.
+
+**Long prompts.** A prompt that fills more than a few lines is collapsed
+to a four-line preview after you send it, so HAL's answer stays in view.
+`Ctrl+O` toggles the most recent prompt; `/expand` and `/collapse` apply
+to all of them. Collapsing is display only — the full text is what gets
+stored and what the model receives.
+
+**Slow turns.** While a model is working, the notice under the footer
+shows the phase and the elapsed time (`waiting for the model… 2s`,
+`thinking… 47s`, `streaming… 51s`). A reasoning model can spend a long
+time thinking before it writes anything: the indicator says so, without
+ever showing the reasoning text. `/diag` reports the last turn's
+duration, event counts, finish reason and token usage — counts only,
+never prompt, reply or reasoning text.
 
 See [`docs/terminal-support.md`](docs/terminal-support.md) for the
 tested and unsupported terminal behaviour. The pseudo-terminal checks
@@ -119,6 +135,22 @@ legacy_base/          preserved DeepClaw/PicoClaw reference (separate module)
 - The frame always fits the terminal, so HAL never scrolls the terminal
   and never leaves the cursor hidden or the terminal in raw mode.
 
+## Safeguards
+
+Every request carries an output cap, and every turn is bounded in time,
+so a provider cannot generate or stall without limit:
+
+| Setting | Default | Flag | Environment |
+|---|---|---|---|
+| Output cap | 16384 tokens | `--max-tokens` | `HAL9001_MAX_TOKENS` |
+| Idle timeout | 120 s | `--stream-idle-timeout` | `HAL9001_STREAM_IDLE_TIMEOUT` |
+| Turn ceiling | 15 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
+
+The values also persist in the user configuration file. Zero means "use
+the built-in default". When the idle timeout or the turn ceiling fires,
+the HTTP request is closed, so the provider stops generating and stops
+billing. `Esc` does the same immediately.
+
 ## Limitations (Milestone 003.1)
 
 - One provider shape: OpenAI-compatible `/chat/completions` (SSE
@@ -132,3 +164,5 @@ legacy_base/          preserved DeepClaw/PicoClaw reference (separate module)
   is plain text.
 - Modifier-aware shortcuts (`Shift+Enter`) need a terminal that
   implements the Kitty keyboard protocol; GNOME Terminal does not.
+- Token usage is shown only when the provider reports it in the stream;
+  absent usage is reported as unknown, never estimated.

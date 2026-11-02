@@ -90,6 +90,34 @@ behaviour, not assumption: the byte sequences were decoded with the
 input parser the application itself uses. See
 `docs/terminal-support.md` for the tested/unsupported matrix.
 
+Conversation entries keep the original text and a cached rendered form.
+Long user prompts render as a four-line preview with an expand hint;
+the collapse never touches the stored text or the provider request.
+
+## Streaming
+
+A turn is bounded three ways: the caller's context (cancellation), an
+idle watchdog (no data for the configured window) and a total ceiling.
+Each bound closes the HTTP request, so an abandoned turn stops
+generating instead of running on. Requests always carry an output cap
+(`max_tokens`), from the model or the configured default — a reasoning
+model must never be allowed to generate without one.
+
+`provider.TurnStats` records content-free telemetry per turn: status,
+elapsed time, time to first visible output and to first reasoning event,
+SSE event and keep-alive counts, visible and reasoning chunk/byte counts,
+`finish_reason`, output-limit flag and token usage. `/diag` renders it.
+Reasoning text is parsed only to detect that reasoning happened; it is
+never displayed, stored or logged.
+
+The engine reports reasoning **presence** and final stats as events
+(`RespondStreamEvents`), so the interface can show `thinking…` without
+ever seeing the reasoning. `RespondStream` remains as the text-only
+wrapper.
+
+See `docs/streaming-investigation.md` for the evidence behind these
+decisions and the hypotheses that remain open.
+
 ## Conversation continuity
 
 `internal/session` persists one JSONL file per session. History is
