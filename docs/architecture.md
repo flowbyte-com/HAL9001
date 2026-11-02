@@ -60,11 +60,17 @@ persisted only after successful generation.
 
 ## Terminal interface
 
-Full-screen chat with three areas: a one-line `● HAL9001` header, a
-scrollable Markdown viewport, and a borderless composer that grows to
-eight lines between two thin rules, plus a one-line footer (`444 READ
-ONLY · /help` left, active model right) that degrades gracefully on
-narrow terminals.
+Full-screen chat on the terminal's alternate screen buffer: the shell
+output is hidden while HAL runs and the previous screen is restored on
+exit. The frame is assembled as exactly one row per terminal row, so the
+terminal never scrolls.
+
+Layout: a one-line `● HAL9001` header, a rule, the content region, a
+rule, a one-line status footer (`444 READ ONLY · /help` left, active
+model right) and a notice line that is always reserved so the layout
+never shifts. In chat the content region is the scrollable Markdown
+viewport above a borderless composer that grows to eight lines; in an
+overlay it is the panel, which scrolls when it does not fit.
 
 Views: chat, onboarding, model picker, theme picker (five presets with
 live preview, persisted), help, and stored sessions. A slash dispatcher
@@ -75,7 +81,14 @@ latest fenced block) via OSC 52; the mouse is deliberately never
 captured so native selection keeps working. Pasted text (bracketed or
 keystroke) is inserted with newlines preserved and never submitted.
 Scrolling is sticky: streams follow only when already at the bottom.
-See `docs/terminal-support.md` for the tested/unsupported matrix.
+
+Keyboard: `Enter` sends, `Ctrl+J` (and `Alt+Enter`, and `Shift+Enter`
+where the terminal reports modifiers) inserts a newline. `Ctrl+M` is
+the same byte as `Enter` on a terminal, so the model picker uses
+`Ctrl+K`. The key ambiguity is resolved from measured terminal
+behaviour, not assumption: the byte sequences were decoded with the
+input parser the application itself uses. See
+`docs/terminal-support.md` for the tested/unsupported matrix.
 
 ## Conversation continuity
 
