@@ -107,6 +107,9 @@ type openAIResponse struct {
 		CompletionTokensDetails *struct {
 			ReasoningTokens int `json:"reasoning_tokens"`
 		} `json:"completion_tokens_details"`
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -234,6 +237,9 @@ func (o *OpenAICompatible) Chat(ctx context.Context, messages []Message, model M
 		}
 		if u.CompletionTokensDetails != nil {
 			out.Stats.Usage.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+		}
+		if u.PromptTokensDetails != nil {
+			out.Stats.Usage.CachedTokens = u.PromptTokensDetails.CachedTokens
 		}
 	}
 	out.Stats.VisibleChunks = 1
@@ -378,6 +384,9 @@ func (o *OpenAICompatible) ChatStream(ctx context.Context, messages []Message, m
 			}
 			if u.CompletionTokensDetails != nil {
 				stats.Usage.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+			}
+			if u.PromptTokensDetails != nil {
+				stats.Usage.CachedTokens = u.PromptTokensDetails.CachedTokens
 			}
 		}
 		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta == nil {

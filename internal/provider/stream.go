@@ -21,6 +21,9 @@ type Usage struct {
 	CompletionTokens int `json:"completion_tokens,omitempty"`
 	TotalTokens      int `json:"total_tokens,omitempty"`
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	// CachedTokens is the portion of the prompt served from the
+	// provider's cache, when it reports one.
+	CachedTokens int `json:"cached_input_tokens,omitempty"`
 }
 
 // TurnStats describes one streamed turn without carrying any of its text.
@@ -96,7 +99,7 @@ const (
 	DefaultIdleTimeout = 45 * time.Second
 	// DefaultTurnTimeout bounds one whole turn, including a reasoning
 	// phase that keeps producing output.
-	DefaultTurnTimeout = 120 * time.Second
+	DefaultTurnTimeout = 240 * time.Second
 	// finishGrace is how long to keep reading after finish_reason for a
 	// usage chunk or [DONE] before closing the stream.
 	finishGrace = 3 * time.Second

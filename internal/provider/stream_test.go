@@ -363,8 +363,8 @@ func TestDefaultSafeguards(t *testing.T) {
 	if DefaultIdleTimeout != 45*time.Second {
 		t.Errorf("DefaultIdleTimeout = %v, want 45s", DefaultIdleTimeout)
 	}
-	if DefaultTurnTimeout != 120*time.Second {
-		t.Errorf("DefaultTurnTimeout = %v, want 120s", DefaultTurnTimeout)
+	if DefaultTurnTimeout != 240*time.Second {
+		t.Errorf("DefaultTurnTimeout = %v, want 240s", DefaultTurnTimeout)
 	}
 	if finishGrace != 3*time.Second {
 		t.Errorf("finishGrace = %v, want 3s", finishGrace)
@@ -378,7 +378,7 @@ func TestDefaultSafeguards(t *testing.T) {
 	if got := p.idleTimeout(); got != 45*time.Second {
 		t.Errorf("resolved idle timeout = %v", got)
 	}
-	if got := p.turnTimeout(); got != 120*time.Second {
+	if got := p.turnTimeout(); got != 240*time.Second {
 		t.Errorf("resolved turn timeout = %v", got)
 	}
 }
@@ -506,8 +506,8 @@ func TestDefaultLimitsReportedInStats(t *testing.T) {
 	if resp.Stats.IdleTimeout != 45*time.Second {
 		t.Errorf("idle = %v, want 45s", resp.Stats.IdleTimeout)
 	}
-	if resp.Stats.TurnTimeout != 120*time.Second {
-		t.Errorf("turn = %v, want 120s", resp.Stats.TurnTimeout)
+	if resp.Stats.TurnTimeout != 240*time.Second {
+		t.Errorf("turn = %v, want 240s", resp.Stats.TurnTimeout)
 	}
 }
 
