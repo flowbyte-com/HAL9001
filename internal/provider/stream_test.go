@@ -290,8 +290,8 @@ func TestRequestAlwaysCarriesOutputCap(t *testing.T) {
 		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, func(Delta) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := captured.body["max_tokens"].(float64); !ok || int(got) != DefaultMaxTokens {
-		t.Errorf("max_tokens = %v, want %d", captured.body["max_tokens"], DefaultMaxTokens)
+	if got, ok := captured.body["max_tokens"].(float64); !ok || int(got) != 15000 {
+		t.Errorf("default max_tokens on the wire = %v, want 15000", captured.body["max_tokens"])
 	}
 
 	p2 := &OpenAICompatible{Endpoint: srv.URL, APIKey: "k", DefaultMaxTokens: 1234}
@@ -353,12 +353,12 @@ func TestChatStreamTurnTimeoutWhileTrickling(t *testing.T) {
 	}
 }
 
-// The operator's defaults are part of the contract: 8192 output tokens, a
+// The operator's defaults are part of the contract: 15000 output tokens, a
 // 45-second idle window, a 120-second turn ceiling, a 3-second finish
 // grace.
 func TestDefaultSafeguards(t *testing.T) {
-	if DefaultMaxTokens != 8192 {
-		t.Errorf("DefaultMaxTokens = %d, want 8192", DefaultMaxTokens)
+	if DefaultMaxTokens != 15000 {
+		t.Errorf("DefaultMaxTokens = %d, want 15000", DefaultMaxTokens)
 	}
 	if DefaultIdleTimeout != 45*time.Second {
 		t.Errorf("DefaultIdleTimeout = %v, want 45s", DefaultIdleTimeout)
@@ -372,7 +372,7 @@ func TestDefaultSafeguards(t *testing.T) {
 
 	// A zero-valued provider resolves to exactly those defaults.
 	p := &OpenAICompatible{}
-	if got := p.maxTokens(); got != 8192 {
+	if got := p.maxTokens(); got != 15000 {
 		t.Errorf("resolved max tokens = %d", got)
 	}
 	if got := p.idleTimeout(); got != 45*time.Second {
@@ -500,13 +500,32 @@ func TestDefaultLimitsReportedInStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Stats.MaxTokens != 8192 {
-		t.Errorf("max tokens = %d, want 8192", resp.Stats.MaxTokens)
+	if resp.Stats.MaxTokens != 15000 {
+		t.Errorf("max tokens = %d, want 15000", resp.Stats.MaxTokens)
 	}
 	if resp.Stats.IdleTimeout != 45*time.Second {
 		t.Errorf("idle = %v, want 45s", resp.Stats.IdleTimeout)
 	}
 	if resp.Stats.TurnTimeout != 120*time.Second {
 		t.Errorf("turn = %v, want 120s", resp.Stats.TurnTimeout)
+	}
+}
+
+// An operator override still wins over the 15,000 default, in both
+// directions.
+func TestMaxTokensOverrideWinsOverDefault(t *testing.T) {
+	var captured capturedRequest
+	srv := streamServer(t, []string{contentLine("x")}, &captured)
+	defer srv.Close()
+
+	for _, want := range []int{512, 30000} {
+		p := &OpenAICompatible{Endpoint: srv.URL, APIKey: "k", DefaultMaxTokens: want}
+		if _, err := p.ChatStream(context.Background(),
+			[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, func(Delta) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := captured.body["max_tokens"].(float64); !ok || int(got) != want {
+			t.Errorf("override max_tokens = %v, want %d", captured.body["max_tokens"], want)
+		}
 	}
 }

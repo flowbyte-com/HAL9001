@@ -90,7 +90,7 @@ const (
 	// DefaultMaxTokens caps one response when the model does not set its
 	// own limit. Without it the provider default governs, which for a
 	// reasoning model can be very large.
-	DefaultMaxTokens = 8192
+	DefaultMaxTokens = 15000
 	// DefaultIdleTimeout aborts a stream that sends nothing for this
 	// long. Any data from the provider resets it.
 	DefaultIdleTimeout = 45 * time.Second
