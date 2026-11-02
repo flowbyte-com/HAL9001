@@ -103,6 +103,22 @@ generating instead of running on. Requests always carry an output cap
 (`max_tokens`), from the model or the configured default — a reasoning
 model must never be allowed to generate without one.
 
+Reasoning effort is per-model and capability-gated: the OpenAI-compatible
+adapter sends `reasoning_effort` only for model ids in its documented
+table (the MiniMax M-series), and only for one of the five documented
+levels. The application resolves a level from the per-model record, or
+`medium` for a capable model with none recorded. `/effort` changes it and
+rebuilds the engine, so the next request carries the new value.
+
+A turn that completes without visible answer text is not stored as an
+assistant message: `ErrNoVisibleAnswer` is returned, the interface shows a
+diagnostic note, and `/diag` reports the finish reason and token usage.
+Nothing retries and nothing raises the cap implicitly.
+
+`/clear` and `/new` share one path: cancel any live turn, ask the
+application for a new session store, reset the visible conversation. The
+previous session file is never deleted and stays listed by `/sessions`.
+
 `provider.TurnStats` records content-free telemetry per turn: status,
 elapsed time, time to first visible output and to first reasoning event,
 SSE event and keep-alive counts, visible and reasoning chunk/byte counts,

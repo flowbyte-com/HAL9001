@@ -75,9 +75,9 @@ instead of breaking the line — use `Ctrl+J` there. HAL detects whether
 the terminal reports modifier combinations and says so in `/help`.
 
 Slash commands run locally and never reach the model: `/help`,
-`/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/sessions`,
-`/expand`, `/collapse`, `/diag`. A leading `//` sends a literal
-slash-prefixed message. Pasting never submits: multiline pastes keep
+`/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/clear`, `/sessions`,
+`/effort`, `/expand`, `/collapse`, `/diag`. A leading `//` sends a
+literal slash-prefixed message. Pasting never submits: multiline pastes keep
 their line breaks, indentation and code fences in the composer, where
 you can edit them before sending. Switching models keeps the
 conversation history and the unsent draft: the session store is
@@ -89,6 +89,24 @@ to a four-line preview after you send it, so HAL's answer stays in view.
 to all of them. Collapsing is display only — the full text is what gets
 stored and what the model receives.
 
+**Reasoning effort.** MiniMax-M3.1-Flash applies `max` effort when the
+parameter is omitted, which is why HAL sends `reasoning_effort` explicitly
+and starts at `medium`. `/effort` opens a selector; `/effort low`,
+`/effort medium`, `/effort high`, `/effort xhigh` and `/effort max` set a
+level directly. The footer shows the active level next to the model
+(`MiniMax-M3.1-Flash · medium`) and the choice is stored per model, so
+switching models restores each one's level. The parameter is never sent
+to a provider that does not document it: an unsupported model says so and
+offers no selector. Changing effort never touches the conversation.
+
+**Clearing.** `/clear` empties the visible conversation and starts a fresh
+context for the next request. The previous conversation is **not**
+deleted: it stays recoverable through `/sessions`. Model, effort and
+theme are kept. `/new` does the same and is the shortcut (`Ctrl+N`) for
+it; `/clear` is the explicit name for "start over". `/clear` works during
+a running turn — it cancels the turn first, so nothing from it can appear
+in the new conversation.
+
 **Slow turns.** While a model is working, the notice under the footer
 shows the phase and the elapsed time (`waiting for the model… 2s`,
 `thinking… 47s`, `streaming… 51s`). A reasoning model can spend a long
@@ -96,6 +114,12 @@ time thinking before it writes anything: the indicator says so, without
 ever showing the reasoning text. `/diag` reports the last turn's
 duration, event counts, finish reason and token usage — counts only,
 never prompt, reply or reasoning text.
+
+If a turn ends without any visible answer — for example the output budget
+was spent on reasoning — HAL explains it with the provider's finish
+reason and token count, shows it through `/diag`, and stores no assistant
+message. Nothing is retried automatically and the output cap is never
+raised without the operator asking.
 
 See [`docs/terminal-support.md`](docs/terminal-support.md) for the
 tested and unsupported terminal behaviour. The pseudo-terminal checks

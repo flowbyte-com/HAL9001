@@ -176,9 +176,13 @@ so a late error can no longer clear or cancel the next turn.
 - `finish_reason: length` produces an explicit notice and a `/diag` flag.
 - A stream that ends without `[DONE]` is reported as `eof`, not a silent
   success.
-- A reply that is entirely reasoning is reported as
-  `(the model produced reasoning but no answer)` instead of
-  `(no response)`.
+- A reply that is entirely reasoning is **not** stored as an assistant
+  message. The turn fails with `ErrNoVisibleAnswer`, the interface shows
+  one explanatory line built from the diagnostics (`no visible answer ·
+  the output budget was exhausted during reasoning · finish_reason=length
+  · completion tokens 8192 · see /diag`), and the next request's context
+  contains the user message but no fabricated answer. Nothing is retried
+  automatically and the output cap is never raised silently.
 
 ## Tests
 
