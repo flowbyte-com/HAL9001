@@ -33,13 +33,16 @@ const (
 )
 
 // ModelRecord is one configured model. The record is intentionally small
-// and extensible: future milestones may add per-model thinking levels or
-// endpoint overrides without changing the shape.
+// and extensible: future milestones may add endpoint overrides without
+// changing the shape.
 type ModelRecord struct {
 	// ID is the provider-side model identifier.
 	ID string `json:"id"`
 	// Label is the display name. Empty means ID.
 	Label string `json:"label,omitempty"`
+	// Effort is the persisted reasoning level for models that support
+	// effort control. Empty means the built-in default for the model.
+	Effort string `json:"effort,omitempty"`
 }
 
 // Display returns the label or the id.
@@ -95,6 +98,38 @@ func (f *FileConfig) AddModel(id string) {
 		}
 	}
 	f.Models = append(f.Models, ModelRecord{ID: id})
+}
+
+// SetEffort stores the reasoning level for a configured model, creating
+// the record when it does not exist yet. It reports whether anything
+// changed.
+func (f *FileConfig) SetEffort(id, effort string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for i := range f.Models {
+		if f.Models[i].ID == id {
+			if f.Models[i].Effort == effort {
+				return false
+			}
+			f.Models[i].Effort = effort
+			return true
+		}
+	}
+	f.Models = append(f.Models, ModelRecord{ID: id, Effort: effort})
+	return true
+}
+
+// EffortFor returns the recorded level for a model, or "" when none is
+// recorded.
+func (f FileConfig) EffortFor(id string) string {
+	for _, m := range f.Models {
+		if m.ID == id {
+			return m.Effort
+		}
+	}
+	return ""
 }
 
 // ConfigDir returns HAL9001's own user configuration directory. Nothing

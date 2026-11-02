@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/flowbyte-com/HAL9001/internal/clipboard"
@@ -72,12 +73,13 @@ func listSessions(storeDir string) error {
 }
 
 type app struct {
-	cfg     config.Config
-	stored  config.FileConfig
-	store   *session.Store
-	eng     *engine.Engine
-	model   string
-	session string
+	cfg        config.Config
+	stored     config.FileConfig
+	store      *session.Store
+	eng        *engine.Engine
+	model      string
+	session    string
+	sessionSeq int
 }
 
 func (a *app) run() error {
@@ -102,9 +104,12 @@ func (a *app) run() error {
 		ListSessions:   a.listSessionNames,
 		SwitchSession:  a.switchSession,
 		Copy:           a.copyText,
+		Effort:         a.currentEffort,
+		SetEffort:      a.setEffort,
 	}
 	m := tui.NewWithHooks(a.eng, hooks)
 	m.SetModelName(a.activeModelID())
+	m.SetEffort(a.currentEffort())
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
 	m.SetTitle(a.session)
 	if history, err := a.store.History(); err == nil {
@@ -165,16 +170,53 @@ func seconds(n int) time.Duration {
 }
 
 func (a *app) modelFor() provider.Model {
-	id := a.model
-	if id == "" {
-		id = a.cfg.Model
+	id := a.activeModelID()
+	return provider.Model{
+		ID:     id,
+		Effort: a.effortFor(id),
 	}
-	if id == "" {
-		if active, ok := a.stored.Active(); ok {
-			id = active.ID
-		}
+}
+
+// effortFor resolves the effort level for a model: the operator's stored
+// choice when present, otherwise the built-in default for capable models
+// and nothing for everything else.
+func (a *app) effortFor(id string) string {
+	if !provider.EffortCapable(id) {
+		return ""
 	}
-	return provider.Model{ID: id}
+	if stored := provider.NormalizeEffort(a.stored.EffortFor(id)); stored != "" {
+		return stored
+	}
+	return provider.DefaultEffortFor(id)
+}
+
+// currentEffort reports the active level and whether the active model
+// supports effort control at all.
+func (a *app) currentEffort() (string, bool) {
+	id := a.activeModelID()
+	if !provider.EffortCapable(id) {
+		return "", false
+	}
+	return a.effortFor(id), true
+}
+
+// setEffort persists a reasoning level for the active model and rebuilds
+// the engine, so the next request carries it.
+func (a *app) setEffort(level string) (tui.Engine, error) {
+	id := a.activeModelID()
+	if !provider.EffortCapable(id) {
+		return nil, fmt.Errorf("model %q does not support reasoning effort", id)
+	}
+	normalized := provider.NormalizeEffort(level)
+	if normalized == "" {
+		return nil, fmt.Errorf("unknown effort level %q", level)
+	}
+	a.stored.SetEffort(id, normalized)
+	if err := config.SaveFile(config.ConfigPath(), a.stored); err != nil {
+		return nil, err
+	}
+	a.rebuildEngine()
+	return a.eng, nil
 }
 
 func (a *app) rebuildEngine() {
@@ -286,7 +328,22 @@ func (a *app) switchModel(id string) (tui.Engine, error) {
 }
 
 func (a *app) newSession() (tui.Engine, error) {
-	name := "cli-" + time.Now().Format("20060102-150405")
+	// A new session must never reuse an existing one: two clears in the
+	// same second are still two separate conversations. The counter
+	// covers names not yet written to disk; the stat covers a file left
+	// by an earlier run.
+	base := "cli-" + time.Now().Format("20060102-150405")
+	a.sessionSeq++
+	name := base
+	if a.sessionSeq > 1 {
+		name = fmt.Sprintf("%s-%d", base, a.sessionSeq)
+	}
+	for i := 2; ; i++ {
+		if _, err := os.Stat(filepath.Join(a.cfg.StoreDir, name+".jsonl")); os.IsNotExist(err) {
+			break
+		}
+		name = fmt.Sprintf("%s-%d", base, i)
+	}
 	store, err := session.Open(a.cfg.StoreDir, name)
 	if err != nil {
 		return nil, err
