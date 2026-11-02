@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sipeed/picoclaw/hal9001/internal/capability"
-	"github.com/sipeed/picoclaw/hal9001/internal/provider"
-	"github.com/sipeed/picoclaw/hal9001/internal/session"
+	"github.com/flowbyte-com/HAL9001/internal/capability"
+	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/session"
 )
 
 // ErrNoProvider reports that no model provider is configured. The
@@ -24,9 +24,10 @@ var ErrNoProvider = errors.New("no provider configured")
 // Engine runs one conversation: it stores both sides of every turn and
 // asks the provider for the next assistant message.
 type Engine struct {
-	sessions *session.Store
-	provider provider.Provider
-	model    provider.Model
+	sessions     *session.Store
+	provider     provider.Provider
+	model        provider.Model
+	systemPrompt string
 }
 
 // New binds a session store to a provider and model.
@@ -34,12 +35,45 @@ func New(sessions *session.Store, p provider.Provider, model provider.Model) *En
 	return &Engine{sessions: sessions, provider: p, model: model}
 }
 
-// Respond records the user message, asks the provider, enforces the 444
-// boundary on any requested operations, records the reply, and returns it.
-// Provider-requested tool calls are denied unless explicitly allowed; the
-// denial itself becomes the reply content so the refusal is visible in the
-// conversation instead of failing silently.
+// WithSystemPrompt sets the system instruction prepended to every request.
+// It is never stored in the session: history stays provider-independent
+// and the instruction foundation stays byte-stable across turns.
+func (e *Engine) WithSystemPrompt(prompt string) *Engine {
+	e.systemPrompt = prompt
+	return e
+}
+
+// UseStore swaps the conversation store (for example when starting a new
+// conversation). History already written stays where it was.
+func (e *Engine) UseStore(sessions *session.Store) {
+	e.sessions = sessions
+}
+
+func (e *Engine) requestMessages(history []session.Message) []provider.Message {
+	messages := make([]provider.Message, 0, len(history)+1)
+	if e.systemPrompt != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: e.systemPrompt})
+	}
+	for _, msg := range history {
+		messages = append(messages, provider.Message{
+			Role:    string(msg.Role),
+			Content: msg.Content,
+		})
+	}
+	return messages
+}
+
+// Respond answers without streaming (kept for tests and non-interactive
+// use). See RespondStream for the interactive path.
 func (e *Engine) Respond(ctx context.Context, input string) (string, error) {
+	return e.RespondStream(ctx, input, nil)
+}
+
+// RespondStream answers with live deltas forwarded to emit (nil disables
+// them). Cancellation aborts the provider call and stores nothing from
+// the assistant side: an interrupted stream never becomes a complete
+// answer in the session.
+func (e *Engine) RespondStream(ctx context.Context, input string, emit func(string)) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("engine: empty input")
 	}
@@ -53,16 +87,20 @@ func (e *Engine) Respond(ctx context.Context, input string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	messages := make([]provider.Message, 0, len(history))
-	for _, msg := range history {
-		messages = append(messages, provider.Message{
-			Role:    string(msg.Role),
-			Content: msg.Content,
+	messages := e.requestMessages(history)
+	var resp provider.Response
+	if streamer, ok := e.provider.(provider.Streamer); ok && emit != nil {
+		resp, err = streamer.ChatStream(ctx, messages, e.model, func(d provider.Delta) error {
+			if d.Text != "" {
+				emit(d.Text)
+			}
+			return nil
 		})
+	} else {
+		resp, err = e.provider.Chat(ctx, messages, e.model)
 	}
-	resp, err := e.provider.Chat(ctx, messages, e.model)
 	if err != nil {
-		return "", fmt.Errorf("engine: %w", err)
+		return "", err
 	}
 	reply := strings.TrimSpace(resp.Content)
 	for _, call := range resp.ToolCalls {
