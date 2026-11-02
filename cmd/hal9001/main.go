@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,14 +81,15 @@ func listSessions(storeDir string) error {
 }
 
 type app struct {
-	cfg        config.Config
-	stored     config.FileConfig
-	store      *session.Store
-	eng        *engine.Engine
-	model      string
-	session    string
-	sessionSeq int
-	usage      *usage.Store
+	cfg          config.Config
+	stored       config.FileConfig
+	store        *session.Store
+	eng          *engine.Engine
+	model        string
+	session      string
+	sessionTitle string
+	sessionSeq   int
+	usage        *usage.Store
 }
 
 // defaultSessionName is the conversation used when nothing has been
@@ -161,6 +163,7 @@ func (a *app) openSession() error {
 	}
 	a.store = store
 	a.session = name
+	a.sessionTitle = a.displayTitle(name)
 	// Best effort on startup: a read-only configuration must not stop the
 	// conversation from starting.
 	_ = a.persistActiveSession(name)
@@ -190,6 +193,9 @@ func (a *app) run() error {
 		SetEffort:      a.setEffort,
 		Usage:          a.currentUsage,
 		RecordTurn:     a.recordTurn,
+		RecordFailed:   a.recordFailed,
+		RenameSession:  a.renameSession,
+		SessionTitle:   func() string { return a.sessionTitle },
 	}
 	m := tui.NewWithHooks(a.eng, hooks)
 	m.SetModelName(a.activeModelID())
@@ -436,8 +442,21 @@ func (a *app) newSession() (tui.Engine, error) {
 	if err := a.persistActiveSession(name); err != nil {
 		return nil, err
 	}
+	// A new session exists from creation, even before its first message:
+	// the browser can list it and a restart keeps it selected.
+	path := filepath.Join(a.cfg.StoreDir, name+".jsonl")
+	if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err != nil {
+		return nil, err
+	} else {
+		_ = f.Close()
+	}
 	a.store = store
 	a.session = name
+	// A fresh conversation gets a date/time display title and a creation
+	// timestamp; the ID stays immutable.
+	now := time.Now().UTC()
+	_ = session.SaveMeta(a.cfg.StoreDir, name, session.Meta{CreatedAt: now})
+	a.sessionTitle = session.DefaultTitle(now)
 	a.rebuildEngine()
 	return a.eng, nil
 }
@@ -463,20 +482,42 @@ func (a *app) currentUsage() usage.Session {
 	return a.usage.Get(a.session)
 }
 
-// recordTurn stores one finished turn. Provider-reported usage is
-// preferred; a turn without it is recorded as incomplete so the counts
-// are never invented.
-func (a *app) recordTurn(stats provider.TurnStats) {
-	if a.usage == nil || stats.StartedAt.IsZero() {
-		return
-	}
-	_ = a.usage.AddTurn(a.session, usage.Turn{
+// usageTurn converts provider statistics into a stored record. Duration
+// is wall-clock time, finish and truncation describe how the turn ended.
+func usageTurn(stats provider.TurnStats) usage.Turn {
+	return usage.Turn{
 		Input:     stats.Usage.PromptTokens,
 		Output:    stats.Usage.CompletionTokens,
 		Reasoning: stats.Usage.ReasoningTokens,
 		Cached:    stats.Usage.CachedTokens,
-		At:        time.Now().UTC(),
-	}, stats.HasUsage)
+		Duration:  stats.Duration.Milliseconds(),
+		Finish:    stats.FinishReason,
+		Truncated: stats.OutputLimitHit,
+		Reported:  stats.HasUsage,
+	}
+}
+
+// recordTurn stores one finished answer. A turn without provider-reported
+// usage is recorded as incomplete so the counts are never invented.
+func (a *app) recordTurn(stats provider.TurnStats) {
+	if a.usage == nil || stats.StartedAt.IsZero() {
+		return
+	}
+	_ = a.usage.AddAnswer(a.session, usageTurn(stats))
+}
+
+// recordFailed stores a turn that produced no answer. Usage the provider
+// did report still counts toward the session totals; a report-less
+// failure only increments the failed counter.
+func (a *app) recordFailed(stats *provider.TurnStats) {
+	if a.usage == nil {
+		return
+	}
+	if stats == nil || stats.StartedAt.IsZero() {
+		_ = a.usage.AddFailed(a.session, usage.Turn{})
+		return
+	}
+	_ = a.usage.AddFailed(a.session, usageTurn(*stats))
 }
 
 func (a *app) currentTheme() string {
@@ -488,8 +529,50 @@ func (a *app) saveTheme(name string) error {
 	return config.SaveFile(config.ConfigPath(), a.stored)
 }
 
-func (a *app) listSessionNames() ([]string, error) {
-	return config.ListSessions(a.cfg.StoreDir)
+// listSessionNames returns stored conversations for the browser: display
+// title, creation and activity dates, most recently active first, with
+// the active session marked. History files are never modified.
+func (a *app) listSessionNames() ([]tui.SessionInfo, error) {
+	names, err := config.ListSessions(a.cfg.StoreDir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tui.SessionInfo, 0, len(names))
+	for _, name := range names {
+		info := session.Stat(a.cfg.StoreDir, name)
+		out = append(out, tui.SessionInfo{
+			ID:      info.ID,
+			Title:   info.Title,
+			Created: info.Created,
+			Updated: info.Updated,
+			Current: name == a.session,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Updated.Equal(out[j].Updated) {
+			return out[i].Updated.After(out[j].Updated)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+// displayTitle resolves what the header should show for a session.
+func (a *app) displayTitle(id string) string {
+	info := session.Stat(a.cfg.StoreDir, id)
+	if info.Title != "" {
+		return info.Title
+	}
+	return id
+}
+
+// renameSession sets the display title of the active conversation.
+func (a *app) renameSession(title string) (string, error) {
+	display, err := session.RenameSession(a.cfg.StoreDir, a.session, title)
+	if err != nil {
+		return "", err
+	}
+	return display, nil
 }
 
 func (a *app) switchSession(name string) (tui.Engine, []tui.SessionLine, error) {
@@ -504,8 +587,13 @@ func (a *app) switchSession(name string) (tui.Engine, []tui.SessionLine, error) 
 	if err := a.persistActiveSession(name); err != nil {
 		return nil, nil, err
 	}
+	// Selecting a conversation is activity: it becomes the most recent
+	// one for the next launch's browser order.
+	now := time.Now()
+	_ = os.Chtimes(filepath.Join(a.cfg.StoreDir, name+".jsonl"), now, now)
 	a.store = store
 	a.session = name
+	a.sessionTitle = a.displayTitle(name)
 	a.rebuildEngine()
 	lines := make([]tui.SessionLine, 0, len(history))
 	for _, msg := range history {

@@ -3,7 +3,7 @@
 // Only counts and timestamps are kept: no prompts, no replies, no
 // reasoning text and no credentials. The provider is the only source of
 // truth — HAL never estimates tokens — so a turn without reported usage
-// is recorded as incomplete rather than guessed at.
+// is recorded as incomplete or failed rather than guessed at.
 package usage
 
 import (
@@ -15,29 +15,49 @@ import (
 	"time"
 )
 
-// Turn is the provider-reported usage of one finished turn.
+// maxHistory bounds the per-turn record so the file cannot grow without
+// limit. Totals are never trimmed.
+const maxHistory = 1000
+
+// Turn is the provider-reported usage of one finished turn. Reported
+// distinguishes "the provider said zero" from "the provider said nothing".
 type Turn struct {
 	Input     int       `json:"input_tokens,omitempty"`
 	Output    int       `json:"output_tokens,omitempty"`
 	Reasoning int       `json:"reasoning_tokens,omitempty"`
 	Cached    int       `json:"cached_input_tokens,omitempty"`
+	Duration  int64     `json:"duration_ms,omitempty"`
+	Finish    string    `json:"finish,omitempty"`
+	Truncated bool      `json:"truncated,omitempty"`
+	Reported  bool      `json:"reported"`
 	At        time.Time `json:"at,omitempty"`
 }
 
-// Session is the cumulative accounting for one conversation.
+// Session is the cumulative accounting for one conversation. Totals
+// include failed turns that reported usage, because that quota was spent;
+// the Failed counter keeps them distinguished from successful answers.
 type Session struct {
-	Input      int  `json:"input_tokens,omitempty"`
-	Output     int  `json:"output_tokens,omitempty"`
-	Reasoning  int  `json:"reasoning_tokens,omitempty"`
-	Cached     int  `json:"cached_input_tokens,omitempty"`
-	Turns      int  `json:"completed_turns,omitempty"`
-	Incomplete int  `json:"incomplete_turns,omitempty"`
-	Last       Turn `json:"last_turn,omitempty"`
+	Input      int    `json:"input_tokens,omitempty"`
+	Output     int    `json:"output_tokens,omitempty"`
+	Reasoning  int    `json:"reasoning_tokens,omitempty"`
+	Cached     int    `json:"cached_input_tokens,omitempty"`
+	Turns      int    `json:"completed_turns,omitempty"`
+	Incomplete int    `json:"incomplete_turns,omitempty"`
+	Failed     int    `json:"failed_turns,omitempty"`
+	Last       Turn   `json:"last_turn,omitempty"`
+	History    []Turn `json:"history,omitempty"`
 }
 
 // Total reports whether any usage has been recorded for the session.
 func (s Session) Total() bool {
-	return s.Input > 0 || s.Output > 0 || s.Reasoning > 0 || s.Cached > 0 || s.Turns > 0 || s.Incomplete > 0
+	return s.Input > 0 || s.Output > 0 || s.Reasoning > 0 || s.Cached > 0 ||
+		s.Turns > 0 || s.Incomplete > 0 || s.Failed > 0
+}
+
+// HasTokens reports whether any actual token counts exist. A session with
+// only incomplete or failed turns has accounting but no numbers to show.
+func (s Session) HasTokens() bool {
+	return s.Input > 0 || s.Output > 0 || s.Reasoning > 0 || s.Cached > 0
 }
 
 // File is the on-disk shape: one record per conversation name.
@@ -83,27 +103,57 @@ func (s *Store) Get(session string) Session {
 	return s.data.Sessions[session]
 }
 
-// AddTurn records one finished turn. reported says whether the provider
-// sent usage: when it did not, the turn counts as incomplete and no token
+// AddAnswer records one assistant answer. reported says whether the
+// provider sent usage: without it the turn counts as incomplete and no
 // numbers are invented. Reasoning tokens are stored separately and are
-// not added to the output total, because providers include them there.
-func (s *Store) AddTurn(session string, turn Turn, reported bool) error {
+// not added to the output total, because providers already include them
+// there. History grows in answer order, so the nth answer matches the
+// nth record.
+func (s *Store) AddAnswer(session string, turn Turn) error {
 	if s == nil {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec := s.data.Sessions[session]
-	if !reported {
+	turn.At = time.Now().UTC()
+	if turn.Reported {
+		rec.Input += turn.Input
+		rec.Output += turn.Output
+		rec.Reasoning += turn.Reasoning
+		rec.Cached += turn.Cached
+		rec.Turns++
+	} else {
 		rec.Incomplete++
-		s.data.Sessions[session] = rec
-		return s.saveLocked()
 	}
-	rec.Input += turn.Input
-	rec.Output += turn.Output
-	rec.Reasoning += turn.Reasoning
-	rec.Cached += turn.Cached
-	rec.Turns++
+	rec.Last = turn
+	rec.History = append(rec.History, turn)
+	if len(rec.History) > maxHistory {
+		rec.History = rec.History[len(rec.History)-maxHistory:]
+	}
+	s.data.Sessions[session] = rec
+	return s.saveLocked()
+}
+
+// AddFailed records a turn that produced no answer. Usage the provider
+// did report is added to the totals (the quota was spent); a turn with no
+// report at all only increments the failed counter. History is untouched,
+// so per-answer records stay aligned with actual answers.
+func (s *Store) AddFailed(session string, turn Turn) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.data.Sessions[session]
+	turn.At = time.Now().UTC()
+	if turn.Reported {
+		rec.Input += turn.Input
+		rec.Output += turn.Output
+		rec.Reasoning += turn.Reasoning
+		rec.Cached += turn.Cached
+	}
+	rec.Failed++
 	rec.Last = turn
 	s.data.Sessions[session] = rec
 	return s.saveLocked()
