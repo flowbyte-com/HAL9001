@@ -65,12 +65,24 @@ output is hidden while HAL runs and the previous screen is restored on
 exit. The frame is assembled as exactly one row per terminal row, so the
 terminal never scrolls.
 
-Layout: a one-line `● HAL9001` header, a rule, the content region, a
-rule, a one-line status footer (`444 READ ONLY · /help` left, active
-model right) and a notice line that is always reserved so the layout
-never shifts. In chat the content region is the scrollable Markdown
-viewport above a borderless composer that grows to eight lines; in an
-overlay it is the panel, which scrolls when it does not fit.
+Layout: a one-line `● HAL9001` header, a rule, the scrollable Markdown
+conversation, exactly one blank row, an optional command suggestion
+panel, a bordered composer with three text rows by default (growing to
+eight), a one-line status footer (`444 READ ONLY · /help` left, model and
+effort right) and a notice line. A `chatFrame` resolves that geometry
+once per size change; on short terminals it gives up the suggestion
+panel, the separator, the notice, the rules and finally the border —
+never the header, the composer text or the footer. Overlays replace the
+conversation region with their panel.
+
+Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`). The viewport
+is not mouse-captured, so native selection and right-click paste keep
+working. The reading position is anchored to an entry and a row inside
+it, so resizing or re-wrapping Markdown restores the same content rather
+than a stale line number.
+
+Typing `/` opens a suggestion panel built from the same command table the
+dispatcher uses, so the two can never drift apart.
 
 Views: chat, onboarding, model picker, theme picker (five presets with
 live preview, persisted), help, and stored sessions. A slash dispatcher

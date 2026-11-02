@@ -41,6 +41,12 @@ something fails.
   still sends, `Ctrl+K` opens the model picker, `/help` opens on Enter
   and `Esc` closes it.
 - A bracketed paste stays in the composer and never submits.
+- Typing `/` opens the command panel, typing filters it, `Tab`
+  completes, `Esc` dismisses it and keeps the draft.
+- The composer is bordered with three text rows and exactly one blank
+  row between the conversation and the border.
+- `Home`/`End`/`PgUp`/`PgDn` navigate a long stored conversation, and
+  shrinking the terminal keeps the reading position.
 - The mouse is never captured, so native selection keeps working.
 
 ## Files

@@ -26,29 +26,31 @@ SESSION = os.environ.get("HAL9001_SESSION", "demo")
 STORE = os.path.join(HOME, "sessions")
 
 
-def reset_session():
+def reset_session(session=None):
     """Start from an empty conversation."""
-    path = os.path.join(STORE, SESSION + ".jsonl")
+    path = os.path.join(STORE, (session or SESSION) + ".jsonl")
     try:
         os.remove(path)
     except FileNotFoundError:
         pass
 
 
-def run(script, cols=80, rows=24, timeout=12.0, fresh=True):
+def run(script, cols=80, rows=24, timeout=12.0, fresh=True, session=None):
     """Run the interface and send the scripted actions.
 
     script: list of (delay, payload) pairs. The payload is either bytes
-    to write or a ("resize", cols, rows) tuple.
+    to write or a ("resize", cols, rows) tuple. session selects a stored
+    conversation (default demo).
     """
+    session = session or SESSION
     if fresh:
-        reset_session()
+        reset_session(session)
     pid, fd = pty.fork()
     if pid == 0:
         os.environ["TERM"] = "xterm-256color"
         os.environ["HAL9001_CONFIG"] = CONFIG
         os.environ["HAL9001_HOME"] = HOME
-        os.execv(BINARY, [BINARY, "--session", SESSION, "--store", STORE])
+        os.execv(BINARY, [BINARY, "--session", session, "--store", STORE])
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     out = bytearray()
     start = time.time()

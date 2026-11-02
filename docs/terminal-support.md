@@ -37,7 +37,8 @@ re-run at any time.
 | `Ctrl+N` | New conversation | Everywhere |
 | `Ctrl+C` | Quit | Everywhere |
 | `Esc` | Cancel stream / close panel | Everywhere |
-| `PgUp` / `PgDn` | Scroll | Everywhere |
+| `PgUp` / `PgDn` | Scroll by a page | Everywhere |
+| `Home` / `End` | Jump to the start / end | Everywhere |
 
 Why the model picker is not `Ctrl+M`: on a terminal, `Ctrl+M` and
 `Enter` are the same byte (CR). With the model picker on `Ctrl+M`, a
@@ -92,11 +93,26 @@ submission and never fails silently.
 ## Deliberately not used
 
 - **Mouse reporting.** Capturing the mouse would break native selection
-  and right-click menus in most emulators.
+  and right-click menus in most emulators. The wheel therefore scrolls
+  the terminal's own buffer (which is empty in the alternate screen),
+  not the conversation. Keyboard scrolling — `PgUp`, `PgDn`, `Home`,
+  `End` — is the supported path, and it is what the pty checks exercise.
 - **True-colour assumption.** The Paper theme is readable on light
   backgrounds; lipgloss degrades the palette when the emulator reports
   fewer colours.
 - **External clipboard tools.**
+
+## Scrolling
+
+The conversation viewport is independent of the header and the composer.
+`PgUp` and `PgDn` scroll by one screen, `Home` and `End` jump to the
+start and the end. Any data arriving while the reader is scrolled up
+does not move them; if they are at the bottom, new output follows.
+Resizing, and collapsing or expanding a long prompt, restore the row the
+reader was looking at rather than resetting to the top or the bottom.
+
+The mouse wheel is not captured (see above), so it does not scroll the
+conversation.
 
 ## Known limitations
 

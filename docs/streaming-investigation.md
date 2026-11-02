@@ -130,7 +130,7 @@ so a stall can be explained after the fact.
 
 | Setting | Default | Flag | Environment |
 |---|---|---|---|
-| Output cap | 8192 tokens | `--max-tokens` | `HAL9001_MAX_TOKENS` |
+| Output cap | 15000 tokens | `--max-tokens` | `HAL9001_MAX_TOKENS` |
 | Idle timeout | 45 s | `--stream-idle-timeout` | `HAL9001_STREAM_IDLE_TIMEOUT` |
 | Turn ceiling | 2 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
 
@@ -180,7 +180,7 @@ so a late error can no longer clear or cancel the next turn.
   message. The turn fails with `ErrNoVisibleAnswer`, the interface shows
   one explanatory line built from the diagnostics (`no visible answer ·
   the output budget was exhausted during reasoning · finish_reason=length
-  · completion tokens 8192 · see /diag`), and the next request's context
+  · completion tokens 15000 · see /diag`), and the next request's context
   contains the user message but no fabricated answer. Nothing is retried
   automatically and the output cap is never raised silently.
 

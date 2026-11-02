@@ -10,11 +10,12 @@ setup points HAL9001 at a local OpenAI-compatible stub:
 
 Every check prints ok or FAIL; the exit status is non-zero on failure.
 """
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pty_drive import run
+from pty_drive import HOME, run
 from termsim import render
 
 FAILURES = []
@@ -28,6 +29,93 @@ def check(name, ok, detail=""):
 
 def screen(raw, cols=80, rows=24):
     return render(raw, cols, rows)
+
+
+def write_scroll_fixture():
+    """A conversation long enough to scroll, stored on disk so the capture
+    is a static frame rather than a stream of re-renders."""
+    body = "\n\n".join(
+        "## Section %d\n\n%s" % (i, ("This is paragraph %d of a deliberately long reply that exists to test scrolling. " % i) * 3)
+        for i in range(1, 16)
+    )
+    os.makedirs(os.path.join(HOME, "sessions"), exist_ok=True)
+    path = os.path.join(HOME, "sessions", "scrollfixture.jsonl")
+    with open(path, "w") as fh:
+        fh.write(json.dumps({"role": "user", "content": "long answer please"}) + "\n")
+        fh.write(json.dumps({"role": "assistant", "content": body}) + "\n")
+
+
+def first_text(text, skip=2):
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    return lines[skip] if len(lines) > skip else ""
+
+
+def ui_checks():
+    # Typing "/" opens the suggestion panel; nothing is submitted and the
+    # conversation behind it stays visible.
+    panel = screen(run([(2.0, b"hello\r"), (8.0, b"/"), (0.5, b"")], timeout=12.0)).text()
+    check("commands: / opens suggestions", "Show available commands" in panel, panel)
+    check("commands: the conversation stays visible",
+          "I read your message" in panel, panel)
+    check("commands: nothing submitted", "You > /" not in panel, panel)
+
+    filtered = screen(run([(2.0, b"/ef")], timeout=5.0)).text()
+    check("commands: typing filters", "/effort" in filtered and "/theme" not in filtered, filtered)
+
+    completed = screen(run([(2.0, b"/ef"), (0.4, b"\t")], timeout=5.0)).text()
+    check("commands: Tab completes", "/effort" in completed, completed)
+
+    dismissed = screen(run([(2.0, b"/ef"), (0.4, b"\x1b")], timeout=5.0)).text()
+    check("commands: Esc closes the panel", "Show available commands" not in dismissed, dismissed)
+    check("commands: Esc keeps the draft", "/ef" in dismissed, dismissed)
+
+    pasted = screen(run([(2.0, b"\x1b[200~/clear\x1b[201~")], timeout=5.0)).text()
+    check("commands: pasted command is not executed",
+          "Conversation cleared" not in pasted, pasted)
+
+
+
+
+def scroll_checks():
+    write_scroll_fixture()
+
+    def capture(script, final=(80, 24), start=(80, 24), timeout=8.0):
+        raw = run(script, cols=start[0], rows=start[1], timeout=timeout,
+                  fresh=False, session="scrollfixture")
+        return screen(raw, *final).text()
+
+    bottom = capture([(2.0, b"")])
+    check("scroll: starts at the end of the conversation",
+          "Section 15" in bottom, bottom[:400])
+
+    # Composer geometry against a full viewport: border, three text rows,
+    # exactly one blank row between the conversation and the border.
+    lines = bottom.split("\n")
+    top = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
+    end = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
+    check("composer: bordered", top > 0 and end > top, bottom)
+    check("composer: three text rows", end - top - 1 == 3, str(end - top - 1))
+    check("composer: one blank row above",
+          top > 0 and lines[top - 1].strip() == "" and lines[top - 2].strip() != "",
+          "\n".join(lines[max(0, top - 3):top + 1]))
+
+    top = capture([(2.0, b"\x1b[H")])
+    check("scroll: Home reaches the beginning", "Section 1" in top, top[:400])
+    check("scroll: the end is no longer visible", "Section 15" not in top, top[:400])
+
+    end = capture([(2.0, b"\x1b[H"), (0.5, b"\x1b[F")])
+    check("scroll: End returns to the end", "Section 15" in end, end[:400])
+
+    paged = capture([(2.0, b"\x1b[5~\x1b[5~")])
+    check("scroll: PgUp moves up", first_text(paged) != first_text(bottom), paged[:400])
+    check("scroll: PgUp does not reach the top", "Section 1\n" not in paged, paged[:400])
+
+    before = capture([(2.0, b"\x1b[5~\x1b[5~")])
+    after = capture([(2.0, b"\x1b[5~\x1b[5~"), (0.5, ("resize", 60, 14)), (1.5, b"")],
+                    final=(60, 14))
+    check("scroll: shrinking keeps the reading position",
+          first_text(before) == first_text(after),
+          f"{first_text(before)!r} -> {first_text(after)!r}")
 
 
 def main():
@@ -83,6 +171,9 @@ def main():
     text = screen(run([(2.0, paste)], timeout=5.0)).text()
     check("paste stays in the composer", "line one" in text and "indented" in text, text)
     check("paste does not submit", "You >" not in text, text)
+
+    ui_checks()
+    scroll_checks()
 
     # Common terminal sizes keep the frame the right size.
     for cols, rows in [(120, 40), (160, 50)]:
