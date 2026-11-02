@@ -56,7 +56,8 @@ something fails.
   terminal colours and cursor.
 - The active conversation survives `/clear` and a relaunch, an empty new
   session stays selected, and `/sessions` recovers the previous one.
-- The footer and `/usage` report provider token usage.
+- The footer and `/usage` report provider token usage; each finished
+  answer carries a metadata line and the composer starts at one row.
 - The mouse is never captured, so native selection keeps working.
 
 ## Files

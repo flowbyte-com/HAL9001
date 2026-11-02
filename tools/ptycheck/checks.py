@@ -158,8 +158,9 @@ def session_checks():
     check("session: the cleared conversation survives a restart",
           "first question" not in relaunched, relaunched)
 
-    # 4. Recover the original through /sessions and quit.
-    recovered = run_keys([(2.0, b"/sessions\r"), (0.6, b"\r"), (1.0, b"/q\r")], timeout=10.0)
+    # 4. Recover the original through /sessions and quit. The browser
+    # lists the newest first, so move down to the older conversation.
+    recovered = run_keys([(2.0, b"/sessions\r"), (0.6, b"\x1b[B"), (0.4, b"\r"), (1.0, b"/q\r")], timeout=10.0)
     check("session: the previous conversation is recoverable",
           "first question" in recovered, recovered)
 
@@ -180,6 +181,26 @@ def token_checks():
     panel = render(usage.encode()).text()
     for label in ("input", "output", "reasoning", "completed"):
         check("tokens: /usage shows %s" % label, label in panel, panel)
+
+
+def rename_checks():
+    # Seed the conversation: renaming requires an existing session file.
+    run([(2.0, b"seed message\r"), (2.0, b"")], timeout=8.0,
+        fresh=False, session="scrollfixture")
+    raw = run([(2.0, b"/rename Museum Test\r"), (1.0, b"")], timeout=8.0,
+              fresh=False, session="scrollfixture")
+    text = render(raw).text()
+    check("rename: confirmation shown", "renamed" in text.lower(), text)
+    check("rename: header shows the new title", "Museum Test" in text, text)
+
+    raw = run([(2.0, b"/rename\r")], timeout=6.0, fresh=False, session="scrollfixture")
+    text = render(raw).text()
+    check("rename: overlay opens", "Rename this conversation" in text, text)
+
+    browser = run([(2.0, b"/sessions\r")], timeout=6.0, fresh=False,
+                  session="scrollfixture")
+    items = render(browser).text()
+    check("rename: browser lists the title", "Museum Test" in items, items)
 
 
 def exit_checks():
@@ -261,7 +282,7 @@ def scroll_checks():
     top = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
     end = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
     check("composer: bordered", top > 0 and end > top, bottom)
-    check("composer: three text rows", end - top - 1 == 3, str(end - top - 1))
+    check("composer: one text row by default", end - top - 1 == 1, str(end - top - 1))
     check("composer: one blank row above",
           top > 0 and lines[top - 1].strip() == "" and lines[top - 2].strip() != "",
           "\n".join(lines[max(0, top - 3):top + 1]))
@@ -350,6 +371,7 @@ def main():
     exit_checks()
     session_checks()
     token_checks()
+    rename_checks()
 
     # Common terminal sizes keep the frame the right size.
     for cols, rows in [(120, 40), (160, 50)]:

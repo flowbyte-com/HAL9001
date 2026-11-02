@@ -85,9 +85,9 @@ panel above the composer: keep typing to filter, `Up`/`Down` to move,
 partial one runs the highlighted suggestion), `Esc` to dismiss it and
 keep the draft. A leading `//` sends a literal slash-prefixed message.
 
-The composer is a single bordered input, three text rows by default,
-growing with the input up to eight rows. A blank row separates it from
-the conversation. Pasting never submits. Pasting never submits: multiline pastes keep
+The composer is a single bordered one-line input that grows as you write,
+up to eight rows, and shrinks back when you delete. A blank row separates
+it from the conversation. Pasting never submits. Pasting never submits: multiline pastes keep
 their line breaks, indentation and code fences in the composer, where
 you can edit them before sending. Switching models keeps the
 conversation history and the unsent draft: the session store is
@@ -141,12 +141,19 @@ path as `Ctrl+C`: an active request is cancelled, nothing incomplete is
 stored, and the alternate screen, cursor and terminal colours are
 restored.
 
-**Sessions.** HAL remembers which conversation was active. `/clear` and
-`/new` start a genuinely new one, select it immediately, and that choice
+**Sessions.** Every conversation has an immutable ID and a human-readable
+title. New sessions start with the local date and time
+(`2026-11-02 16:48`); `/rename Museum of Unfinished Ideas` sets a proper
+name, and bare `/rename` opens a small editor. Titles never become files,
+so any text is safe; clearing the title restores the date/time default.
+`/sessions` lists titles with creation and activity dates, newest first,
+marking the current one. Selecting a conversation there (or with
+`/new`, `/clear`, `Ctrl+N`) makes it the active one, and that choice
 survives quitting and relaunching — including while it is still empty.
-Picking an older conversation in `/sessions` makes it active again for
-the next launch. Nothing is ever deleted: every earlier conversation
-stays on disk.
+Nothing is ever deleted: earlier conversations, including ones from
+before titles existed, stay on disk and keep working.
+
+HAL remembers which conversation was active,
 
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;
@@ -159,7 +166,7 @@ streaming diagnostics.
 
 **Clearing.** `/clear` empties the visible conversation and starts a fresh
 context for the next request, and selects that new session for later
-launches. The previous conversation is **not** deleted: it stays
+launches — even before anything is said there. The previous conversation is **not** deleted: it stays
 recoverable through `/sessions`. Model, effort and
 theme are kept. `/new` does the same and is the shortcut (`Ctrl+N`) for
 it; `/clear` is the explicit name for "start over". `/clear` works during

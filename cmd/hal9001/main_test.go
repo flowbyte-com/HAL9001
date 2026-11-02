@@ -572,3 +572,75 @@ func TestClearKeepsOldMessagesOutOfContext(t *testing.T) {
 		t.Errorf("user messages in the fresh request = %d, want 1: %+v", users, captured)
 	}
 }
+
+// The browser lists the newest conversation first and marks the active one.
+func TestSessionBrowserOrdering(t *testing.T) {
+	dir := t.TempDir()
+	a := launchApp(t, dir, "")
+	if _, err := a.store.Append(session.RoleUser, "first words"); err != nil {
+		t.Fatal(err)
+	}
+	first := a.session
+	if _, err := a.newSession(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	// Selecting the first session makes it the most recently active.
+	if _, _, err := a.switchSession(first); err != nil {
+		t.Fatal(err)
+	}
+	items, err := a.listSessionNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
+	}
+	if items[0].ID != first || !items[0].Current {
+		t.Errorf("most recent session not first/current: %+v", items[0])
+	}
+	if items[1].Current {
+		t.Errorf("older session marked current: %+v", items[1])
+	}
+	if items[0].Title == "" || items[1].Title == "" {
+		t.Errorf("titles missing: %+v", items)
+	}
+}
+
+// Renaming changes the display title, persists it and keeps the ID.
+func TestRenameSession(t *testing.T) {
+	dir := t.TempDir()
+	a := launchApp(t, dir, "")
+	if _, err := a.store.Append(session.RoleUser, "hi"); err != nil {
+		t.Fatal(err)
+	}
+	old := a.session
+	display, err := a.renameSession("Museum of Unfinished Ideas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if display != "Museum of Unfinished Ideas" {
+		t.Errorf("display = %q", display)
+	}
+	if a.session != old {
+		t.Errorf("the ID changed: %q -> %q", old, a.session)
+	}
+	b := launchApp(t, dir, "")
+	if b.session != old {
+		t.Errorf("restart selected %q, want %q", b.session, old)
+	}
+	items, err := b.listSessionNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Title != "Museum of Unfinished Ideas" {
+		t.Errorf("renamed title not listed: %+v", items)
+	}
+	history, err := b.store.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Content != "hi" {
+		t.Errorf("history changed by rename: %+v", history)
+	}
+}

@@ -111,7 +111,18 @@ this code.
 **This is not evidence of a provider defect.** The code discarded the
 progress signal and sent no output limit. Those are defects on our side.
 
-## What changed
+## What changed (003.4–003.5)
+
+The zero-counter incident was root-caused after this document was first
+written: the streaming request never asked for usage. OpenAI-compatible
+APIs only send the final usage object when the request sets
+`stream_options: {"include_usage": true}`, and HAL never set it — so
+`HasUsage` stayed false, every finished turn counted as incomplete, and
+the footer showed `0 in / 0 out`. The parser, the engine and the store
+were all ready; the wire was never asked. Every streaming request now
+sets `stream_options.include_usage`; the option is omitted from
+non-streaming requests, and providers that do not understand the field
+ignore it.
 
 ### Diagnostics (content-free)
 
