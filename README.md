@@ -77,7 +77,8 @@ the terminal reports modifier combinations and says so in `/help`.
 
 Slash commands run locally and never reach the model: `/help`,
 `/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/clear`, `/sessions`,
-`/effort`, `/expand`, `/collapse`, `/diag`. Typing `/` opens a suggestion
+`/effort`, `/expand`, `/collapse`, `/diag`, `/q`, `/quit`, `/exit`.
+Typing `/` opens a suggestion
 panel above the composer: keep typing to filter, `Up`/`Down` to move,
 `Tab` to complete, `Enter` to run (a complete command runs as typed, a
 partial one runs the highlighted suggestion), `Esc` to dismiss it and
@@ -107,13 +108,37 @@ switching models restores each one's level. The parameter is never sent
 to a provider that does not document it: an unsupported model says so and
 offers no selector. Changing effort never touches the conversation.
 
-**Scrolling.** `PgUp`/`PgDn` move a page at a time and `Home`/`End` jump
-to the start and end. New output only follows the bottom when you were
-already there; scrolling up during a reply keeps your place. Resizing the
-terminal and collapsing or expanding a long prompt preserve the line you
-were reading. The mouse wheel is deliberately not captured — that would
-break native selection and right-click paste — so use the keyboard to
-scroll; the terminal's own Alt-screen behaviour applies to the wheel.
+**Scrolling.** `PgUp`/`PgDn` move a full page and `Home`/`End` jump to
+the start and end. Page keys are recognised by key code, not by their
+exact escape sequence, so they work even when the terminal reports
+Fn+PageUp as `shift+pgup`. New output only follows the bottom when you
+were already there; scrolling up during a reply keeps your place.
+Resizing the terminal and collapsing or expanding a long prompt preserve
+the line you were reading. The mouse wheel is deliberately not captured —
+that would break native selection and right-click paste — so use the
+keyboard to scroll; the terminal's own Alt-screen behaviour applies to
+the wheel.
+
+**Bottom-anchored history.** A new or short conversation sits just above
+the composer, with the unused space above it, the way a chat application
+does. As it grows, older messages move up into scrollable history. The
+spacing is presentation only: it never changes the conversation, the
+scroll offsets or `Home`/`End`.
+
+**Themes.** `/theme` switches between HAL Classic, Midnight, Amber,
+Paper and Monochrome. Each palette paints the whole interface: the
+application background and default text, the header and footer, message
+labels, rules, the composer border, panels and Markdown. Paper is a real
+light theme. Moving through the picker previews the palette live,
+including history already on screen; `Esc` restores the previous theme
+and `Enter` saves the choice for the next start. The terminal's own
+colours are restored when HAL exits. With `NO_COLOR` the interface is
+plain text and the picker says themes cannot be previewed.
+
+**Exiting.** `/q`, `/quit` and `/exit` all close HAL through the same
+path as `Ctrl+C`: an active request is cancelled, nothing incomplete is
+stored, and the alternate screen, cursor and terminal colours are
+restored.
 
 **Clearing.** `/clear` empties the visible conversation and starts a fresh
 context for the next request. The previous conversation is **not**

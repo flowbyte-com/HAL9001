@@ -46,7 +46,14 @@ something fails.
 - The composer is bordered with three text rows and exactly one blank
   row between the conversation and the border.
 - `Home`/`End`/`PgUp`/`PgDn` navigate a long stored conversation, and
-  shrinking the terminal keeps the reading position.
+  shrinking the terminal keeps the reading position. Page keys work with
+  modifier bits too (`shift+pgup`, as a laptop Fn key reports them).
+- All five themes set their own terminal background (OSC 11) and a
+  distinct foreground palette.
+- A short conversation sits just above the composer; a long prompt
+  collapses to at most four preview lines.
+- `/q`, `/quit` and `/exit` leave the alternate screen and restore the
+  terminal colours and cursor.
 - The mouse is never captured, so native selection keeps working.
 
 ## Files

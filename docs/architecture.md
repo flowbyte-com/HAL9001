@@ -75,11 +75,29 @@ panel, the separator, the notice, the rules and finally the border —
 never the header, the composer text or the footer. Overlays replace the
 conversation region with their panel.
 
-Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`). The viewport
-is not mouse-captured, so native selection and right-click paste keep
-working. The reading position is anchored to an entry and a row inside
-it, so resizing or re-wrapping Markdown restores the same content rather
-than a stale line number.
+Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`). Page keys are
+matched by key code rather than by their string form, so a terminal that
+reports them with modifier bits (Fn+PageUp as `shift+pgup`) still pages.
+The viewport is not mouse-captured, so native selection and right-click
+paste keep working. The reading position is anchored to an entry and a
+row inside it, so resizing or re-wrapping Markdown restores the same
+content rather than a stale line number.
+
+Short conversations are bottom-aligned in the presentation layer: the
+viewport pads its rendered rows above the content, leaving the viewport
+offsets untouched. Collapsed prompts take at most a third of the
+viewport, computed from `chatFrame.viewport` and recomputed on resize.
+
+Themes are one semantic palette (background, text, accent, muted) applied
+to every surface: the view sets the terminal background and foreground
+(restored on exit), Lip Gloss styles the chrome, and glamour receives a
+StyleConfig derived from the same palette so Markdown follows the theme
+too. Selecting a theme re-renders cached entries; the picker previews by
+swapping the active theme and restoring it on `Esc`.
+
+Every command lives in one table with optional aliases; dispatch,
+autocomplete and the help panel read it. `/q`, `/quit` and `/exit` are
+aliases of one quit command that shares `Ctrl+C`'s shutdown path.
 
 Typing `/` opens a suggestion panel built from the same command table the
 dispatcher uses, so the two can never drift apart.

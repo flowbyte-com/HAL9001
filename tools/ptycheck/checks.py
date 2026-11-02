@@ -12,9 +12,11 @@ Every check prints ok or FAIL; the exit status is non-zero on failure.
 """
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pty_drive
 from pty_drive import HOME, run
 from termsim import render
 
@@ -31,7 +33,7 @@ def screen(raw, cols=80, rows=24):
     return render(raw, cols, rows)
 
 
-def write_scroll_fixture():
+def write_scroll_fixture(theme=None):
     """A conversation long enough to scroll, stored on disk so the capture
     is a static frame rather than a stream of re-renders."""
     body = "\n\n".join(
@@ -48,6 +50,103 @@ def write_scroll_fixture():
 def first_text(text, skip=2):
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     return lines[skip] if len(lines) > skip else ""
+
+
+THEMES = [
+    ("HAL Classic", "#121316"),
+    ("Midnight", "#101c2d"),
+    ("Amber", "#211b12"),
+    ("Paper", "#f4f1e9"),
+    ("Monochrome", "#111111"),
+]
+
+
+def write_theme_config(name, theme):
+    path = os.path.join("/tmp", "hal9001-theme-%s.json" % re.sub(r"\W+", "-", name.lower()))
+    with open(path, "w") as fh:
+        json.dump({
+            "provider": "openai-compatible",
+            "endpoint": os.environ.get("HAL9001_ENDPOINT", "http://127.0.0.1:8099/v1"),
+            "api_key": "test-key",
+            "models": [{"id": "MiniMax-M3.1-Flash"}],
+            "active_model": "MiniMax-M3.1-Flash",
+            "theme": theme,
+        }, fh)
+    return path
+
+
+def theme_checks():
+    write_scroll_fixture(theme="HAL Classic")
+    original = pty_drive.CONFIG
+    backgrounds, palettes = {}, {}
+    for name, bg in THEMES:
+        pty_drive.CONFIG = write_theme_config(name, name)
+        raw = run([(2.0, b"")], timeout=5.0, fresh=False, session="scrollfixture")
+        text = raw.decode("utf-8", "replace")
+        m = re.search(r"\x1b\]11;([^\x07\x1b]*)", text)
+        backgrounds[name] = m.group(1).lower() if m else ""
+        palettes[name] = tuple(sorted(set(re.findall(r"38;5;(\d+)", text)), key=int))
+    pty_drive.CONFIG = DEFAULT_CONFIG
+
+    for name, bg in THEMES:
+        check("themes: %s sets its background" % name, backgrounds[name] == bg,
+              backgrounds[name])
+    unique_bg = len(set(backgrounds.values())) == len(THEMES)
+    check("themes: five distinct backgrounds", unique_bg, str(backgrounds))
+    unique_pal = len(set(palettes.values())) == len(THEMES)
+    check("themes: five distinct colour palettes", unique_pal, str(palettes))
+
+
+def layout_checks():
+    write_short_fixture()
+    text = run_fixture("shortchat")
+    lines = text.split("\n")
+    top = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
+    msg = next((i for i, l in enumerate(lines) if "You > a short question" in l), -1)
+    check("layout: a short conversation sits above the composer",
+          msg > 0 and top > 0 and 0 < top - msg <= 4, "\n".join(lines))
+
+    write_long_prompt_fixture()
+    text = run_fixture("longprompt")
+    shown = text.count("museum thought experiment line")
+    check("layout: a long prompt collapses to at most four preview lines",
+          1 <= shown <= 4, str(shown))
+    check("layout: the collapse reports the hidden lines",
+          "Ctrl+O to expand" in text, text)
+
+
+def exit_checks():
+    for name in ("/q", "/quit", "/exit"):
+        raw = run([(2.0, (name + "\r").encode())], timeout=5.0,
+                  fresh=False, session="scrollfixture")
+        text = raw.decode("utf-8", "replace")
+        check("exit: %s leaves the alternate screen" % name, "\x1b[?1049l" in text)
+        check("exit: %s restores the terminal colours" % name, "\x1b]111" in text)
+        check("exit: %s restores the cursor" % name, "\x1b[?25h" in text)
+
+
+def write_short_fixture():
+    path = os.path.join(HOME, "sessions", "shortchat.jsonl")
+    with open(path, "w") as fh:
+        fh.write(json.dumps({"role": "user", "content": "a short question"}) + "\n")
+        fh.write(json.dumps({"role": "assistant", "content": "a short answer"}) + "\n")
+
+
+def write_long_prompt_fixture():
+    body = "\n".join("museum thought experiment line %d" % i for i in range(1, 31))
+    path = os.path.join(HOME, "sessions", "longprompt.jsonl")
+    with open(path, "w") as fh:
+        fh.write(json.dumps({"role": "user", "content": body}) + "\n")
+        fh.write(json.dumps({"role": "assistant", "content": "A response."}) + "\n")
+
+
+DEFAULT_CONFIG = os.environ.get("HAL9001_CONFIG", pty_drive.CONFIG)
+
+
+def run_fixture(session):
+    pty_drive.CONFIG = DEFAULT_CONFIG
+    raw = run([(2.0, b"")], timeout=5.0, fresh=False, session=session)
+    return render(raw).text()
 
 
 def ui_checks():
@@ -109,6 +208,10 @@ def scroll_checks():
     paged = capture([(2.0, b"\x1b[5~\x1b[5~")])
     check("scroll: PgUp moves up", first_text(paged) != first_text(bottom), paged[:400])
     check("scroll: PgUp does not reach the top", "Section 1\n" not in paged, paged[:400])
+
+    shifted = capture([(2.0, b"\x1b[5;2~\x1b[5;2~")])
+    check("scroll: shift+PgUp pages too (laptop Fn key)",
+          first_text(shifted) != first_text(bottom), shifted[:400])
 
     before = capture([(2.0, b"\x1b[5~\x1b[5~")])
     after = capture([(2.0, b"\x1b[5~\x1b[5~"), (0.5, ("resize", 60, 14)), (1.5, b"")],
@@ -174,6 +277,9 @@ def main():
 
     ui_checks()
     scroll_checks()
+    theme_checks()
+    layout_checks()
+    exit_checks()
 
     # Common terminal sizes keep the frame the right size.
     for cols, rows in [(120, 40), (160, 50)]:

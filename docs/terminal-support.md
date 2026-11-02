@@ -97,16 +97,24 @@ submission and never fails silently.
   the terminal's own buffer (which is empty in the alternate screen),
   not the conversation. Keyboard scrolling — `PgUp`, `PgDn`, `Home`,
   `End` — is the supported path, and it is what the pty checks exercise.
-- **True-colour assumption.** The Paper theme is readable on light
-  backgrounds; lipgloss degrades the palette when the emulator reports
-  fewer colours.
+- **True-colour assumption.** The five palettes are authored in
+  true colour; lipgloss and glamour downsample them to 256 or 16 colours
+  when the terminal reports a smaller palette, so the themes stay
+  distinct but approximate. Paper is a genuine light theme.
+- **Theme painting.** The background and default foreground are set with
+  OSC 11/OSC 10 for the duration of the session and reset on exit, so the
+  terminal's own palette is never permanently modified. Terminals that
+  ignore those sequences show the app on their own background; the
+  foreground colours, Markdown and chrome still follow the theme.
 - **External clipboard tools.**
 
 ## Scrolling
 
 The conversation viewport is independent of the header and the composer.
 `PgUp` and `PgDn` scroll by one screen, `Home` and `End` jump to the
-start and the end. Any data arriving while the reader is scrolled up
+start and the end. Page keys are recognised by key code, so a terminal
+that reports Fn+PageUp as `shift+pgup` (common on laptops) or with other
+modifier bits still pages instead of doing nothing. Any data arriving while the reader is scrolled up
 does not move them; if they are at the bottom, new output follows.
 Resizing, and collapsing or expanding a long prompt, restore the row the
 reader was looking at rather than resetting to the top or the bottom.
