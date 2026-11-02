@@ -436,18 +436,18 @@ func TestComposerStartsSingleRowAndGrows(t *testing.T) {
 	if strings.Contains(view, "┃") {
 		t.Error("composer must not render line-number gutters")
 	}
-	if h := m.Composer().Height(); h != 1 {
+	if h := m.ComposerRows(); h != 1 {
 		t.Errorf("default composer height = %d, want 1", h)
 	}
 	for i := 0; i < 20; i++ {
 		m = typeText(m, "line\n")
 	}
-	if h := m.Composer().Height(); h != maxComposerHeight {
+	if h := m.ComposerRows(); h != maxComposerHeight {
 		t.Errorf("composer height = %d, want cap %d", h, maxComposerHeight)
 	}
 	m2 := testModel()
 	m2 = typeText(m2, "one\ntwo\nthree")
-	if h := m2.Composer().Height(); h != 3 {
+	if h := m2.ComposerRows(); h != 3 {
 		t.Errorf("composer height = %d, want 3 for three lines", h)
 	}
 	// Shrinking the draft returns the composer to its natural height.
@@ -457,7 +457,7 @@ func TestComposerStartsSingleRowAndGrows(t *testing.T) {
 	m4 = typeText(m4, "one\ntwo")
 	updated, _ := m4.Update(tea.PasteMsg{Content: "three\nfour\nfive\nsix\nseven\neight\nnine"})
 	m4 = updated.(Model)
-	if h := m4.Composer().Height(); h != maxComposerHeight {
+	if h := m4.ComposerRows(); h != maxComposerHeight {
 		t.Errorf("pasted composer height = %d, want cap %d", h, maxComposerHeight)
 	}
 }

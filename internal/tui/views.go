@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 )
@@ -33,6 +34,54 @@ func (m Model) renderMarkdown(text string, width int) string {
 		return text
 	}
 	return strings.TrimRight(out, "\n")
+}
+
+// logicalWrapWidth is the width used for the unwrapped render, and the
+// bound it may grow to. The width only has to be wide enough that no
+// line of the reply is broken, so it follows the text: a short reply is
+// cheap to render, and a long one still comes out unwrapped.
+const (
+	logicalWrapWidth    = 1024
+	maxLogicalWrapWidth = 8192
+)
+
+// renderMarkdownLogical renders the same Markdown without wrapping.
+//
+// It is the ground truth for mouse selection: the wrapped view on screen
+// can be mapped back onto these lines, so a selection copies the text as
+// it was written — no artificial line breaks, and no space invented where
+// a long word was broken across two rows.
+func (m Model) renderMarkdownLogical(text string) []string {
+	width := logicalWrapWidth
+	for _, line := range strings.Split(text, "\n") {
+		if w := ansi.StringWidth(line); w > width {
+			width = w
+		}
+	}
+	if width > maxLogicalWrapWidth {
+		width = maxLogicalWrapWidth
+	}
+	return m.renderMarkdownLogicalWidth(text, width)
+}
+
+func (m Model) renderMarkdownLogicalWidth(text string, width int) []string {
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStyles(m.theme.glamourStyle()),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return strings.Split(text, "\n")
+	}
+	out, err := renderer.Render(text)
+	if err != nil {
+		return strings.Split(text, "\n")
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	logical := make([]string, 0, len(lines))
+	for _, line := range lines {
+		logical = append(logical, strings.TrimRight(ansi.Strip(line), " \t"))
+	}
+	return logical
 }
 
 // enterOnboard opens the setup form, optionally prefilled.
@@ -368,6 +417,7 @@ func (m *Model) applyThemePreview() {
 	m.rewrap()
 	m.renderConversation()
 	m.restoreAnchor(anchor)
+	m.clearSelection()
 }
 
 func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -385,6 +435,7 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.theme = m.themeOriginal
 			m.rewrap()
 			m.renderConversation()
+			m.clearSelection()
 			m.view = viewChat
 			m.themeNotice = ""
 			return m, nil
@@ -415,6 +466,7 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.theme = Themes()[m.themeCursor]
 			m.rewrap()
 			m.renderConversation()
+			m.clearSelection()
 			m.view = viewChat
 			m.notice = "Theme: " + name
 			return m, nil
@@ -638,6 +690,7 @@ func (m Model) helpRows() []string {
 		{"Ctrl+U", "clear the draft"},
 		{"Ctrl+Z", "restore the draft"},
 		{"wheel", "scroll (with --mouse)"},
+		{"drag", "select text (with --mouse)"},
 		{"/", "command suggestions"},
 		{"paste", "inserted, never sent"},
 		{"//", "literal slash message"},
@@ -1037,6 +1090,7 @@ func (m *Model) startFreshConversation(notice string) {
 	m.entries = nil
 	m.pending = ""
 	m.clearUndo()
+	m.clearSelection()
 	m.title = ""
 	if m.hooks.SessionTitle != nil {
 		m.title = m.hooks.SessionTitle()

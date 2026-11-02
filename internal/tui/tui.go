@@ -209,7 +209,7 @@ type SessionInfo struct {
 // Composer geometry: one visible text row by default, growing with the
 // content up to maxComposerHeight. The border is drawn around it.
 const (
-	maxComposerHeight = 8
+	maxComposerHeight = 5
 	minComposerRows   = 1
 	maxSuggestions    = 11
 )
@@ -236,6 +236,10 @@ type entry struct {
 	meta     usage.Turn
 	hasMeta  bool
 	rows     []string
+	// logical holds the entry's unwrapped lines of text. The rows are
+	// wrapped for the screen; the logical lines are what a selection
+	// copies, so a wrapped line never becomes two lines.
+	logical []string
 }
 
 // Model is the Bubble Tea application state.
@@ -271,9 +275,26 @@ type Model struct {
 	// combinations (Kitty keyboard protocol). It only affects what the
 	// help panel claims about Shift+Enter.
 	keyDisambiguation bool
-	// mouse requests terminal mouse reporting so the wheel scrolls.
-	// Off by default: reporting disables native text selection.
+	// mouse requests terminal mouse reporting so the wheel scrolls and
+	// the pointer can select text. Off by default: reporting replaces
+	// the terminal's own text selection.
 	mouse bool
+	// selecting is true while the pointer drags a selection.
+	selecting bool
+	// selAnchor and selFocus are the two ends of the selection, in
+	// conversation coordinates, so scrolling the history does not move
+	// them.
+	selAnchor cellPos
+	selFocus  cellPos
+	// selMoved records that the pointer actually travelled. An ordinary
+	// click must never copy anything.
+	selMoved bool
+	// conv maps the conversation's display cells to the text behind
+	// them. It is rebuilt with the conversation.
+	conv convMap
+	// draftOffset is the first screen row of the draft the composer
+	// shows. The wheel moves it; editing pulls it back to the cursor.
+	draftOffset int
 	// undoDraft is the last cleared draft, restorable with Ctrl+Z. A
 	// single slot is enough: it is cleared on submit and on every
 	// session change so an old draft can never leak into another
@@ -428,6 +449,7 @@ func (m *Model) SetHistory(lines []SessionLine) {
 	m.entries = nil
 	m.pending = ""
 	m.clearUndo()
+	m.clearSelection()
 	for _, line := range lines {
 		m.entries = append(m.entries, entry{role: line.Role, text: line.Text})
 	}
@@ -583,6 +605,9 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rewrap()
 		m.renderConversation()
 		m.restoreAnchor(anchor)
+		// The rows are wrapped again, so a selection would point at
+		// different text than it did before.
+		m.clearSelection()
 		return m, nil
 	case tea.KeyboardEnhancementsMsg:
 		m.keyDisambiguation = msg.SupportsKeyDisambiguation()
@@ -691,6 +716,12 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.MouseWheelMsg:
 		return m.updateWheel(msg)
+	case tea.MouseClickMsg:
+		return m.mousePress(msg)
+	case tea.MouseMotionMsg:
+		return m.mouseDrag(msg)
+	case tea.MouseReleaseMsg:
+		return m.mouseRelease(msg)
 	case streamThinkingMsg:
 		if !m.currentTurn(msg.id) {
 			return m, nil
@@ -783,19 +814,20 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.ready {
 		var cmds []tea.Cmd
 		var cmd tea.Cmd
-		before := m.composer.LineCount()
 		m.composer, cmd = m.composer.Update(msg)
 		cmds = append(cmds, cmd)
 		// The suggestion panel follows the composer text.
 		m.refreshSuggestions()
-		if m.composer.LineCount() != before {
-			m.fitComposer()
-		}
+		// Every edit refits the composer: the draft may have grown a
+		// wrapped row without adding a line, and the caret has to stay
+		// in view.
+		m.fitComposer()
 		return m, tea.Batch(cmds...)
 	}
+	// Before the first frame the composer still takes the keystroke, so
+	// nothing typed during startup is lost.
 	var cmd tea.Cmd
 	m.composer, cmd = m.composer.Update(msg)
-	m.fitComposer()
 	return m, cmd
 }
 
@@ -983,10 +1015,20 @@ func (m Model) updateWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
 	}
-	var cmd tea.Cmd
-	m.composer, cmd = m.composer.Update(msg)
-	m.fitComposer()
-	return m, cmd
+	// The wheel moves the composer window. It must not reach the
+	// textarea: the textarea would scroll its own view and pull the
+	// caret around with it.
+	m.scrollDraft(draftWheelDelta(msg))
+	return m, nil
+}
+
+// draftWheelDelta is how far one wheel notch moves the composer
+// window.
+func draftWheelDelta(msg tea.MouseWheelMsg) int {
+	if msg.Button == tea.MouseWheelUp {
+		return -3
+	}
+	return 3
 }
 
 // clearDraft empties the composer without submitting, keeping the text in
@@ -1030,24 +1072,29 @@ func (m *Model) clearUndo() {
 	m.undoValid = false
 }
 
-// fitComposer grows or shrinks the composer with its content: three
-// rows by default, up to maxComposerHeight, then it scrolls internally.
+// fitComposer grows or shrinks the composer with its content: one row
+// by default, up to maxComposerHeight, and then the draft scrolls inside
+// the window.
 func (m *Model) fitComposer() {
 	if !m.ready {
 		return
 	}
-	want := m.composer.LineCount()
+	want := m.draftRows()
 	if want < minComposerRows {
 		want = minComposerRows
 	}
 	if want > maxComposerHeight {
 		want = maxComposerHeight
 	}
-	if want == m.desiredComposer {
-		return
+	if want != m.desiredComposer {
+		m.desiredComposer = want
+		m.resizeFrame()
 	}
-	m.desiredComposer = want
-	m.resizeFrame()
+	// The textarea renders the whole draft, so HAL can show any window
+	// of it.
+	m.composer.SetHeight(max(m.draftRows(), m.frame.composer))
+	// Editing is cursor-aware: the caret is always in view.
+	m.followCursor()
 }
 
 // recordTurn reports the finished turn's usage once, then refreshes the
@@ -1118,7 +1165,9 @@ func (m *Model) sizePanes() bool {
 	m.frame = f
 	m.viewHeight = m.frame.viewport
 	m.compHeight = m.frame.composer
-	m.composer.SetHeight(m.frame.composer)
+	// The textarea renders the whole draft so HAL can show any window
+	// of it; the frame decides how many rows that window has.
+	m.composer.SetHeight(max(m.draftRows(), m.frame.composer))
 	m.viewport.SetWidth(m.width)
 	m.viewport.SetHeight(m.frame.viewport)
 	w := m.width - 2
@@ -1427,6 +1476,11 @@ func (m *Model) renderEntry(i int) {
 	switch e.role {
 	case "user":
 		e.rows = m.renderUser(e)
+		// The user's own line breaks are the logical lines: a wrapped
+		// row is not a new line of what was written.
+		if len(e.logical) == 0 {
+			e.logical = strings.Split(e.text, "\n")
+		}
 	default:
 		label := "HAL > "
 		indent := strings.Repeat(" ", len(label))
@@ -1444,6 +1498,11 @@ func (m *Model) renderEntry(i int) {
 			rows = append(rows, m.metaLine(e.meta))
 		}
 		e.rows = rows
+		if len(e.logical) == 0 {
+			// The unwrapped render does not depend on the width, so it
+			// is computed once and kept for the life of the entry.
+			e.logical = m.renderMarkdownLogical(e.text)
+		}
 	}
 }
 
@@ -1587,6 +1646,26 @@ func (m *Model) rewrap() {
 	}
 }
 
+// pendingRows splits the answer being streamed into the rows the
+// conversation shows while it is still arriving.
+func pendingRows(pending string) []string {
+	lines := strings.Split(pending, "\n")
+	rows := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if i == 0 {
+			rows = append(rows, "HAL > "+line)
+			continue
+		}
+		rows = append(rows, line)
+	}
+	return rows
+}
+
+// pendingLogical is the unwrapped text of the answer being streamed.
+func pendingLogical(pending string) []string {
+	return strings.Split(pending, "\n")
+}
+
 func (m *Model) renderConversation() {
 	atBottom := m.viewport.AtBottom()
 	offset := m.viewport.YOffset()
@@ -1609,12 +1688,21 @@ func (m *Model) renderConversation() {
 			content = append(content, styleRow(row))
 		}
 	}
+	m.conv = convMap{}
+	if m.mouse {
+		// The cell map is only needed for mouse selection, and mapping
+		// every row costs time on every frame of a streaming answer.
+		m.conv = buildConvMap(m.entries)
+	}
 	if m.pending != "" {
 		pending := "HAL > " + m.pending
 		if m.color {
 			pending = st.hal.Render("HAL > ") + m.pending
 		}
 		content = append(content, pending)
+		if m.mouse {
+			m.conv.addEntry(entry{role: "assistant", rows: pendingRows(m.pending), logical: pendingLogical(m.pending)})
+		}
 	}
 	m.viewport.SetContent(strings.Join(content, "\n"))
 	// SetContent clamps to the bottom when the content shrank; restore the
@@ -1675,7 +1763,7 @@ func (m Model) chatLayout() []string {
 	if f.rule {
 		rows = append(rows, m.rule())
 	}
-	rows = append(rows, m.viewportRows(f.viewport)...)
+	rows = append(rows, m.highlightSelection(m.viewportRows(f.viewport))...)
 	if f.blank {
 		rows = append(rows, "")
 	}
@@ -1806,7 +1894,7 @@ func (m Model) fitToHeight(rows []string) []string {
 // theme rule colour; the textarea keeps its own cursor and placeholder
 // styling inside it.
 func (m Model) composerBlock(ch int, border bool) []string {
-	inner := splitRows(m.composer.View(), ch)
+	inner := m.composerWindow(ch)
 	if !border {
 		return inner
 	}
@@ -2100,6 +2188,9 @@ func (m Model) Viewport() viewport.Model { return m.viewport }
 
 // Composer exposes the composer, for tests.
 func (m Model) Composer() textarea.Model { return m.composer }
+
+// ComposerRows is how many rows of the draft the composer shows.
+func (m Model) ComposerRows() int { return m.frame.composer }
 
 // InjectResponse delivers a canned engine reply, for tests.
 func (m *Model) InjectResponse(text string) (tea.Model, tea.Cmd) {
