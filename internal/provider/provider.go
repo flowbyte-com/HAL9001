@@ -39,6 +39,9 @@ type Response struct {
 	Reasoning    string     `json:"reasoning,omitempty"`
 	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
 	FinishReason string     `json:"finish_reason,omitempty"`
+	// Stats is content-free telemetry for the turn: counts, durations and
+	// token totals. It never contains prompt or reply text.
+	Stats TurnStats `json:"-"`
 }
 
 // Provider is the minimal contract every model adapter implements.
