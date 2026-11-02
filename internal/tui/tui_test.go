@@ -2426,3 +2426,31 @@ func TestExitCommandsDiscoverable(t *testing.T) {
 		t.Errorf("help does not list the exit commands:\n%s", help)
 	}
 }
+
+// Paging back down to the bottom re-enables automatic following.
+func TestReachingBottomRestoresFollowing(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	for i := 0; i < 40; i++ {
+		updated, _ = m.Update(streamDeltaMsg{id: 1, text: "line\n"})
+		m = updated.(Model)
+	}
+	m.viewport.GotoTop()
+	if m.viewport.AtBottom() {
+		t.Fatal("precondition: scrolled up")
+	}
+	updated, _ = m.Update(streamDeltaMsg{id: 1, text: "more\n"})
+	m = updated.(Model)
+	if m.viewport.AtBottom() {
+		t.Fatal("streaming yanked a scrolled-up reader to the bottom")
+	}
+	m.viewport.GotoBottom()
+	updated, _ = m.Update(streamDeltaMsg{id: 1, text: "followed\n"})
+	m = updated.(Model)
+	if !m.viewport.AtBottom() {
+		t.Error("returning to the bottom must restore following")
+	}
+}
