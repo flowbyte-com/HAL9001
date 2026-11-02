@@ -59,6 +59,20 @@ var commandTable = []*command{
 		},
 	},
 	{
+		name:        "/rename",
+		usage:       "/rename [title]",
+		description: "Rename this conversation",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			if len(args) == 0 {
+				m.enterRename()
+				return nil
+			}
+			m.applyRename(strings.Join(args, " "))
+			return nil
+		},
+	},
+	{
 		name:        "/usage",
 		description: "Session token usage",
 		run: func(m *Model, _ []string) tea.Cmd {

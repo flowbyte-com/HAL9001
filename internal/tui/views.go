@@ -455,15 +455,15 @@ func (m Model) themeRows() []string {
 // enterSessions opens the stored-conversation picker.
 func (m *Model) enterSessions() {
 	m.closeSuggestions()
-	m.sessionNames = nil
+	m.sessionItems = nil
 	m.sessionCursor = 0
 	m.sessionNotice = ""
 	if m.hooks.ListSessions != nil {
-		names, err := m.hooks.ListSessions()
+		items, err := m.hooks.ListSessions()
 		if err != nil {
 			m.sessionNotice = "List failed: " + err.Error()
 		} else {
-			m.sessionNames = names
+			m.sessionItems = items
 		}
 	}
 	m.panelOffset = 0
@@ -491,18 +491,18 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ensureVisible(2+m.sessionCursor, len(m.sessionsRows()), contentHeight(m.height))
 			return m, nil
 		case "down", "tab":
-			if m.sessionCursor < len(m.sessionNames)-1 {
+			if m.sessionCursor < len(m.sessionItems)-1 {
 				m.sessionCursor++
 			}
 			m.ensureVisible(2+m.sessionCursor, len(m.sessionsRows()), contentHeight(m.height))
 			return m, nil
 		case "enter":
-			if len(m.sessionNames) == 0 || m.hooks.SwitchSession == nil {
+			if len(m.sessionItems) == 0 || m.hooks.SwitchSession == nil {
 				m.sessionNotice = "Switching is not wired up."
 				return m, nil
 			}
-			name := m.sessionNames[m.sessionCursor]
-			eng, lines, err := m.hooks.SwitchSession(name)
+			item := m.sessionItems[m.sessionCursor]
+			eng, lines, err := m.hooks.SwitchSession(item.ID)
 			if err != nil {
 				m.sessionNotice = "Switch failed: " + err.Error()
 				return m, nil
@@ -511,10 +511,13 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.engine = eng
 			}
 			m.SetHistory(lines)
-			m.title = name
+			m.title = item.Title
+			if m.title == "" {
+				m.title = item.ID
+			}
 			m.refreshUsage()
 			m.view = viewChat
-			m.notice = "Resumed: " + name
+			m.notice = "Resumed: " + m.title
 			return m, nil
 		}
 	}
@@ -524,13 +527,28 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) sessionsRows() []string {
 	st := m.theme.styles()
 	rows := []string{"Sessions (Enter resumes, Esc back):", ""}
-	if len(m.sessionNames) == 0 {
+	if len(m.sessionItems) == 0 {
 		rows = append(rows, "  (no stored conversations)")
 	}
-	for i, name := range m.sessionNames {
-		line := "  " + name
+	for i, item := range m.sessionItems {
+		title := item.Title
+		if title == "" {
+			title = item.ID
+		}
+		detail := ""
+		if !item.Updated.IsZero() {
+			detail = item.Updated.Local().Format("2006-01-02 15:04")
+		}
+		current := ""
+		if item.Current {
+			current = " (current)"
+		}
+		line := "  " + title + current
+		if detail != "" {
+			line += "  ·  " + detail
+		}
 		if i == m.sessionCursor {
-			line = st.active.Render("▸ " + name)
+			line = st.active.Render("▸ " + strings.TrimPrefix(line, "  "))
 		}
 		rows = append(rows, line)
 	}
@@ -538,6 +556,70 @@ func (m Model) sessionsRows() []string {
 		rows = append(rows, "", m.sessionNotice)
 	}
 	return rows
+}
+
+// enterRename opens the rename overlay with the current title prefilled.
+func (m *Model) enterRename() {
+	m.closeSuggestions()
+	m.renameInput = namedInput("Session title", strings.TrimSpace(m.title), false)
+	m.renameInput.Focus()
+	m.renameOpen = true
+	m.panelOffset = 0
+	m.view = viewRename
+}
+
+func (m Model) renameRows() []string {
+	return []string{
+		"Rename this conversation (Enter saves, Esc keeps the old title)",
+		"",
+		m.renameInput.View(),
+		"",
+		"Names are display only and never change stored history.",
+	}
+}
+
+func (m Model) updateRename(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.ready = true
+		return m, nil
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case keyQuit, keyQuit2:
+			return m, m.quit()
+		case "esc":
+			m.view = viewChat
+			m.renameOpen = false
+			return m, nil
+		case "enter":
+			title := m.renameInput.Value()
+			m.renameOpen = false
+			m.view = viewChat
+			m.applyRename(title)
+			return m, nil
+		}
+	}
+	var cmd tea.Cmd
+	m.renameInput, cmd = m.renameInput.Update(msg)
+	return m, cmd
+}
+
+// applyRename sets the display title through the application hook.
+func (m *Model) applyRename(title string) {
+	if m.hooks.RenameSession == nil {
+		m.notice = "Renaming is not wired up."
+		return
+	}
+	display, err := m.hooks.RenameSession(title)
+	if err != nil {
+		m.notice = "Rename failed: " + err.Error()
+		return
+	}
+	if display != "" {
+		m.title = display
+	}
+	m.notice = "Conversation renamed."
 }
 
 func (m Model) helpRows() []string {
@@ -952,6 +1034,9 @@ func (m *Model) startFreshConversation(notice string) {
 	m.entries = nil
 	m.pending = ""
 	m.title = ""
+	if m.hooks.SessionTitle != nil {
+		m.title = m.hooks.SessionTitle()
+	}
 	m.lastStats = nil
 	m.lastResponse = ""
 	m.refreshUsage()
@@ -1045,15 +1130,6 @@ func compactTokens(n int) string {
 	default:
 		return strings.TrimSuffix(fmt.Sprintf("%.1f", float64(n)/1_000_000), ".0") + "m"
 	}
-}
-
-// usageLabel is the compact footer indicator, empty when nothing has been
-// reported yet.
-func (m Model) usageLabel() string {
-	if !m.tokens.Total() {
-		return ""
-	}
-	return "Tokens: " + compactTokens(m.tokens.Input) + " in / " + compactTokens(m.tokens.Output) + " out"
 }
 
 func (m Model) updateUsage(msg tea.Msg) (tea.Model, tea.Cmd) {

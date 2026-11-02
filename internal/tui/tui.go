@@ -129,11 +129,18 @@ type Hooks struct {
 	Theme func() string
 	// SaveTheme persists the theme name.
 	SaveTheme func(name string) error
-	// ListSessions returns stored conversation names, oldest first.
-	ListSessions func() ([]string, error)
+	// ListSessions returns stored conversations, most recently active
+	// first, with the current one marked.
+	ListSessions func() ([]SessionInfo, error)
 	// SwitchSession loads a stored conversation, returning the engine
-	// and its lines (user text raw, assistant text raw Markdown).
+	// and its lines (user text raw, assistant text raw Markdown). It also
+	// selects the session for the next launch.
 	SwitchSession func(name string) (Engine, []SessionLine, error)
+	// RenameSession sets the display title of the active conversation and
+	// returns the effective title to show.
+	RenameSession func(title string) (string, error)
+	// SessionTitle reports the display title of the active conversation.
+	SessionTitle func() string
 	// Copy writes text to the system clipboard (OSC 52). Nil means
 	// clipboard access is unavailable.
 	Copy func(text string) error
@@ -145,6 +152,10 @@ type Hooks struct {
 	// RecordTurn stores one finished turn's usage. A turn without
 	// provider-reported usage is recorded as incomplete by the callee.
 	RecordTurn func(stats provider.TurnStats)
+	// RecordFailed stores a turn that produced no answer. Usage the
+	// provider did report still counts; otherwise only the failed counter
+	// moves. A nil argument means no statistics exist at all.
+	RecordFailed func(stats *provider.TurnStats)
 	// SetEffort persists a level for the active model and returns the
 	// engine for subsequent requests.
 	SetEffort func(level string) (Engine, error)
@@ -176,6 +187,7 @@ const (
 	viewDiag
 	viewEffort
 	viewUsage
+	viewRename
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -184,12 +196,22 @@ type SessionLine struct {
 	Text string
 }
 
-// Composer geometry: three visible text rows by default, growing with the
-// content up to maxComposerHeight. The border is drawn around them.
+// SessionInfo describes one stored conversation for the browser. The ID is
+// the immutable session identifier; the title is its display name.
+type SessionInfo struct {
+	ID      string
+	Title   string
+	Created time.Time
+	Updated time.Time
+	Current bool
+}
+
+// Composer geometry: one visible text row by default, growing with the
+// content up to maxComposerHeight. The border is drawn around it.
 const (
 	maxComposerHeight = 8
-	minComposerRows   = 3
-	maxSuggestions    = 10
+	minComposerRows   = 1
+	maxSuggestions    = 11
 )
 
 // Long user prompts are collapsed to a short preview: a pasted prompt is
@@ -203,11 +225,16 @@ const (
 
 // entry is one conversation turn. Text is the original, untouched: user
 // text as typed and assistant text as Markdown. rows caches the rendered
-// form for the current width.
+// form for the current width. note marks an explanatory line that is not
+// an answer (a cancellation or stall explanation), so metadata records
+// never attach to it. meta carries the reported usage of a real answer.
 type entry struct {
 	role     string // "user" or "assistant"
 	text     string
 	expanded bool
+	note     bool
+	meta     usage.Turn
+	hasMeta  bool
 	rows     []string
 }
 
@@ -296,9 +323,12 @@ type Model struct {
 	// Last completed assistant reply (raw Markdown), for /copy.
 	lastResponse string
 	// Sessions view state.
-	sessionNames  []string
+	sessionItems  []SessionInfo
 	sessionCursor int
 	sessionNotice string
+	// Rename overlay state.
+	renameInput textinput.Model
+	renameOpen  bool
 	// Help view state.
 	helpNotice string
 }
@@ -388,9 +418,27 @@ func (m *Model) SetHistory(lines []SessionLine) {
 	for _, line := range lines {
 		m.entries = append(m.entries, entry{role: line.Role, text: line.Text})
 	}
+	m.attachHistoryMeta()
 	m.rewrap()
 	m.renderConversation()
 	m.viewport.GotoBottom()
+}
+
+// attachHistoryMeta assigns stored per-answer records to the answers in
+// order. Notes are skipped, and answers without a record keep no
+// metadata.
+func (m *Model) attachHistoryMeta() {
+	h := m.tokens.History
+	i := 0
+	for j := range m.entries {
+		if m.entries[j].role != "assistant" || m.entries[j].note {
+			continue
+		}
+		if i < len(h) {
+			m.attachMeta(j, h[i])
+		}
+		i++
+	}
 }
 
 // SetColor overrides color mode; used by tests.
@@ -506,6 +554,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateEffort(msg)
 	case viewUsage:
 		return m.updateUsage(msg)
+	case viewRename:
+		return m.updateRename(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -665,13 +715,19 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending = ""
 		m.reasoningSeen = false
 		m.lastResponse = msg.text
+		reported := m.turnStats
 		m.recordTurn()
 		if m.lastStats != nil && m.lastStats.OutputLimitHit {
 			m.notice = "output limit reached — the reply was cut at max_tokens"
 		} else {
 			m.notice = ""
 		}
-		m.appendEntry("assistant", msg.text)
+		i := m.appendEntry("assistant", msg.text)
+		// Attach this turn's reported usage directly: the answer on screen
+		// and its metadata stay together even before any refresh.
+		if reported != nil && reported.HasUsage {
+			m.attachMeta(i, turnFromStats(*reported))
+		}
 		return m, nil
 	case copyResultMsg:
 		return m.updateCopyResult(msg)
@@ -685,7 +741,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stopStream()
 		m.reasoningSeen = false
 		m.pending = ""
-		m.recordTurn()
+		m.recordFailed()
 		switch {
 		case errors.Is(msg.err, context.Canceled):
 			m.notice = "cancelled — stored nothing from the assistant"
@@ -693,16 +749,16 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "No provider configured — message stored in this session."
 		case errors.Is(msg.err, engine.ErrNoVisibleAnswer):
 			m.notice = "no visible answer — see /diag"
-			m.appendEntry("assistant", m.emptyAnswerNote(msg.err))
+			m.appendNote("assistant", m.emptyAnswerNote(msg.err))
 		case errors.Is(msg.err, provider.ErrStreamIdle):
 			m.notice = "the provider went silent — the request was closed to avoid a silent charge"
-			m.appendEntry("assistant", "(the provider stopped sending data; the request was closed)")
+			m.appendNote("assistant", "(the provider stopped sending data; the request was closed)")
 		case errors.Is(msg.err, provider.ErrTurnTimeout):
 			m.notice = "the turn hit its time limit — the request was closed"
-			m.appendEntry("assistant", "(the turn exceeded its time limit; the request was closed)")
+			m.appendNote("assistant", "(the turn exceeded its time limit; the request was closed)")
 		default:
 			m.notice = "error: " + msg.err.Error()
-			m.appendEntry("assistant", "(I couldn't answer that: "+msg.err.Error()+")")
+			m.appendNote("assistant", "(I couldn't answer that: "+msg.err.Error()+")")
 		}
 		return m, nil
 	}
@@ -820,8 +876,22 @@ func (m Model) emptyAnswerNote(err error) string {
 	return "(" + strings.Join(parts, " · ") + ")"
 }
 
+// formatDuration renders a wall-clock duration compactly: 12s, 2m 20s.
+func formatDuration(ms int64) string {
+	if ms < 0 {
+		ms = 0
+	}
+	s := ms / 1000
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	return fmt.Sprintf("%dm %02ds", s/60, s%60)
+}
+
 // streamingNotice describes the turn without exposing private reasoning:
-// it only says which phase the provider is in and how long it has run.
+// the phase, the elapsed wall-clock time and the progress so far. Live
+// token figures are estimates (marked ~); exact provider usage arrives
+// with the final statistics.
 func (m Model) streamingNotice() string {
 	var elapsed time.Duration
 	if !m.streamStarted.IsZero() {
@@ -837,7 +907,32 @@ func (m Model) streamingNotice() string {
 	case m.reasoningSeen:
 		phase = "thinking"
 	}
-	return fmt.Sprintf("%s… %s · Esc cancels", phase, elapsed)
+	progress := m.liveProgress()
+	if progress == "" {
+		return fmt.Sprintf("%s… %s · Esc cancels", phase, elapsed)
+	}
+	return fmt.Sprintf("%s… %s · %s · Esc cancels", phase, elapsed, progress)
+}
+
+// liveProgress estimates output tokens from streamed characters: roughly
+// four characters per token. The tilde marks it as an estimate; it never
+// touches the recorded accounting. Streamed characters are a lower bound
+// when the provider is also reasoning, so reasoning presence is shown
+// alongside rather than folded into the number.
+func (m Model) liveProgress() string {
+	runes := len([]rune(m.pending))
+	if runes == 0 && !m.reasoningSeen {
+		return ""
+	}
+	est := runes / 4
+	if est < 1 {
+		est = 1
+	}
+	out := "~" + compactTokens(est) + " out"
+	if m.reasoningSeen {
+		return out + " + reasoning"
+	}
+	return out
 }
 
 // insertNewline breaks the line in the composer without sending.
@@ -882,6 +977,34 @@ func (m *Model) recordTurn() {
 	m.turnStats = nil
 	if m.hooks.Usage != nil {
 		m.tokens = m.hooks.Usage()
+	}
+}
+
+// recordFailed reports a turn that produced no answer. Usage the provider
+// did report still counts; otherwise only the failed counter moves.
+func (m *Model) recordFailed() {
+	if m.turnStats != nil && m.hooks.RecordFailed != nil {
+		m.hooks.RecordFailed(m.turnStats)
+	} else if m.turnStats == nil && m.hooks.RecordFailed != nil {
+		m.hooks.RecordFailed(nil)
+	}
+	m.turnStats = nil
+	if m.hooks.Usage != nil {
+		m.tokens = m.hooks.Usage()
+	}
+}
+
+// turnFromStats converts provider statistics into a stored usage record.
+func turnFromStats(s provider.TurnStats) usage.Turn {
+	return usage.Turn{
+		Input:     s.Usage.PromptTokens,
+		Output:    s.Usage.CompletionTokens,
+		Reasoning: s.Usage.ReasoningTokens,
+		Cached:    s.Usage.CachedTokens,
+		Duration:  s.Duration.Milliseconds(),
+		Finish:    s.FinishReason,
+		Truncated: s.OutputLimitHit,
+		Reported:  s.HasUsage,
 	}
 }
 
@@ -1160,15 +1283,42 @@ func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
 }
 
 // appendEntry adds one conversation turn and re-renders it. It follows
-// the new content only when the reader was already at the bottom.
-func (m *Model) appendEntry(role, text string) {
+// the new content only when the reader was already at the bottom, and
+// returns the entry index so the caller can attach metadata.
+func (m *Model) appendEntry(role, text string) int {
 	stick := m.viewport.AtBottom()
 	m.entries = append(m.entries, entry{role: role, text: text})
+	i := len(m.entries) - 1
+	m.renderEntry(i)
+	m.renderConversation()
+	if stick {
+		m.viewport.GotoBottom()
+	}
+	return i
+}
+
+// appendNote adds an explanatory line that is not an answer. Notes never
+// receive usage metadata and are never sent anywhere.
+func (m *Model) appendNote(role, text string) {
+	stick := m.viewport.AtBottom()
+	m.entries = append(m.entries, entry{role: role, text: text, note: true})
 	m.renderEntry(len(m.entries) - 1)
 	m.renderConversation()
 	if stick {
 		m.viewport.GotoBottom()
 	}
+}
+
+// attachMeta assigns the reported usage of the just-finished turn to its
+// answer entry. Unreported turns leave no metadata behind.
+func (m *Model) attachMeta(i int, turn usage.Turn) {
+	if i < 0 || i >= len(m.entries) || m.entries[i].note {
+		return
+	}
+	m.entries[i].meta = turn
+	m.entries[i].hasMeta = turn.Reported
+	m.renderEntry(i)
+	m.renderConversation()
 }
 
 // currentTurn reports whether a message belongs to the live turn. An
@@ -1196,13 +1346,16 @@ func (m *Model) renderEntry(i int) {
 		indent := strings.Repeat(" ", len(label))
 		body := m.renderMarkdown(e.text, m.assistantWidth())
 		lines := strings.Split(body, "\n")
-		rows := make([]string, 0, len(lines))
+		rows := make([]string, 0, len(lines)+1)
 		for j, line := range lines {
 			if j == 0 {
 				rows = append(rows, label+line)
 				continue
 			}
 			rows = append(rows, indent+line)
+		}
+		if e.hasMeta {
+			rows = append(rows, m.metaLine(e.meta))
 		}
 		e.rows = rows
 	}
@@ -1239,6 +1392,17 @@ func (m Model) renderUser(e *entry) []string {
 		hint = "… 1 more line · Ctrl+O to expand"
 	}
 	return append(visible, m.collapseHint(hint))
+}
+
+// metaLine renders one assistant turn's completion metadata: wall-clock
+// duration and provider-reported counts. It is display only — the entry
+// text, and therefore /copy and the model context, never contains it.
+func (m Model) metaLine(t usage.Turn) string {
+	line := formatDuration(t.Duration) + " · " + compactTokens(t.Input) + " in / " + compactTokens(t.Output) + " out"
+	if !m.color {
+		return line
+	}
+	return m.theme.styles().footer.Render(line)
 }
 
 // collapseHint renders the collapsed/expanded affordance aligned with the
@@ -1522,6 +1686,8 @@ func (m Model) activePanel() []string {
 		return m.effortRows()
 	case viewUsage:
 		return m.usageRows()
+	case viewRename:
+		return m.renameRows()
 	}
 	return nil
 }
@@ -1740,6 +1906,19 @@ func (m Model) statusBar() string {
 		return bar
 	}
 	return st.footer.Render(bar)
+}
+
+// usageLabel is the compact footer indicator. With no accounting at all
+// it is empty; with accounting but no token numbers yet it says unknown
+// instead of inventing zeros.
+func (m Model) usageLabel() string {
+	if !m.tokens.Total() {
+		return ""
+	}
+	if !m.tokens.HasTokens() {
+		return "Tokens: n/a"
+	}
+	return "Tokens: " + compactTokens(m.tokens.Input) + " in / " + compactTokens(m.tokens.Output) + " out"
 }
 
 // fitStatusBar lays out left, an optional middle section and right within

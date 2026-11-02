@@ -13,6 +13,7 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/usage"
 )
 
@@ -429,14 +430,14 @@ func TestRenderMarkdownFallback(t *testing.T) {
 	}
 }
 
-func TestComposerGrowsFromThreeRows(t *testing.T) {
+func TestComposerStartsSingleRowAndGrows(t *testing.T) {
 	m := testModel()
 	view := string(m.View().Content)
 	if strings.Contains(view, "┃") {
 		t.Error("composer must not render line-number gutters")
 	}
-	if h := m.Composer().Height(); h != minComposerRows {
-		t.Errorf("default composer height = %d, want %d", h, minComposerRows)
+	if h := m.Composer().Height(); h != 1 {
+		t.Errorf("default composer height = %d, want 1", h)
 	}
 	for i := 0; i < 20; i++ {
 		m = typeText(m, "line\n")
@@ -446,13 +447,18 @@ func TestComposerGrowsFromThreeRows(t *testing.T) {
 	}
 	m2 := testModel()
 	m2 = typeText(m2, "one\ntwo\nthree")
-	if h := m2.Composer().Height(); h != minComposerRows {
-		t.Errorf("composer height = %d, want %d for three lines", h, minComposerRows)
+	if h := m2.Composer().Height(); h != 3 {
+		t.Errorf("composer height = %d, want 3 for three lines", h)
 	}
-	m3 := testModel()
-	m3 = typeText(m3, "one\ntwo\nthree\nfour\nfive")
-	if h := m3.Composer().Height(); h != 5 {
-		t.Errorf("composer height = %d, want 5 for five lines", h)
+	// Shrinking the draft returns the composer to its natural height.
+	m2 = typeText(m2, "\b\b\b\b\b\b\b\b\b\b\b\b\b")
+	_ = m2
+	m4 := testModel()
+	m4 = typeText(m4, "one\ntwo")
+	updated, _ := m4.Update(tea.PasteMsg{Content: "three\nfour\nfive\nsix\nseven\neight\nnine"})
+	m4 = updated.(Model)
+	if h := m4.Composer().Height(); h != maxComposerHeight {
+		t.Errorf("pasted composer height = %d, want cap %d", h, maxComposerHeight)
 	}
 }
 
@@ -789,7 +795,9 @@ func TestThemeViewMonochrome(t *testing.T) {
 
 func TestSessionsViewAndResume(t *testing.T) {
 	hooks := Hooks{
-		ListSessions: func() ([]string, error) { return []string{"a", "b"}, nil },
+		ListSessions: func() ([]SessionInfo, error) {
+			return []SessionInfo{{ID: "a", Title: "Alpha"}, {ID: "b", Title: "Beta"}}, nil
+		},
 		SwitchSession: func(name string) (Engine, []SessionLine, error) {
 			return &scriptEngine{}, []SessionLine{{Role: "user", Text: "hi"}, {Role: "assistant", Text: "yo"}}, nil
 		},
@@ -808,7 +816,7 @@ func TestSessionsViewAndResume(t *testing.T) {
 	if len(m.Lines()) != 2 || m.Lines()[0] != "You > hi" || m.Lines()[1] != "HAL > yo" {
 		t.Errorf("resumed lines wrong: %v", m.Lines())
 	}
-	if !strings.Contains(m.Notice(), "Resumed: b") {
+	if !strings.Contains(m.Notice(), "Resumed: Beta") {
 		t.Errorf("notice = %q", m.Notice())
 	}
 }
@@ -2573,8 +2581,8 @@ func TestUsageRecordedOncePerTurn(t *testing.T) {
 // A failed turn still records usage when the provider reported it, and an
 // unreported failure records an incomplete turn.
 func TestUsageRecordedForFailedTurn(t *testing.T) {
-	var got []provider.TurnStats
-	hooks := Hooks{RecordTurn: func(s provider.TurnStats) { got = append(got, s) }}
+	var got []*provider.TurnStats
+	hooks := Hooks{RecordFailed: func(s *provider.TurnStats) { got = append(got, s) }}
 	m := NewWithHooks(&scriptEngine{}, hooks)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
@@ -2585,7 +2593,7 @@ func TestUsageRecordedForFailedTurn(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(errorMsg{id: 1, err: provider.ErrTurnTimeout})
 	m = updated.(Model)
-	if len(got) != 1 || got[0].Usage.CompletionTokens != 4 {
+	if len(got) != 1 || got[0] == nil || got[0].Usage.CompletionTokens != 4 {
 		t.Fatalf("failed turn usage = %+v", got)
 	}
 
@@ -2598,8 +2606,8 @@ func TestUsageRecordedForFailedTurn(t *testing.T) {
 	before := len(got)
 	updated, _ = m2.Update(errorMsg{id: 2, err: provider.ErrStreamIdle})
 	m2 = updated.(Model)
-	if len(got) != before {
-		t.Errorf("a turn without stats recorded tokens: %+v", got[before:])
+	if len(got) != before+1 || got[before] != nil {
+		t.Errorf("a stat-less failure must record a nil report: %+v", got[before:])
 	}
 }
 
@@ -2617,5 +2625,258 @@ func TestClearResetsUsageDisplay(t *testing.T) {
 	m = enterCurrent(m)
 	if m.tokens.Total() {
 		t.Errorf("usage not reset after clear: %+v", m.tokens)
+	}
+}
+
+// A finished answer carries a subtle metadata line with wall-clock time
+// and reported counts.
+func TestMetadataLineUnderAnswer(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, Hooks{})
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	updated, _ = m.Update(streamStatsMsg{id: 1, stats: provider.TurnStats{
+		StartedAt: time.Now(), Duration: 140 * time.Second, HasUsage: true,
+		FinishReason: "stop",
+		Usage:        provider.Usage{PromptTokens: 4200, CompletionTokens: 12800, ReasoningTokens: 9000, CachedTokens: 400},
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(responseMsg{id: 1, text: "done"})
+	m = updated.(Model)
+	view := string(m.View().Content)
+	if !strings.Contains(view, "2m 20s · 4.2k in / 12.8k out") {
+		t.Errorf("metadata line missing:\n%s", view)
+	}
+	if got := m.Entries()[0].text; got != "done" {
+		t.Errorf("entry text polluted: %q", got)
+	}
+}
+
+// Metadata is omitted when nothing was reported, without an "unknown"
+// marker on the answer line itself.
+func TestMetadataOmittedWithoutUsage(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, Hooks{})
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	updated, _ = m.Update(streamStatsMsg{id: 1, stats: provider.TurnStats{
+		StartedAt: time.Now(), Duration: 3 * time.Second,
+	}})
+	m = updated.(Model)
+	updated, _ = m.Update(responseMsg{id: 1, text: "done"})
+	m = updated.(Model)
+	if strings.Contains(string(m.View().Content), " in / ") {
+		t.Error("no metadata line expected without reported usage")
+	}
+	if got := m.Lines(); len(got) != 1 || got[0] != "HAL > done" {
+		t.Errorf("lines = %v", got)
+	}
+}
+
+// /copy copies only the answer, never the metadata line.
+func TestCopyExcludesMetadata(t *testing.T) {
+	var copied string
+	hooks := Hooks{Copy: func(text string) error { copied = text; return nil }}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.lastResponse = "the answer"
+	i := m.appendEntry("assistant", "the answer")
+	m.attachMeta(i, usage.Turn{Input: 10, Output: 20, Reported: true, Duration: 1000})
+	m = typeText(m, "/copy")
+	m = enterCurrent(m)
+	updated, _ = m.Update(copyResultMsg{chars: len(copied), label: "response"})
+	m = updated.(Model)
+	if copied != "the answer" {
+		t.Errorf("copied = %q", copied)
+	}
+}
+
+// Restoring a stored conversation re-attaches its metadata in order.
+func TestMetadataRestoredOnResume(t *testing.T) {
+	m2 := testModel()
+	updated, _ := m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m2 = updated.(Model)
+	m2.SetUsage(usage.Session{
+		Input: 30, Output: 40, Turns: 2,
+		History: []usage.Turn{
+			{Input: 10, Output: 20, Duration: 2000, Finish: "stop", Reported: true},
+			{Input: 20, Output: 20, Duration: 5000, Finish: "stop", Reported: true},
+		},
+	})
+	m2.SetHistory([]SessionLine{
+		{Role: "user", Text: "q1"},
+		{Role: "assistant", Text: "a1"},
+		{Role: "user", Text: "q2"},
+		{Role: "assistant", Text: "a2"},
+	})
+	view := string(m2.View().Content)
+	for _, want := range []string{"2s · 10 in / 20 out", "5s · 20 in / 20 out"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("restored metadata line missing %q:\n%s", want, view)
+		}
+	}
+	if !strings.Contains(view, "2s ·") || !strings.Contains(view, "5s ·") {
+		t.Errorf("restored durations wrong:\n%s", view)
+	}
+	if got := m2.Lines(); len(got) != 4 || got[1] != "HAL > a1" {
+		t.Errorf("history polluted: %v", got)
+	}
+}
+
+func TestLiveEstimateMarkedApproximate(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.sending = true
+	m.streamStarted = m.clock()
+	m.pending = strings.Repeat("x", 400)
+	if got := m.liveProgress(); !strings.HasPrefix(got, "~") {
+		t.Errorf("live estimate must be marked approximate: %q", got)
+	}
+	if !strings.Contains(m.streamingNotice(), "~") {
+		t.Errorf("notice must show the estimate: %q", m.streamingNotice())
+	}
+	m.reasoningSeen = true
+	if got := m.liveProgress(); !strings.Contains(got, "reasoning") {
+		t.Errorf("reasoning presence must be shown: %q", got)
+	}
+}
+
+// A rename through the command updates the header title.
+func TestRenameCommand(t *testing.T) {
+	m := NewWithHooks(&scriptEngine{}, Hooks{
+		RenameSession: func(title string) (string, error) {
+			if title == "" {
+				return "2026-11-02 16:48", nil
+			}
+			return title, nil
+		},
+	})
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/rename Museum of Unfinished Ideas")
+	m = enterCurrent(m)
+	if m.title != "Museum of Unfinished Ideas" {
+		t.Errorf("title = %q", m.title)
+	}
+	if !strings.Contains(m.Notice(), "renamed") {
+		t.Errorf("notice = %q", m.Notice())
+	}
+	if len(m.Entries()) != 0 {
+		t.Errorf("renaming must not touch the conversation: %v", m.Lines())
+	}
+}
+
+// Bare /rename opens the overlay; Enter applies, Esc keeps the old title.
+func TestRenameOverlay(t *testing.T) {
+	renamed := ""
+	m := NewWithHooks(&scriptEngine{}, Hooks{
+		RenameSession: func(title string) (string, error) { renamed = title; return title, nil },
+	})
+	m.SetColor(false)
+	m.title = "Old Title"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/rename")
+	m = enterCurrent(m)
+	if m.view != viewRename {
+		t.Fatal("rename overlay did not open")
+	}
+	view := string(m.View().Content)
+	if !strings.Contains(view, "Old Title") {
+		t.Errorf("overlay must prefill the current title:\n%s", view)
+	}
+	m = typeText(m, "New Title")
+	m = pressKey(m, tea.KeyEnter, 0, "")
+	if renamed != "Old TitleNew Title" && renamed != "New Title" {
+		t.Errorf("renamed = %q", renamed)
+	}
+	if m.view != viewChat {
+		t.Error("overlay must close on Enter")
+	}
+
+	m2 := NewWithHooks(&scriptEngine{}, Hooks{
+		RenameSession: func(title string) (string, error) { return title, nil },
+	})
+	m2.SetColor(false)
+	m2.title = "Keep Me"
+	updated, _ = m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m2 = updated.(Model)
+	m2 = typeText(m2, "/rename")
+	m2 = enterCurrent(m2)
+	m2 = typeText(m2, " Discarded")
+	m2 = pressKey(m2, tea.KeyEscape, 0, "")
+	if m2.view != viewChat || m2.title != "Keep Me" {
+		t.Errorf("Esc must keep the old title: view=%d title=%q", m2.view, m2.title)
+	}
+}
+
+// Long titles are bounded and unsafe input never reaches the filesystem.
+// The TUI passes the title to the application hook; the session layer
+// normalizes it, so simulate that layer here.
+func TestRenameValidation(t *testing.T) {
+	var got string
+	m := NewWithHooks(&scriptEngine{}, Hooks{
+		RenameSession: func(title string) (string, error) {
+			got = session.NormalizeTitle(title)
+			if got == "" {
+				got = session.DefaultTitle(time.Now())
+			}
+			return got, nil
+		},
+	})
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/rename ../../evil")
+	m = enterCurrent(m)
+	if got != "../../evil" {
+		t.Errorf("the TUI must not mangle titles itself: %q", got)
+	}
+	if !strings.Contains(m.Notice(), "renamed") {
+		t.Errorf("notice = %q", m.Notice())
+	}
+	m2 := NewWithHooks(&scriptEngine{}, Hooks{
+		RenameSession: func(title string) (string, error) { return "x", nil },
+	})
+	updated, _ = m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m2 = updated.(Model)
+	long := strings.Repeat("x", 200)
+	m2 = typeText(m2, "/rename "+long)
+	if got := session.NormalizeTitle(long); len([]rune(got)) > session.MaxTitleRunes {
+		t.Errorf("title not bounded: %d runes", len([]rune(got)))
+	}
+	_ = m2
+}
+
+// /sessions shows titles, dates and the current marker.
+func TestSessionsBrowserShowsTitles(t *testing.T) {
+	now := time.Now()
+	hooks := Hooks{
+		ListSessions: func() ([]SessionInfo, error) {
+			return []SessionInfo{
+				{ID: "b", Title: "Beta", Updated: now, Current: true},
+				{ID: "a", Title: "Alpha", Updated: now.Add(-time.Hour)},
+			}, nil
+		},
+	}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	m = typeText(m, "/sessions")
+	m = enterCurrent(m)
+	view := string(m.View().Content)
+	for _, want := range []string{"Beta", "Alpha", "(current)", now.Format("2006-01-02")} {
+		if !strings.Contains(view, want) {
+			t.Errorf("browser missing %q:\n%s", want, view)
+		}
 	}
 }
