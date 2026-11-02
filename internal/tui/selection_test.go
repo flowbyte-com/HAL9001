@@ -258,6 +258,24 @@ func TestSelectionSurvivesScrolling(t *testing.T) {
 	}
 }
 
+// TestSelectionClearedOnResize checks that a selection is dropped when
+// the terminal is resized: the rows are wrapped again, so the old
+// selection would point at different text.
+func TestSelectionClearedOnResize(t *testing.T) {
+	m := testModel()
+	m.SetMouse(true)
+	m.appendEntry("user", "hello")
+	m.renderConversation()
+	m.selAnchor = cellPos{row: 0, cell: 1}
+	m.selFocus = cellPos{row: 0, cell: 5}
+	m.selMoved = true
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	if m.selMoved || m.selAnchor != (cellPos{}) || m.selFocus != (cellPos{}) {
+		t.Error("a resize must clear the selection")
+	}
+}
+
 // TestSelectionClearedOnSessionChange checks that a selection does not
 // survive a change of conversation.
 func TestSelectionClearedOnSessionChange(t *testing.T) {
