@@ -2,7 +2,7 @@
 
 HAL9001 is a conversational thinking partner with permanent 444
 read-only authority. This document describes the new native foundation
-(root Go module `github.com/sipeed/picoclaw/hal9001`). The legacy
+(root Go module `github.com/flowbyte-com/HAL9001`). The legacy
 DeepClaw/PicoClaw design is preserved untouched in `legacy_base/`.
 
 ## Identity
@@ -32,14 +32,14 @@ narrowly scoped operations — not generic write permissions.
 ## Layers
 
 ```text
-cmd/hal9001      flags/env config, session store, TUI launch
-internal/tui     Bubble Tea interface (no business logic)
-internal/engine  Respond(): store user msg → provider chat → 444 gate → store reply
-internal/session JSONL conversation store (model-independent)
-internal/provider Provider/Model contracts, config validation, mock
+cmd/hal9001      flags/env/file config, session store, TUI launch
+internal/tui     chat, onboarding, model picker, streaming display (no logic)
+internal/engine  RespondStream(): store user msg → streamed provider → 444 gate → store reply
+internal/session JSONL conversation storage (model-independent)
+internal/provider OpenAI-compatible streaming client, contracts, mock
 internal/memory  record tiers, admission validation, Store interface
-internal/config  three-value onboarding (key, endpoint, model)
-internal/persona identity, Dave Protocol, safety-signal detection
+internal/config  three-value onboarding, user config file (0600)
+internal/persona identity, conversational contract, Dave Protocol
 internal/capability 444 allowlist
 ```
 
@@ -47,7 +47,16 @@ Conversation flows downward only: the TUI calls the engine, the engine
 calls the provider and the session store. Nothing calls upward. The
 engine never fabricates replies: without a provider it stores the user
 message and reports `ErrNoProvider`, which the TUI shows as a status
-notice — never as an assistant message.
+notice — never as an assistant message. Cancellation aborts the HTTP
+request and stores nothing from the assistant side, so an interrupted
+stream can never become a complete answer. Reasoning metadata returned
+by the API is captured separately and never displayed or stored as the
+answer.
+
+The engine prepends the persona system instruction to every request. It
+is never stored in the session, keeping history provider-independent
+and the instruction foundation byte-stable. Assistant messages are
+persisted only after successful generation.
 
 ## Conversation continuity
 

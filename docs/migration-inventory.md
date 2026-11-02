@@ -17,9 +17,9 @@ seeded), then review, then Prompt Workshop, then continuity, then MPM.
 | 5 | Report assessment (verified/supported/claimed/contradictions/missing) | `pkg/promptwork/promptwork.go` (`AssessReport`), tool adapters in `pkg/tools/prompt_workshop.go` | `internal/promptwork` + engine review path | 4 | `pkg/promptwork/promptwork_test.go`, `pkg/agent/hal9001_stage3*.go` | After 4 |
 | 6 | Review-report tool wiring | `pkg/tools/prompt_workshop.go` (`ReviewReportTool`), `pkg/agent/instance.go` registration | engine capability executors | 2, 5 | `pkg/tools/prompt_workshop_test.go` | After 5 |
 | 7 | Thought-continuity tiers + admission rules | `docs/architecture/hal9001-memory-contract.md` | `internal/memory` (seeded) | — | (contract doc; new store tests) | Done (seed) |
-| 8 | Session continuity + context assembly | `pkg/agent/context.go` (`BuildMessagesFromPrompt`), `pkg/session/*` | `internal/session` (seeded) + future assembler | 7 | `pkg/agent/*_test.go` (broad) | Later |
+| 8 | Session continuity + context assembly | `pkg/agent/context.go` (`BuildMessagesFromPrompt`), `pkg/session/*` | `internal/session` (seeded) + system-prompt prepending in engine | 7 | `pkg/agent/*_test.go` (broad) | Done (store + assembly) |
 | 9 | MPM project isolation + provenance | `pkg/mpm/*`, `docs/architecture/hal9001-memory-contract.md` | `internal/memory` Store impl | 7 | `pkg/agent/agent_coding_mpm_test.go` (needs MPM binary) | Later |
-| 10 | Provider abstractions + fallback routing | `pkg/providers/*`, `pkg/routing/*` | `internal/provider` adapters | — | `pkg/providers/*_test.go` | Provider milestone |
+| 10 | Provider abstractions + fallback routing | `pkg/providers/*`, `pkg/routing/*` | `internal/provider` OpenAI-compatible streaming client (native, not ported) | — | `internal/provider/openai_test.go` (httptest SSE, errors, cancel, reasoning split) | Done (native) |
 | 11 | Terminal branding (compact HAL heading, labels) | `cmd/picoclaw/internal/cliui/brand.go`, `banner.go` | `internal/tui` theme (seeded) | 1 | `cmd/picoclaw/internal/cliui/brand_test.go` | Done (seed) |
 | 12 | Greeting personalization | `pkg/commands/cmd_start.go` (`startGreeting`) | engine/TUI onboarding text | 1 | `pkg/commands/cmd_start_test.go` | Later |
 

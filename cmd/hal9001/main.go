@@ -1,21 +1,25 @@
 // Command hal9001 launches HAL9001's native terminal interface: a
 // conversational thinking partner with permanent 444 read-only authority.
-// This foundation wires conversation storage and the interface; model
-// provider adapters arrive with the provider milestone. Until then the
-// interface stores what you say and says so honestly instead of
-// fabricating replies.
+// On first run it asks for three values (provider endpoint, model,
+// API key) and stores them in HAL9001's own user configuration directory
+// with restrictive permissions. It never reads PicoClaw, OpenCode or MPM
+// credentials.
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
-	"github.com/sipeed/picoclaw/hal9001/internal/config"
-	"github.com/sipeed/picoclaw/hal9001/internal/engine"
-	"github.com/sipeed/picoclaw/hal9001/internal/provider"
-	"github.com/sipeed/picoclaw/hal9001/internal/session"
-	"github.com/sipeed/picoclaw/hal9001/internal/tui"
+	"github.com/flowbyte-com/HAL9001/internal/config"
+	"github.com/flowbyte-com/HAL9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/persona"
+	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/session"
+	"github.com/flowbyte-com/HAL9001/internal/tui"
 )
 
 func main() {
@@ -28,21 +32,225 @@ func main() {
 func run(args []string) error {
 	cfg, err := config.LoadErr(args)
 	if err != nil {
-		if err == flag.ErrHelp {
-			return nil
+		if errors.Is(err, flag.ErrHelp) {
+			return nil // usage already printed
 		}
 		return err
 	}
 	if cfg.NoColor {
 		os.Setenv("NO_COLOR", "1")
 	}
-	store, err := session.Open(cfg.StoreDir, cfg.Session)
+	if cfg.List {
+		return listSessions(cfg.StoreDir)
+	}
+	stored, err := config.LoadFile(config.ConfigPath())
 	if err != nil {
 		return err
 	}
-	// No provider adapters ship with the foundation, so the engine runs
-	// without one: the TUI stores the conversation and reports that no
-	// provider is configured instead of inventing answers.
-	eng := engine.New(store, nil, provider.Model{ID: cfg.Model})
-	return tui.Run(eng)
+	app := &app{
+		cfg:    cfg,
+		stored: stored,
+		model:  cfg.Model,
+	}
+	return app.run()
+}
+
+func listSessions(storeDir string) error {
+	names, err := config.ListSessions(storeDir)
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		fmt.Println("No stored conversations yet.")
+		return nil
+	}
+	for _, name := range names {
+		fmt.Println(name)
+	}
+	return nil
+}
+
+type app struct {
+	cfg     config.Config
+	stored  config.FileConfig
+	store   *session.Store
+	eng     *engine.Engine
+	model   string
+	session string
+}
+
+func (a *app) run() error {
+	store, err := session.Open(a.cfg.StoreDir, a.cfg.Session)
+	if err != nil {
+		return err
+	}
+	a.store = store
+	a.session = a.cfg.Session
+	a.rebuildEngine()
+
+	hooks := tui.Hooks{
+		SaveOnboard:    a.saveOnboard,
+		TestOnboard:    a.testOnboard,
+		HasConfig:      a.hasConfig,
+		ListModels:     a.listModels,
+		SwitchModel:    a.switchModel,
+		CurrentOnboard: a.currentOnboard,
+		NewSession:     a.newSession,
+	}
+	m := tui.NewWithHooks(a.eng, hooks)
+	if !a.hasConfig() {
+		m.EnterOnboarding()
+	}
+	return tui.RunWithModel(m)
+}
+
+func (a *app) hasConfig() bool {
+	if a.cfg.Endpoint != "" && a.cfg.Model != "" && a.cfg.APIKey != "" {
+		return true
+	}
+	_, ok := a.stored.Active()
+	return ok && a.stored.Endpoint != ""
+}
+
+// providerFor builds the configured provider, or nil when nothing usable
+// is configured yet. No adapters beyond OpenAI-compatible ship in this
+// milestone.
+func (a *app) providerFor() *provider.OpenAICompatible {
+	endpoint, key := a.cfg.Endpoint, a.cfg.APIKey
+	if endpoint == "" {
+		endpoint = a.stored.Endpoint
+	}
+	if key == "" {
+		key = a.stored.APIKey
+	}
+	if endpoint == "" || key == "" {
+		return nil
+	}
+	return &provider.OpenAICompatible{Endpoint: endpoint, APIKey: key}
+}
+
+func (a *app) modelFor() provider.Model {
+	id := a.model
+	if id == "" {
+		id = a.cfg.Model
+	}
+	if id == "" {
+		if active, ok := a.stored.Active(); ok {
+			id = active.ID
+		}
+	}
+	return provider.Model{ID: id}
+}
+
+func (a *app) rebuildEngine() {
+	a.eng = engine.New(a.store, a.providerFor(), a.modelFor()).
+		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir))
+}
+
+func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
+	a.stored.Provider = "openai-compatible"
+	if a.cfg.Endpoint == "" {
+		a.stored.Endpoint = d.Endpoint
+	}
+	if a.cfg.APIKey == "" {
+		a.stored.APIKey = d.Key
+	}
+	a.stored.AddModel(d.Model)
+	a.stored.ActiveModel = d.Model
+	if err := config.SaveFile(config.ConfigPath(), a.stored); err != nil {
+		return nil, err
+	}
+	a.model = d.Model
+	a.rebuildEngine()
+	return a.eng, nil
+}
+
+func (a *app) testOnboard(d tui.OnboardData) (string, error) {
+	client := &provider.OpenAICompatible{Endpoint: d.Endpoint, APIKey: d.Key}
+	ids, err := client.Models(context.Background())
+	if err != nil {
+		return "", err
+	}
+	switch len(ids) {
+	case 0:
+		return "reachable, no models listed", nil
+	case 1:
+		return "reachable, 1 model", nil
+	default:
+		return fmt.Sprintf("reachable, %d models", len(ids)), nil
+	}
+}
+
+func (a *app) currentOnboard() tui.OnboardData {
+	endpoint := a.cfg.Endpoint
+	if endpoint == "" {
+		endpoint = a.stored.Endpoint
+	}
+	key := a.cfg.APIKey
+	if key == "" {
+		key = a.stored.APIKey
+	}
+	model := a.model
+	if model == "" {
+		model = a.cfg.Model
+	}
+	return tui.OnboardData{Endpoint: endpoint, Model: model, Key: key}
+}
+
+func (a *app) listModels() []tui.ModelInfo {
+	active := a.model
+	if active == "" {
+		active = a.cfg.Model
+	}
+	if active == "" {
+		if m, ok := a.stored.Active(); ok {
+			active = m.ID
+		}
+	}
+	seen := map[string]bool{}
+	var out []tui.ModelInfo
+	add := func(id, label string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, tui.ModelInfo{ID: id, Label: label, Active: id == active})
+	}
+	for _, m := range a.stored.Models {
+		add(m.ID, m.Display())
+	}
+	if a.cfg.Model != "" {
+		add(a.cfg.Model, a.cfg.Model+" (flags)")
+	}
+	if a.model != "" {
+		add(a.model, a.model)
+	}
+	return out
+}
+
+func (a *app) switchModel(id string) (tui.Engine, error) {
+	found := false
+	for _, m := range a.listModels() {
+		if m.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("unknown model %q", id)
+	}
+	a.model = id
+	a.rebuildEngine()
+	return a.eng, nil
+}
+
+func (a *app) newSession() (tui.Engine, error) {
+	name := "cli-" + time.Now().Format("20060102-150405")
+	store, err := session.Open(a.cfg.StoreDir, name)
+	if err != nil {
+		return nil, err
+	}
+	a.store = store
+	a.session = name
+	a.rebuildEngine()
+	return a.eng, nil
 }
