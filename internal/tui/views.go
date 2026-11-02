@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -509,6 +511,7 @@ func (m Model) helpRows() []string {
 		{"Ctrl+N", "new conversation"},
 		{"Ctrl+C", "quit"},
 		{"Esc", "cancel stream / close"},
+		{"Ctrl+O", "expand last prompt"},
 		{"PgUp/PgDn", "scroll conversation"},
 		{"paste", "inserted, never sent"},
 		{"//", "literal slash message"},
@@ -521,6 +524,9 @@ func (m Model) helpRows() []string {
 		{"/model", "model picker"},
 		{"/new", "new conversation"},
 		{"/sessions", "resume a stored session"},
+		{"/expand", "expand long prompts"},
+		{"/collapse", "collapse long prompts"},
+		{"/diag", "last turn diagnostics"},
 	}
 
 	var rows []string
@@ -639,9 +645,118 @@ func (m Model) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// scrollPanel moves the overlay panel by delta rows.
+// diagRows renders the last turn's content-free telemetry. It never
+// shows prompt text, reply text, reasoning text or credentials.
+func (m Model) diagRows() []string {
+	st := m.theme.styles()
+	rows := []string{"Last turn — diagnostics (Esc back)", ""}
+	s := m.lastStats
+	if s == nil {
+		rows = append(rows, "  No completed turn yet.")
+		rows = append(rows, "", "  Diagnostics carry counts and durations only:")
+		rows = append(rows, "  no prompt text, no reasoning text, no credentials.")
+		return rows
+	}
+	row := func(label, value string) {
+		rows = append(rows, "  "+padTo(st.active.Render(label), 16)+value)
+	}
+	row("status", s.Status)
+	row("elapsed", fmtDuration(s.Duration))
+	if s.FirstVisible > 0 {
+		row("first output", fmtDuration(s.FirstVisible))
+	} else {
+		row("first output", "never")
+	}
+	if s.FirstReasoning > 0 {
+		row("first reasoning", fmtDuration(s.FirstReasoning))
+	} else {
+		row("first reasoning", "none")
+	}
+	row("sse events", fmt.Sprintf("%d", s.Events))
+	row("keep-alives", fmt.Sprintf("%d", s.KeepAlives))
+	if s.Malformed > 0 {
+		row("malformed", fmt.Sprintf("%d", s.Malformed))
+	}
+	row("visible", fmt.Sprintf("%d chunks · %d runes", s.VisibleChunks, s.VisibleRunes))
+	row("reasoning", fmt.Sprintf("%d events · %d runes (presence only)", s.ReasoningChunks, s.ReasoningRunes))
+	finish := s.FinishReason
+	if finish == "" {
+		finish = "not reported"
+	}
+	row("finish", finish)
+	if s.OutputLimitHit {
+		row("limit", "max_tokens reached — the reply was cut")
+	}
+	if s.HasUsage {
+		row("tokens", fmt.Sprintf("prompt %d · completion %d · total %d",
+			s.Usage.PromptTokens, s.Usage.CompletionTokens, s.Usage.TotalTokens))
+		if s.Usage.ReasoningTokens > 0 {
+			row("", fmt.Sprintf("of which reasoning %d", s.Usage.ReasoningTokens))
+		}
+	} else {
+		row("tokens", "not reported by the provider")
+	}
+	if s.MaxTokens > 0 {
+		row("limits", fmt.Sprintf("max_tokens %d · idle %s · turn %s",
+			s.MaxTokens, shortDuration(s.IdleTimeout), shortDuration(s.TurnTimeout)))
+	}
+	rows = append(rows, "", "  Counts and durations only: no prompt, reply or reasoning text.")
+	return rows
+}
+
+// fmtDuration renders a measured duration, keeping sub-millisecond values
+// meaningful.
+func fmtDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	if d < time.Millisecond {
+		return "<1ms"
+	}
+	return d.Round(time.Millisecond).String()
+}
+
+// shortDuration renders a limit compactly (2m0s, 15m0s).
+func shortDuration(d time.Duration) string {
+	if d <= 0 {
+		return "none"
+	}
+	return d.Round(time.Second).String()
+}
+
+func (m Model) updateDiag(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.ready = true
+		return m, nil
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case keyQuit, keyQuit2:
+			return m, tea.Quit
+		case "esc", "enter", "q":
+			m.view = viewChat
+			return m, nil
+		case "up", "shift+tab":
+			m.scrollPanel(-1)
+			return m, nil
+		case "down", "tab":
+			m.scrollPanel(1)
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+// scrollPanel moves the active overlay panel by delta rows.
 func (m *Model) scrollPanel(delta int) {
-	total := len(m.helpRows())
+	var total int
+	switch m.view {
+	case viewDiag:
+		total = len(m.diagRows())
+	default:
+		total = len(m.helpRows())
+	}
 	n := contentHeight(m.height)
 	m.panelOffset += delta
 	if m.panelOffset > total-n {
@@ -651,6 +766,7 @@ func (m *Model) scrollPanel(delta int) {
 		m.panelOffset = 0
 	}
 }
+
 func (m *Model) newSession() {
 	if m.hooks.NewSession == nil {
 		m.notice = "New sessions are not wired up."
@@ -664,10 +780,10 @@ func (m *Model) newSession() {
 	if eng != nil {
 		m.engine = eng
 	}
-	m.lines = nil
-	m.display = nil
+	m.entries = nil
 	m.pending = ""
 	m.title = ""
+	m.lastStats = nil
 	m.renderConversation()
 	m.notice = "New conversation started."
 }

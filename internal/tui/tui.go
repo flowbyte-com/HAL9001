@@ -8,6 +8,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/provider"
 )
 
 // Keys.
@@ -142,6 +144,13 @@ type Engine interface {
 	RespondStream(ctx context.Context, input string, emit func(string)) (string, error)
 }
 
+// ProgressEngine is implemented by engines that can also report
+// reasoning presence and content-free turn statistics. The interface
+// prefers it when available and falls back to Engine otherwise.
+type ProgressEngine interface {
+	RespondStreamEvents(ctx context.Context, input string, emit func(engine.Event)) (string, error)
+}
+
 // View selects the full-screen mode.
 type View int
 
@@ -152,6 +161,7 @@ const (
 	viewTheme
 	viewHelp
 	viewSessions
+	viewDiag
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -163,14 +173,34 @@ type SessionLine struct {
 // maxComposerHeight caps the growing composer; the viewport keeps the rest.
 const maxComposerHeight = 8
 
+// Long user prompts are collapsed to a short preview: a pasted prompt is
+// often a whole page, and it would otherwise push HAL's answer out of
+// view. The full text is always kept in the entry and in the session.
+const (
+	// userPreviewRows is how many rows of a long message stay visible.
+	userPreviewRows = 4
+	// collapseAt is the row count above which a message is collapsed on
+	// submission.
+	collapseAt = 6
+)
+
+// entry is one conversation turn. Text is the original, untouched: user
+// text as typed and assistant text as Markdown. rows caches the rendered
+// form for the current width.
+type entry struct {
+	role     string // "user" or "assistant"
+	text     string
+	expanded bool
+	rows     []string
+}
+
 // Model is the Bubble Tea application state.
 type Model struct {
 	engine   Engine
 	hooks    Hooks
 	viewport viewport.Model
 	composer textarea.Model
-	lines    []string
-	display  []string
+	entries  []entry
 	pending  string
 	width    int
 	height   int
@@ -198,6 +228,16 @@ type Model struct {
 	escapedAt time.Time
 	// now is the clock, replaceable in tests.
 	now func() time.Time
+	// streamID identifies the current turn. Messages from an older turn
+	// are ignored, so cancelling one stream can never disturb the next.
+	streamID int
+	// streamStarted is when the current turn began.
+	streamStarted time.Time
+	// reasoningSeen reports that the provider sent reasoning events for
+	// this turn. The text itself is never seen here.
+	reasoningSeen bool
+	// lastStats is the content-free telemetry of the last finished turn.
+	lastStats *provider.TurnStats
 	// Onboarding form.
 	obEndpoint textinput.Model
 	obModel    textinput.Model
@@ -284,18 +324,12 @@ func (m *Model) SetTitle(title string) { m.title = title }
 // SetHistory replaces the conversation view with stored turns (raw user
 // text, raw assistant Markdown rendered on display).
 func (m *Model) SetHistory(lines []SessionLine) {
-	m.lines = nil
-	m.display = nil
+	m.entries = nil
 	m.pending = ""
 	for _, line := range lines {
-		if line.Role == "user" {
-			m.lines = append(m.lines, "You > "+line.Text)
-			m.display = append(m.display, "You > "+line.Text)
-		} else {
-			m.lines = append(m.lines, "HAL > "+line.Text)
-			m.display = append(m.display, "HAL > "+renderMarkdown(line.Text, m.assistantWidth()))
-		}
+		m.entries = append(m.entries, entry{role: line.Role, text: line.Text})
 	}
+	m.rewrap()
 	m.renderConversation()
 	m.viewport.GotoBottom()
 }
@@ -316,40 +350,82 @@ func (m *Model) EnterOnboarding() { m.enterOnboard(OnboardData{}) }
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd { return nil }
 
-type streamDeltaMsg struct{ text string }
-type streamStartedMsg struct{}
-type responseMsg struct{ text string }
-type errorMsg struct{ err error }
+type streamDeltaMsg struct {
+	id   int
+	text string
+}
+type streamThinkingMsg struct{ id int }
+type streamStatsMsg struct {
+	id    int
+	stats provider.TurnStats
+}
+type streamStartedMsg struct{ id int }
+type responseMsg struct {
+	id   int
+	text string
+}
+type errorMsg struct {
+	id  int
+	err error
+}
+type tickMsg time.Time
+
+// tickCmd re-renders the streaming notice once a second so a slow turn
+// shows elapsed time instead of a frozen label.
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
 
 // sendCmd starts the streamed turn. With a live sender it runs in the
 // background and posts deltas; headless it runs inline for determinism.
-func (m Model) sendCmd(input string, ctx context.Context) tea.Cmd {
+func (m Model) sendCmd(id int, input string, ctx context.Context) tea.Cmd {
 	if m.sender == nil {
-		return func() tea.Msg { return m.runRespond(input, ctx) }
+		return func() tea.Msg { return m.runRespond(id, input, ctx) }
 	}
 	return func() tea.Msg {
-		go m.runStream(input, ctx)
-		return streamStartedMsg{}
+		go m.runStream(id, input, ctx)
+		return streamStartedMsg{id: id}
 	}
 }
 
-func (m Model) runRespond(input string, ctx context.Context) tea.Msg {
+func (m Model) runRespond(id int, input string, ctx context.Context) tea.Msg {
 	reply, err := m.engine.RespondStream(ctx, input, nil)
 	if err != nil {
-		return errorMsg{err: err}
+		return errorMsg{id: id, err: err}
 	}
-	return responseMsg{text: reply}
+	return responseMsg{id: id, text: reply}
 }
 
-func (m Model) runStream(input string, ctx context.Context) {
-	reply, err := m.engine.RespondStream(ctx, input, func(text string) {
-		m.sender(streamDeltaMsg{text: text})
-	})
+// runStream drives the live turn. The engine reports reasoning presence
+// and content-free statistics as well as text; none of the reasoning
+// text itself ever reaches the interface.
+func (m Model) runStream(id int, input string, ctx context.Context) {
+	emit := func(ev engine.Event) {
+		switch {
+		case ev.Stats != nil:
+			m.sender(streamStatsMsg{id: id, stats: *ev.Stats})
+		case ev.Text != "":
+			m.sender(streamDeltaMsg{id: id, text: ev.Text})
+		case ev.Reasoning:
+			m.sender(streamThinkingMsg{id: id})
+		}
+	}
+	var (
+		reply string
+		err   error
+	)
+	if pe, ok := m.engine.(ProgressEngine); ok {
+		reply, err = pe.RespondStreamEvents(ctx, input, emit)
+	} else {
+		reply, err = m.engine.RespondStream(ctx, input, func(text string) {
+			m.sender(streamDeltaMsg{id: id, text: text})
+		})
+	}
 	if err != nil {
-		m.sender(errorMsg{err: err})
+		m.sender(errorMsg{id: id, err: err})
 		return
 	}
-	m.sender(responseMsg{text: reply})
+	m.sender(responseMsg{id: id, text: reply})
 }
 
 // Update implements tea.Model.
@@ -365,6 +441,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateHelp(msg)
 	case viewSessions:
 		return m.updateSessions(msg)
+	case viewDiag:
+		return m.updateDiag(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -383,6 +461,12 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		key := msg.String()
+		// Any key other than the Escape itself ends the escape sequence
+		// window: only an Enter that immediately follows an Escape can be
+		// its second half.
+		if key != "esc" && key != keyEnter && key != keySend {
+			m.escapedAt = time.Time{}
+		}
 		switch key {
 		case keyQuit, keyQuit2:
 			m.stopStream()
@@ -428,8 +512,13 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgdown":
 			m.viewport.PageDown()
 			return m, nil
+		case "ctrl+o":
+			m.toggleLastUser()
+			return m, nil
 		}
 	case tea.PasteMsg:
+		// A paste ends any escape-sequence window: the user is typing.
+		m.escapedAt = time.Time{}
 		m.composer.InsertString(msg.Content)
 		m.fitComposer()
 		return m, nil
@@ -438,37 +527,81 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
+	case streamThinkingMsg:
+		if !m.currentTurn(msg.id) {
+			return m, nil
+		}
+		m.reasoningSeen = true
+		m.notice = m.streamingNotice()
+		return m, nil
 	case streamDeltaMsg:
+		if !m.currentTurn(msg.id) {
+			return m, nil
+		}
 		stick := m.viewport.AtBottom()
 		m.pending += msg.text
+		m.notice = m.streamingNotice()
 		m.renderConversation()
 		if stick {
 			m.viewport.GotoBottom()
 		}
 		return m, nil
+	case streamStatsMsg:
+		if !m.currentTurn(msg.id) {
+			return m, nil
+		}
+		stats := msg.stats
+		m.lastStats = &stats
+		return m, nil
+	case tickMsg:
+		if !m.sending || m.sender == nil {
+			return m, nil
+		}
+		m.notice = m.streamingNotice()
+		return m, tickCmd()
 	case responseMsg:
+		if !m.currentTurn(msg.id) {
+			return m, nil
+		}
 		m.sending = false
 		m.stopStream()
-		m.notice = ""
 		m.pending = ""
+		m.reasoningSeen = false
 		m.lastResponse = msg.text
-		m.replaceLast(msg.text)
+		if m.lastStats != nil && m.lastStats.OutputLimitHit {
+			m.notice = "output limit reached — the reply was cut at max_tokens"
+		} else {
+			m.notice = ""
+		}
+		m.appendEntry("assistant", msg.text)
 		return m, nil
 	case copyResultMsg:
 		return m.updateCopyResult(msg)
 	case errorMsg:
+		if !m.currentTurn(msg.id) {
+			// A late message from a cancelled turn must never touch the
+			// current one.
+			return m, nil
+		}
 		m.sending = false
 		m.stopStream()
-		if errors.Is(msg.err, context.Canceled) {
+		m.reasoningSeen = false
+		m.pending = ""
+		switch {
+		case errors.Is(msg.err, context.Canceled):
 			m.notice = "cancelled — stored nothing from the assistant"
-			return m, nil
-		}
-		if errors.Is(msg.err, engine.ErrNoProvider) {
+		case errors.Is(msg.err, engine.ErrNoProvider):
 			m.notice = "No provider configured — message stored in this session."
-			return m, nil
+		case errors.Is(msg.err, provider.ErrStreamIdle):
+			m.notice = "the provider went silent — the request was closed to avoid a silent charge"
+			m.appendEntry("assistant", "(the provider stopped sending data; the request was closed)")
+		case errors.Is(msg.err, provider.ErrTurnTimeout):
+			m.notice = "the turn hit its time limit — the request was closed"
+			m.appendEntry("assistant", "(the turn exceeded its time limit; the request was closed)")
+		default:
+			m.notice = "error: " + msg.err.Error()
+			m.appendEntry("assistant", "(I couldn't answer that: "+msg.err.Error()+")")
 		}
-		m.notice = "error: " + msg.err.Error()
-		m.appendLine("HAL > (I couldn't answer that: " + msg.err.Error() + ")")
 		return m, nil
 	}
 	if m.ready {
@@ -528,13 +661,42 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	}
 	m.composer.Reset()
 	m.fitComposer()
-	m.appendLine("You > " + input)
+	m.streamID++
+	id := m.streamID
+	m.appendEntry("user", input)
+	m.viewport.GotoBottom()
 	m.pending = ""
 	m.sending = true
-	m.notice = "streaming… (Esc cancels)"
+	m.streamStarted = m.clock()
+	m.reasoningSeen = false
+	m.notice = m.streamingNotice()
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
-	return m, m.sendCmd(input, ctx)
+	cmd := m.sendCmd(id, input, ctx)
+	if m.sender == nil {
+		return m, cmd
+	}
+	return m, tea.Batch(cmd, tickCmd())
+}
+
+// streamingNotice describes the turn without exposing private reasoning:
+// it only says which phase the provider is in and how long it has run.
+func (m Model) streamingNotice() string {
+	var elapsed time.Duration
+	if !m.streamStarted.IsZero() {
+		elapsed = m.clock().Sub(m.streamStarted).Round(time.Second)
+	}
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	phase := "waiting for the model"
+	switch {
+	case m.pending != "":
+		phase = "streaming"
+	case m.reasoningSeen:
+		phase = "thinking"
+	}
+	return fmt.Sprintf("%s… %s · Esc cancels", phase, elapsed)
 }
 
 // insertNewline breaks the line in the composer without sending.
@@ -620,57 +782,199 @@ func frameSizes(available, desiredComposer int) (viewportRows, composerRows int)
 	return viewportRows, composerRows
 }
 
-func (m *Model) appendLine(line string) {
-	m.lines = append(m.lines, line)
-	m.display = append(m.display, line)
-	m.renderConversation()
-	m.viewport.GotoBottom()
-}
-
-// replaceLast swaps the pending raw stream for the final rendered answer.
-func (m *Model) replaceLast(text string) {
+// appendEntry adds one conversation turn and re-renders it. It follows
+// the new content only when the reader was already at the bottom.
+func (m *Model) appendEntry(role, text string) {
 	stick := m.viewport.AtBottom()
-	rendered := renderMarkdown(text, m.assistantWidth())
-	m.lines = append(m.lines, "HAL > "+text)
-	m.display = append(m.display, "HAL > "+rendered)
+	m.entries = append(m.entries, entry{role: role, text: text})
+	m.renderEntry(len(m.entries) - 1)
 	m.renderConversation()
 	if stick {
 		m.viewport.GotoBottom()
 	}
 }
 
-// rewrap re-renders stored assistant messages for the current width so
-// resizing reflows Markdown instead of leaving stale wrapping.
-func (m *Model) rewrap() {
-	if len(m.lines) == 0 {
-		return
+// currentTurn reports whether a message belongs to the live turn. An
+// unset id (0) means it did not come from a stream and always applies.
+func (m Model) currentTurn(id int) bool { return id == 0 || id == m.streamID }
+
+// userWidth is the room left for user text after the "You > " label.
+func (m Model) userWidth() int {
+	w := m.width - len("You > ")
+	if w < 10 {
+		return 10
 	}
-	m.display = make([]string, 0, len(m.lines))
-	for _, line := range m.lines {
-		if rest, ok := strings.CutPrefix(line, "HAL > "); ok {
-			m.display = append(m.display, "HAL > "+renderMarkdown(rest, m.assistantWidth()))
-			continue
+	return w
+}
+
+// renderEntry refreshes one entry's cached rows for the current width,
+// applying the collapse rule to long user messages.
+func (m *Model) renderEntry(i int) {
+	e := &m.entries[i]
+	switch e.role {
+	case "user":
+		e.rows = m.renderUser(e)
+	default:
+		label := "HAL > "
+		indent := strings.Repeat(" ", len(label))
+		body := renderMarkdown(e.text, m.assistantWidth())
+		lines := strings.Split(body, "\n")
+		rows := make([]string, 0, len(lines))
+		for j, line := range lines {
+			if j == 0 {
+				rows = append(rows, label+line)
+				continue
+			}
+			rows = append(rows, indent+line)
 		}
-		m.display = append(m.display, line)
+		e.rows = rows
 	}
 }
+
+// renderUser wraps a user message and decides how much of it to show.
+// The full text stays in e.text; only the rendering is shortened.
+func (m Model) renderUser(e *entry) []string {
+	width := m.userWidth()
+	wrapped := strings.Split(lipgloss.NewStyle().Width(width).Render(e.text), "\n")
+	lines := make([]string, 0, len(wrapped))
+	for _, line := range wrapped {
+		lines = append(lines, strings.TrimRight(line, " "))
+	}
+	rows := make([]string, 0, len(lines)+1)
+	for j, line := range lines {
+		if j == 0 {
+			rows = append(rows, "You > "+line)
+			continue
+		}
+		rows = append(rows, strings.Repeat(" ", len("You > "))+line)
+	}
+	if len(rows) <= collapseAt {
+		return rows
+	}
+	if e.expanded {
+		return append(rows, m.collapseHint("Ctrl+O to collapse"))
+	}
+	visible := rows[:userPreviewRows]
+	hidden := len(rows) - userPreviewRows
+	hint := fmt.Sprintf("… %d more line(s) · Ctrl+O to expand", hidden)
+	if hidden == 1 {
+		hint = "… 1 more line · Ctrl+O to expand"
+	}
+	return append(visible, m.collapseHint(hint))
+}
+
+// collapseHint renders the collapsed/expanded affordance aligned with the
+// message text.
+func (m Model) collapseHint(text string) string {
+	hint := strings.Repeat(" ", len("You > ")) + text
+	if !m.color {
+		return hint
+	}
+	return strings.Repeat(" ", len("You > ")) + m.theme.styles().footer.Render(text)
+}
+
+// collapsible reports whether the entry is long enough to collapse.
+func (m Model) collapsible(i int) bool {
+	e := m.entries[i]
+	if e.role != "user" {
+		return false
+	}
+	full := m.renderUser(&entry{role: e.role, text: e.text, expanded: true})
+	return len(full) > collapseAt
+}
+
+// toggleLastUser expands or collapses the most recent user message and
+// keeps the reading position stable.
+func (m *Model) toggleLastUser() {
+	for i := len(m.entries) - 1; i >= 0; i-- {
+		if m.entries[i].role != "user" {
+			continue
+		}
+		if !m.collapsible(i) {
+			m.notice = "The last message is short — nothing to expand."
+			return
+		}
+		m.toggleEntry(i)
+		return
+	}
+	m.notice = "No message to expand yet."
+}
+
+// toggleEntry flips one entry between preview and full text.
+func (m *Model) toggleEntry(i int) {
+	stick := m.viewport.AtBottom()
+	before := m.rowsBefore(i)
+	m.entries[i].expanded = !m.entries[i].expanded
+	m.renderEntry(i)
+	m.renderConversation()
+	after := m.rowsBefore(i)
+	if stick {
+		m.viewport.GotoBottom()
+		return
+	}
+	// If the toggled message sits above the viewport, shift the offset by
+	// the number of rows it gained or lost so the text stays put.
+	if before < m.viewport.YOffset() {
+		offset := m.viewport.YOffset() + (after - before)
+		if offset < 0 {
+			offset = 0
+		}
+		m.viewport.SetYOffset(offset)
+	}
+}
+
+// expandAll and collapseAll apply to every long user message.
+func (m *Model) setAllUserExpanded(expanded bool) {
+	stick := m.viewport.AtBottom()
+	for i := range m.entries {
+		if m.entries[i].role != "user" || !m.collapsible(i) {
+			continue
+		}
+		m.entries[i].expanded = expanded
+		m.renderEntry(i)
+	}
+	m.renderConversation()
+	if stick {
+		m.viewport.GotoBottom()
+	}
+}
+
+// rowsBefore counts the rendered rows of every entry before i.
+func (m Model) rowsBefore(i int) int {
+	n := 0
+	for j := 0; j < i && j < len(m.entries); j++ {
+		n += len(m.entries[j].rows)
+	}
+	return n
+}
+
+// rewrap re-renders every entry for the current width so resizing
+// reflows the conversation instead of leaving stale wrapping.
+func (m *Model) rewrap() {
+	for i := range m.entries {
+		m.renderEntry(i)
+	}
+}
+
 func (m *Model) renderConversation() {
 	st := m.theme.styles()
-	styleLine := func(line string) string {
+	styleRow := func(row string) string {
 		if !m.color {
-			return line
+			return row
 		}
-		if rest, ok := strings.CutPrefix(line, "You > "); ok {
+		if rest, ok := strings.CutPrefix(row, "You > "); ok {
 			return st.user.Render("You > ") + rest
 		}
-		if rest, ok := strings.CutPrefix(line, "HAL > "); ok {
+		if rest, ok := strings.CutPrefix(row, "HAL > "); ok {
 			return st.hal.Render("HAL > ") + rest
 		}
-		return line
+		return row
 	}
-	content := make([]string, 0, len(m.display)+1)
-	for _, line := range m.display {
-		content = append(content, styleLine(line))
+	content := make([]string, 0, len(m.entries)+1)
+	for _, e := range m.entries {
+		for _, row := range e.rows {
+			content = append(content, styleRow(row))
+		}
 	}
 	if m.pending != "" {
 		pending := "HAL > " + m.pending
@@ -732,6 +1036,8 @@ func (m Model) contentRows(n int) []string {
 		return m.panelRows(m.helpRows(), n)
 	case viewSessions:
 		return m.panelRows(m.sessionsRows(), n)
+	case viewDiag:
+		return m.panelRows(m.diagRows(), n)
 	}
 	return m.chatRows(n)
 }
@@ -923,7 +1229,23 @@ func Run(engine Engine, hooks Hooks) error {
 }
 
 // Lines returns the conversation lines, for tests.
-func (m Model) Lines() []string { return append([]string(nil), m.lines...) }
+func (m Model) Lines() []string {
+	out := make([]string, 0, len(m.entries))
+	for _, e := range m.entries {
+		label := "HAL > "
+		if e.role == "user" {
+			label = "You > "
+		}
+		out = append(out, label+e.text)
+	}
+	return out
+}
+
+// Entries returns the conversation turns, for tests.
+func (m Model) Entries() []entry { return append([]entry(nil), m.entries...) }
+
+// LastStats returns the telemetry of the last finished turn, for tests.
+func (m Model) LastStats() *provider.TurnStats { return m.lastStats }
 
 // Notice returns the current status notice, for tests.
 func (m Model) Notice() string { return m.notice }

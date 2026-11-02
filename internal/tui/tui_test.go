@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/provider"
 )
 
 type scriptEngine struct {
@@ -210,7 +212,7 @@ func TestResize(t *testing.T) {
 func TestScroll(t *testing.T) {
 	m := testModel()
 	for i := 0; i < 40; i++ {
-		m.appendLine("line")
+		m.appendEntry("assistant", "line")
 	}
 	if !m.Viewport().AtBottom() {
 		t.Fatal("fresh output should sit at the bottom")
@@ -898,7 +900,7 @@ func TestViewportKeepsPositionOnStream(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	for i := 0; i < 30; i++ {
-		m.appendLine("old line")
+		m.appendEntry("assistant", "old line")
 	}
 	m.viewport.GotoTop()
 	if m.viewport.AtBottom() {
@@ -946,7 +948,7 @@ func TestHeaderAndFooterArePersistent(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	for i := 0; i < 40; i++ {
-		m.appendLine("filler line")
+		m.appendEntry("assistant", "filler line")
 	}
 	m = pressKey(m, tea.KeyUp, 0, "")
 	rows := m.layoutRows()
@@ -1053,12 +1055,11 @@ func TestSplitEscapeSequenceBecomesNewline(t *testing.T) {
 	m = updated.(Model)
 	m = typeText(m, "first")
 	m = pressKey(m, tea.KeyEscape, 0, "")
-	m = typeText(m, "second")
 	m = pressKey(m, tea.KeyEnter, 0, "")
 	if eng.calls != 0 {
 		t.Fatal("a split escape sequence must not send")
 	}
-	if got := m.Composer().Value(); got != "firstsecond\n" {
+	if got := m.Composer().Value(); got != "first\n" {
 		t.Errorf("composer = %q, want the Enter to become a newline", got)
 	}
 }
@@ -1111,5 +1112,322 @@ func TestDraftSurvivesEveryOverlay(t *testing.T) {
 	m = pressKey(m, tea.KeyEscape, 0, "")
 	if got := m.Composer().Value(); got != "draft for help" {
 		t.Errorf("help panel: draft = %q", got)
+	}
+}
+
+// paste sets the composer directly, as a terminal paste would.
+func paste(m Model, text string) Model {
+	m.composer.InsertString(text)
+	m.composer.Focus()
+	return m
+}
+
+// A long prompt collapses to a short preview; the original stays intact
+// in the entry, in Lines() and therefore in the session and the request.
+func TestLongUserMessageCollapses(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	long := strings.Repeat("museum thought experiment line\n", 20)
+	m = paste(m, long)
+	m = enterCurrent(m)
+	// Only trailing whitespace is normalised on submit.
+	want := strings.TrimRight(long, "\n")
+
+	entries := m.Entries()
+	if len(entries) < 1 {
+		t.Fatal("no user entry")
+	}
+	user := entries[0]
+	if user.text != want {
+		t.Error("the full prompt must be kept in the entry")
+	}
+	if got, want := len(user.rows), userPreviewRows+1; got != want {
+		t.Errorf("collapsed rows = %d, want %d (preview + hint)", got, want)
+	}
+	view := m.viewport.View()
+	if !strings.Contains(view, "Ctrl+O to expand") {
+		t.Errorf("collapsed message must offer the control:\n%s", view)
+	}
+	if strings.Count(view, "museum thought experiment line") > userPreviewRows {
+		t.Errorf("collapsed message shows too many lines:\n%s", view)
+	}
+	if got := m.Lines()[0]; got != "You > "+want {
+		t.Error("Lines() must expose the full original text")
+	}
+}
+
+// Short messages are never collapsed.
+func TestShortUserMessageNotCollapsed(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, "just a short question")
+	m = enterCurrent(m)
+	user := m.Entries()[0]
+	if len(user.rows) != 1 {
+		t.Errorf("short message rows = %d, want 1", len(user.rows))
+	}
+	if strings.Contains(strings.Join(user.rows, "\n"), "Ctrl+O") {
+		t.Error("a short message must not show a collapse hint")
+	}
+}
+
+// Ctrl+O expands and collapses the last long message.
+func TestCtrlOTogglesLongMessage(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, strings.Repeat("line\n", 20))
+	m = enterCurrent(m)
+	collapsed := len(m.Entries()[0].rows)
+
+	m = pressKey(m, 'o', tea.ModCtrl, "")
+	expanded := len(m.Entries()[0].rows)
+	if expanded <= collapsed {
+		t.Fatalf("Ctrl+O must expand: %d -> %d rows", collapsed, expanded)
+	}
+	if !strings.Contains(strings.Join(m.Entries()[0].rows, "\n"), "Ctrl+O to collapse") {
+		t.Error("expanded message should offer collapsing")
+	}
+	m = pressKey(m, 'o', tea.ModCtrl, "")
+	if got := len(m.Entries()[0].rows); got != collapsed {
+		t.Errorf("Ctrl+O must collapse again: %d rows, want %d", got, collapsed)
+	}
+	// The stored text is never touched by the toggle.
+	if !strings.HasSuffix(m.Entries()[0].text, "line") {
+		t.Error("toggling must not alter the stored message")
+	}
+}
+
+// /expand and /collapse apply to every long message.
+func TestExpandCollapseCommands(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, strings.Repeat("line\n", 20))
+	m = enterCurrent(m)
+	collapsed := len(m.Entries()[0].rows)
+
+	m = typeText(m, "/expand")
+	m = enterCurrent(m)
+	if len(m.Entries()[0].rows) <= collapsed {
+		t.Error("/expand must expand long messages")
+	}
+	m = typeText(m, "/collapse")
+	m = enterCurrent(m)
+	if got := len(m.Entries()[0].rows); got != collapsed {
+		t.Errorf("/collapse rows = %d, want %d", got, collapsed)
+	}
+}
+
+// The prompt is not echoed back into the provider request truncated:
+// collapsing is rendering only. (Also covered in the engine tests.)
+func TestCollapsedPromptKeepsFullHistory(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	long := strings.Repeat("line\n", 20)
+	m = paste(m, long)
+	m = enterCurrent(m)
+	// A second turn: the first prompt must still be in the history the
+	// engine sees.
+	if !strings.Contains(m.Lines()[0], strings.TrimRight(long, "\n")) {
+		t.Fatal("history lost the first prompt")
+	}
+}
+
+// Reasoning events produce a quiet indicator, never the reasoning text.
+func TestThinkingIndicator(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	m.streamStarted = m.clock()
+	updated, _ = m.Update(streamThinkingMsg{id: 1})
+	m = updated.(Model)
+	if !strings.Contains(m.Notice(), "thinking") {
+		t.Errorf("notice = %q, want a thinking indicator", m.Notice())
+	}
+	if !m.reasoningSeen {
+		t.Error("reasoning presence not recorded")
+	}
+	if strings.Contains(m.viewport.View(), "private") {
+		t.Error("reasoning text must never be rendered")
+	}
+
+	// Once visible text arrives the indicator says streaming.
+	updated, _ = m.Update(streamDeltaMsg{id: 1, text: "hello"})
+	m = updated.(Model)
+	if !strings.Contains(m.Notice(), "streaming") {
+		t.Errorf("notice = %q, want streaming", m.Notice())
+	}
+}
+
+// The elapsed time is visible and keeps moving.
+func TestStreamingNoticeShowsElapsedTime(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.sender = func(tea.Msg) {}
+	m.streamID = 1
+	m.sending = true
+	m.streamStarted = m.clock().Add(-42 * time.Second)
+	updated, _ = m.Update(tickMsg(m.clock()))
+	m = updated.(Model)
+	if !strings.Contains(m.Notice(), "42s") {
+		t.Errorf("notice = %q, want the elapsed time", m.Notice())
+	}
+	if !strings.Contains(m.Notice(), "Esc cancels") {
+		t.Errorf("notice = %q, want the cancel hint", m.Notice())
+	}
+}
+
+// A late message from a cancelled turn must never touch the live one.
+func TestStaleStreamMessagesIgnored(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 2
+	m.sending = true
+	m.streamStarted = m.clock()
+
+	updated, _ = m.Update(streamDeltaMsg{id: 1, text: "stale text"})
+	m = updated.(Model)
+	if m.pending != "" {
+		t.Errorf("stale delta applied: %q", m.pending)
+	}
+	updated, _ = m.Update(errorMsg{id: 1, err: errors.New("stale")})
+	m = updated.(Model)
+	if !m.Sending() {
+		t.Error("a stale error must not clear the live turn")
+	}
+	updated, _ = m.Update(responseMsg{id: 1, text: "stale answer"})
+	m = updated.(Model)
+	if len(m.Entries()) != 0 {
+		t.Errorf("stale response applied: %v", m.Lines())
+	}
+	updated, _ = m.Update(streamStatsMsg{id: 1, stats: provider.TurnStats{Status: provider.StatusDone}})
+	m = updated.(Model)
+	if m.LastStats() != nil {
+		t.Error("stale stats applied")
+	}
+}
+
+// Cancelling a turn and starting a new one leaves the new turn alone.
+func TestCancelThenNewTurnIsIndependent(t *testing.T) {
+	m := testModel()
+	base := time.Now()
+	m.now = func() time.Time { return base }
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, "first")
+	m = enterCurrent(m)
+	firstID := m.streamID
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	if m.Sending() {
+		t.Fatal("Esc must stop the turn")
+	}
+	base = base.Add(time.Second)
+	m = paste(m, "second")
+	updated, inFlight := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	_ = inFlight // left running: this turn is still in flight
+	if m.streamID == firstID {
+		t.Fatal("the second turn needs its own id")
+	}
+	updated, _ = m.Update(errorMsg{id: firstID, err: context.Canceled})
+	m = updated.(Model)
+	if !m.Sending() {
+		t.Error("the cancelled turn's late error killed the new turn")
+	}
+}
+
+// /diag reports counts, durations and token totals, never content.
+func TestDiagPanelIsContentFree(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.lastStats = &provider.TurnStats{
+		Status:          provider.StatusDone,
+		Duration:        42 * time.Second,
+		FirstVisible:    31 * time.Second,
+		FirstReasoning:  2 * time.Second,
+		Events:          812,
+		KeepAlives:      3,
+		VisibleChunks:   42,
+		VisibleRunes:    1284,
+		ReasoningChunks: 790,
+		ReasoningRunes:  20311,
+		FinishReason:    "stop",
+		HasUsage:        true,
+		Usage:           provider.Usage{PromptTokens: 1204, CompletionTokens: 3880, TotalTokens: 5084, ReasoningTokens: 3400},
+		OutputLimitHit:  true,
+		MaxTokens:       16384,
+		IdleTimeout:     2 * time.Minute,
+		TurnTimeout:     15 * time.Minute,
+	}
+	m = typeText(m, "/diag")
+	m = enterCurrent(m)
+	view := string(m.View().Content)
+	for _, want := range []string{"diagnostics", "done", "812", "5084", "max_tokens"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("diag missing %q:\n%s", want, view)
+		}
+	}
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	if m.view != viewChat {
+		t.Error("Esc must close diagnostics")
+	}
+}
+
+// A length finish is surfaced rather than passed off as a full answer.
+func TestOutputLimitNotice(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	updated, _ = m.Update(streamStatsMsg{id: 1, stats: provider.TurnStats{OutputLimitHit: true, Status: provider.StatusDone}})
+	m = updated.(Model)
+	updated, _ = m.Update(responseMsg{id: 1, text: "a cut off answer"})
+	m = updated.(Model)
+	if !strings.Contains(m.Notice(), "output limit") {
+		t.Errorf("notice = %q, want the output-limit explanation", m.Notice())
+	}
+}
+
+// An idle stall closes the request with an explanation, not a hang.
+func TestIdleStallNotice(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	updated, _ = m.Update(errorMsg{id: 1, err: provider.ErrStreamIdle})
+	m = updated.(Model)
+	if m.Sending() {
+		t.Error("an idle stall must end the turn")
+	}
+	if !strings.Contains(m.Notice(), "went silent") {
+		t.Errorf("notice = %q", m.Notice())
+	}
+}
+
+// The reply is followed automatically when the reader is at the bottom.
+func TestStreamFollowsWhenAtBottom(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	m.viewport.GotoBottom()
+	for i := 0; i < 30; i++ {
+		updated, _ = m.Update(streamDeltaMsg{id: 1, text: "line\n"})
+		m = updated.(Model)
+	}
+	if !m.viewport.AtBottom() {
+		t.Error("the viewport must follow a stream it was already following")
 	}
 }

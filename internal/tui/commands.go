@@ -32,6 +32,18 @@ func (m *Model) dispatchSlash(input string) tea.Cmd {
 	case "/sessions":
 		m.enterSessions()
 		return nil
+	case "/expand":
+		m.setAllUserExpanded(true)
+		m.notice = "Long messages expanded."
+		return nil
+	case "/collapse":
+		m.setAllUserExpanded(false)
+		m.notice = "Long messages collapsed."
+		return nil
+	case "/diag":
+		m.view = viewDiag
+		m.panelOffset = 0
+		return nil
 	case "/copy":
 		if len(args) > 0 && args[0] == "code" {
 			return m.copyCmd(true)
