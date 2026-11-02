@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,137 @@ func contentLine(text string) string {
 const finishLine = `data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}]}`
 const usageLine = `data: {"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":340,"total_tokens":460,"completion_tokens_details":{"reasoning_tokens":300}}}`
 const doneLine = `data: [DONE]`
+
+// The streaming request asks for usage. Without stream_options most
+// providers never send any usage object, which is exactly how a finished
+// turn ends up with zero totals.
+func TestStreamingRequestAsksForUsage(t *testing.T) {
+	var captured capturedRequest
+	srv := streamServer(t, []string{contentLine("ok")}, &captured)
+	defer srv.Close()
+
+	p := &OpenAICompatible{Endpoint: srv.URL, APIKey: "k"}
+	if _, err := p.ChatStream(context.Background(),
+		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	opts, ok := captured.body["stream_options"].(map[string]any)
+	if !ok || opts["include_usage"] != true {
+		t.Errorf("stream_options = %v, want {include_usage:true}", captured.body["stream_options"])
+	}
+
+	// The non-streaming request carries no stream options.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		captured.body = body
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv2.Close()
+	p2 := &OpenAICompatible{Endpoint: srv2.URL, APIKey: "k"}
+	if _, err := p2.Chat(context.Background(),
+		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := captured.body["stream_options"]; ok {
+		t.Errorf("non-streaming request must not carry stream_options: %v", captured.body)
+	}
+}
+
+// Usage that arrives after finish_reason but before [DONE] is preserved,
+// and it is not mistaken for answer text.
+func TestUsageAfterFinishReason(t *testing.T) {
+	srv := miniMaxServer(t, []string{
+		reasoningLine("private thought"),
+		contentLine("An answer."),
+		finishLine,
+		usageLine,
+		doneLine,
+	}, 0)
+	defer srv.Close()
+
+	var texts []string
+	var reasoning int
+	p := &OpenAICompatible{Endpoint: srv.URL, APIKey: "k"}
+	resp, err := p.ChatStream(context.Background(),
+		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"},
+		func(d Delta) error {
+			texts = append(texts, d.Text)
+			if d.Reasoning != "" {
+				reasoning++
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(texts, "") != "An answer." {
+		t.Errorf("usage leaked into the answer: %q", texts)
+	}
+	if reasoning != 1 {
+		t.Errorf("reasoning events = %d, want 1", reasoning)
+	}
+	if !resp.Stats.HasUsage || resp.Stats.Usage.TotalTokens != 460 {
+		t.Errorf("usage lost: %+v", resp.Stats)
+	}
+	if resp.Stats.FinishReason != "stop" || resp.Stats.OutputLimitHit {
+		t.Errorf("finish mishandled: %+v", resp.Stats)
+	}
+}
+
+// A second usage frame supersedes the first: providers send cumulative
+// snapshots, so only the last one may be kept.
+func TestUsageSnapshotsDoNotAccumulate(t *testing.T) {
+	usage := func(prompt, completion int) string {
+		return `data: {"choices":[],"usage":{"prompt_tokens":` + strconv.Itoa(prompt) +
+			`,"completion_tokens":` + strconv.Itoa(completion) +
+			`,"total_tokens":` + strconv.Itoa(prompt+completion) + `}}`
+	}
+	srv := miniMaxServer(t, []string{
+		contentLine("ok"),
+		usage(100, 200),
+		usage(120, 340),
+		doneLine,
+	}, 0)
+	defer srv.Close()
+
+	p := &OpenAICompatible{Endpoint: srv.URL, APIKey: "k"}
+	resp, err := p.ChatStream(context.Background(),
+		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, func(Delta) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Stats.HasUsage {
+		t.Fatal("usage missing")
+	}
+	if resp.Stats.Usage.PromptTokens != 120 || resp.Stats.Usage.CompletionTokens != 340 {
+		t.Errorf("expected the last snapshot, got %+v", resp.Stats.Usage)
+	}
+}
+
+// Explicitly reported zeros are kept and marked reported.
+func TestExplicitZeroUsage(t *testing.T) {
+	srv := miniMaxServer(t, []string{
+		contentLine("ok"),
+		`data: {"choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`,
+		doneLine,
+	}, 0)
+	defer srv.Close()
+
+	p := &OpenAICompatible{Endpoint: srv.URL, APIKey: "k"}
+	resp, err := p.ChatStream(context.Background(),
+		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, func(Delta) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Stats.HasUsage {
+		t.Error("explicit zero usage must be marked reported, not unknown")
+	}
+	if resp.Stats.Usage.PromptTokens != 0 || resp.Stats.Usage.CompletionTokens != 0 {
+		t.Errorf("zeros not retained: %+v", resp.Stats.Usage)
+	}
+}
 
 // A MiniMax-style turn: reasoning events arrive first and are invisible.
 // The diagnostics must show the reasoning presence, the time to first

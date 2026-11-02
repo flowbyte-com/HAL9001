@@ -82,6 +82,14 @@ type openAIRequest struct {
 	// ReasoningEffort is sent only for models whose API documents it.
 	// The adapter never guesses: see EffortCapable.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// StreamOptions asks the provider to report token usage on the
+	// stream. Providers that do not understand the field ignore it;
+	// without it most providers never send usage at all.
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openAIChoice struct {
@@ -134,6 +142,9 @@ func (o *OpenAICompatible) requestBody(messages []Message, model Model, stream b
 	// documents reasoning_effort.
 	if EffortCapable(model.ID) {
 		out.ReasoningEffort = NormalizeEffort(model.Effort)
+	}
+	if stream {
+		out.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
 	return json.Marshal(out)
 }
