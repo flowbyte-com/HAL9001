@@ -162,7 +162,14 @@ func (a *app) modelFor() provider.Model {
 }
 
 func (a *app) rebuildEngine() {
-	a.eng = engine.New(a.store, a.providerFor(), a.modelFor()).
+	// A typed nil pointer must never reach the provider interface: the
+	// engine's "no provider" check would pass and the first request would
+	// dereference a nil client.
+	var p provider.Provider
+	if impl := a.providerFor(); impl != nil {
+		p = impl
+	}
+	a.eng = engine.New(a.store, p, a.modelFor()).
 		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir))
 }
 
