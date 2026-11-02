@@ -4,6 +4,8 @@ What HAL9001's interface relies on, what it deliberately avoids, and where
 it degrades gracefully. Everything in the "verified" column was checked
 against a real pseudo-terminal (a forked pty driving the built binary)
 and by replaying the captured byte stream through a terminal emulator.
+The harness is in [`tools/ptycheck/`](../tools/ptycheck/) and can be
+re-run at any time.
 
 ## Screen handling
 

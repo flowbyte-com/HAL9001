@@ -82,7 +82,8 @@ Switching models keeps the conversation history and the unsent draft:
 the session store is model-independent.
 
 See [`docs/terminal-support.md`](docs/terminal-support.md) for the
-tested and unsupported terminal behaviour.
+tested and unsupported terminal behaviour. The pseudo-terminal checks
+that produced it live in [`tools/ptycheck/`](tools/ptycheck/).
 
 ## Layout
 
