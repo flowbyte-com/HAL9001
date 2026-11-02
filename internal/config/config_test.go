@@ -241,3 +241,43 @@ func TestSafeguardsRoundTripInFile(t *testing.T) {
 		t.Errorf("file round-trip lost the safeguards: %+v", loaded)
 	}
 }
+
+func TestMouseDefaultsOffWithOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL9001_HOME", dir)
+	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "none.json"))
+	t.Setenv("HAL9001_MOUSE", "")
+	cfg, err := LoadErr(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mouse {
+		t.Error("mouse must default to off")
+	}
+	for _, v := range []string{"1", "true", "yes", "TRUE"} {
+		t.Setenv("HAL9001_MOUSE", v)
+		cfg, err = LoadErr(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.Mouse {
+			t.Errorf("HAL9001_MOUSE=%q must enable mouse mode", v)
+		}
+	}
+	t.Setenv("HAL9001_MOUSE", "0")
+	cfg, err = LoadErr(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mouse {
+		t.Error("HAL9001_MOUSE=0 must not enable mouse mode")
+	}
+	t.Setenv("HAL9001_MOUSE", "")
+	cfg, err = LoadErr([]string{"--mouse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Mouse {
+		t.Error("--mouse must enable mouse mode")
+	}
+}

@@ -271,6 +271,15 @@ type Model struct {
 	// combinations (Kitty keyboard protocol). It only affects what the
 	// help panel claims about Shift+Enter.
 	keyDisambiguation bool
+	// mouse requests terminal mouse reporting so the wheel scrolls.
+	// Off by default: reporting disables native text selection.
+	mouse bool
+	// undoDraft is the last cleared draft, restorable with Ctrl+Z. A
+	// single slot is enough: it is cleared on submit and on every
+	// session change so an old draft can never leak into another
+	// conversation.
+	undoDraft string
+	undoValid bool
 	// escapedAt marks the moment an Escape key was seen, so an Enter
 	// that completes an escape sequence is not mistaken for a send.
 	escapedAt time.Time
@@ -397,6 +406,9 @@ func (m *Model) refreshUsage() {
 	}
 }
 
+// SetMouse enables or disables terminal mouse reporting.
+func (m *Model) SetMouse(enabled bool) { m.mouse = enabled }
+
 // SetEffort sets the active reasoning level and whether the model
 // supports it, for the footer and the selector.
 func (m *Model) SetEffort(level string, supported bool) {
@@ -415,6 +427,7 @@ func (m *Model) SetTitle(title string) { m.title = title }
 func (m *Model) SetHistory(lines []SessionLine) {
 	m.entries = nil
 	m.pending = ""
+	m.clearUndo()
 	for _, line := range lines {
 		m.entries = append(m.entries, entry{role: line.Role, text: line.Text})
 	}
@@ -650,6 +663,14 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch key {
+		case "ctrl+u":
+			m.clearDraft()
+			return m, nil
+		case "ctrl+z":
+			m.restoreDraft()
+			return m, nil
+		}
+		switch key {
 		case "home":
 			m.viewport.GotoTop()
 			return m, nil
@@ -669,10 +690,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fitComposer()
 		return m, nil
 	case tea.MouseWheelMsg:
-		// The viewport owns scrolling; the composer never sees mouse input.
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m, cmd
+		return m.updateWheel(msg)
 	case streamThinkingMsg:
 		if !m.currentTurn(msg.id) {
 			return m, nil
@@ -830,6 +848,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		input = strings.TrimSpace(input[1:])
 	}
 	m.composer.Reset()
+	m.clearUndo()
 	m.fitComposer()
 	m.streamID++
 	id := m.streamID
@@ -944,6 +963,73 @@ func (m *Model) insertNewline() {
 
 // fitComposer grows or shrinks the composer with its content, within a
 // reasonable maximum, and reclaims the space for the viewport.
+// updateWheel routes the wheel by pointer position. Over the
+// conversation it pages the history through the viewport, which owns no
+// keys of its own; over the composer it scrolls a long draft in place;
+// over a panel it scrolls the panel. The composer text is never touched,
+// and manual scrolling suspends bottom-follow until the bottom is reached
+// again. Wheel events only arrive when mouse reporting is enabled.
+func (m Model) updateWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	if m.view != viewChat {
+		if msg.Button == tea.MouseWheelUp {
+			m.scrollPanel(-3)
+		} else {
+			m.scrollPanel(3)
+		}
+		return m, nil
+	}
+	if msg.Y >= 0 && msg.Y < 2+m.frame.viewport {
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+	}
+	var cmd tea.Cmd
+	m.composer, cmd = m.composer.Update(msg)
+	m.fitComposer()
+	return m, cmd
+}
+
+// clearDraft empties the composer without submitting, keeping the text in
+// a one-slot undo buffer. The conversation and the session are untouched.
+func (m *Model) clearDraft() {
+	if strings.TrimSpace(m.composer.Value()) == "" {
+		return
+	}
+	m.undoDraft = m.composer.Value()
+	m.undoValid = true
+	m.composer.Reset()
+	m.refreshSuggestions()
+	m.fitComposer()
+	m.notice = "Draft cleared — Ctrl+Z restores it."
+}
+
+// restoreDraft puts the last cleared draft back, but only into an empty
+// composer: restoring over typed text would destroy it.
+func (m *Model) restoreDraft() {
+	if !m.undoValid {
+		m.notice = "Nothing to restore."
+		return
+	}
+	if strings.TrimSpace(m.composer.Value()) != "" {
+		m.notice = "Composer not empty — clear it first (Ctrl+U)."
+		return
+	}
+	m.composer.SetValue(m.undoDraft)
+	m.composer.CursorEnd()
+	m.undoDraft = ""
+	m.undoValid = false
+	m.refreshSuggestions()
+	m.fitComposer()
+	m.notice = "Draft restored."
+}
+
+// clearUndo drops the undo buffer so a draft can never leak into another
+// conversation or reappear after it was used.
+func (m *Model) clearUndo() {
+	m.undoDraft = ""
+	m.undoValid = false
+}
+
 // fitComposer grows or shrinks the composer with its content: three
 // rows by default, up to maxComposerHeight, then it scrolls internally.
 func (m *Model) fitComposer() {
@@ -1550,6 +1636,9 @@ func (m Model) View() tea.View {
 	}
 	v := tea.NewView(content)
 	v.AltScreen = true
+	if m.mouse {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	if m.color {
 		// Paint the application background and default text colour for
 		// this theme. The renderer restores the terminal's own colours

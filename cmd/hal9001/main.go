@@ -201,6 +201,7 @@ func (a *app) run() error {
 	m.SetModelName(a.activeModelID())
 	m.SetEffort(a.currentEffort())
 	m.SetUsage(a.currentUsage())
+	m.SetMouse(a.cfg.Mouse)
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
 	m.SetTitle(a.session)
 	if history, err := a.store.History(); err == nil {

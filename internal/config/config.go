@@ -30,6 +30,9 @@ const (
 	EnvStreamIdleTimeout = "HAL9001_STREAM_IDLE_TIMEOUT"
 	// EnvTurnTimeout bounds one whole turn, in seconds.
 	EnvTurnTimeout = "HAL9001_TURN_TIMEOUT"
+	// EnvMouse enables terminal mouse reporting for wheel scrolling.
+	// Off by default because reporting disables native text selection.
+	EnvMouse = "HAL9001_MOUSE"
 )
 
 // ModelRecord is one configured model. The record is intentionally small
@@ -220,6 +223,10 @@ type Config struct {
 	Session  string
 	StoreDir string
 	NoColor  bool
+	// Mouse requests terminal mouse reporting so the wheel scrolls the
+	// conversation. Off by default: reporting disables native text
+	// selection in most terminals.
+	Mouse    bool
 	ShowHelp bool
 	List     bool
 	Models   []ModelRecord
@@ -282,6 +289,7 @@ func LoadErr(args []string) (Config, error) {
 	fs.StringVar(&cfg.Session, "session", cfg.Session, "conversation session name")
 	fs.StringVar(&cfg.StoreDir, "store", cfg.StoreDir, "conversation storage directory")
 	fs.BoolVar(&cfg.NoColor, "no-color", os.Getenv("NO_COLOR") != "", "disable colors")
+	fs.BoolVar(&cfg.Mouse, "mouse", envBool(EnvMouse), "report mouse events for wheel scrolling (disables native selection)")
 	fs.BoolVar(&cfg.List, "list-sessions", false, "list stored sessions and exit")
 	fs.IntVar(&cfg.MaxTokens, "max-tokens", cfg.MaxTokens, "cap one response (0 uses the default)")
 	fs.IntVar(&cfg.StreamIdleSeconds, "stream-idle-timeout", cfg.StreamIdleSeconds, "seconds of silence before a stream is closed")
@@ -307,6 +315,15 @@ func envInt(name string) int {
 		return 0
 	}
 	return n
+}
+
+// envBool parses a truthy environment value: 1, true or yes.
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }
 
 // firstNonZero returns the first positive value.

@@ -635,6 +635,9 @@ func (m Model) helpRows() []string {
 		{"Ctrl+O", "expand last prompt"},
 		{"PgUp/PgDn", "scroll conversation"},
 		{"Home/End", "jump start / end"},
+		{"Ctrl+U", "clear the draft"},
+		{"Ctrl+Z", "restore the draft"},
+		{"wheel", "scroll (with --mouse)"},
 		{"/", "command suggestions"},
 		{"paste", "inserted, never sent"},
 		{"//", "literal slash message"},
@@ -1033,6 +1036,7 @@ func (m *Model) startFreshConversation(notice string) {
 	}
 	m.entries = nil
 	m.pending = ""
+	m.clearUndo()
 	m.title = ""
 	if m.hooks.SessionTitle != nil {
 		m.title = m.hooks.SessionTitle()

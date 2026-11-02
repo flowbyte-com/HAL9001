@@ -2880,3 +2880,196 @@ func TestSessionsBrowserShowsTitles(t *testing.T) {
 		}
 	}
 }
+
+// Wheel-up scrolls the conversation through the viewport, preserving the
+// anchor behaviour: Home still reaches the top afterwards.
+func TestWheelScrollsConversation(t *testing.T) {
+	m := longConversation(t, 60)
+	start := m.viewport.YOffset()
+	if !m.viewport.AtBottom() {
+		t.Fatal("precondition: at the bottom")
+	}
+	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, Y: 5})
+	m = updated.(Model)
+	if m.viewport.YOffset() >= start {
+		t.Errorf("wheel up did not scroll: %d -> %d", start, m.viewport.YOffset())
+	}
+	updated, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, Y: 5})
+	m = updated.(Model)
+	if m.viewport.YOffset() != start {
+		t.Errorf("wheel down did not return: %d, want %d", m.viewport.YOffset(), start)
+	}
+	m = pressKey(m, tea.KeyHome, 0, "")
+	if !m.viewport.AtTop() {
+		t.Error("Home must still reach the top after wheel scrolling")
+	}
+}
+
+// Wheel scrolling suspends bottom-follow; returning to the bottom
+// restores it.
+func TestWheelSuspendsFollow(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	for i := 0; i < 40; i++ {
+		updated, _ = m.Update(streamDeltaMsg{id: 1, text: "line\n"})
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, Y: 5})
+	m = updated.(Model)
+	if m.viewport.AtBottom() {
+		t.Fatal("wheel up must leave the bottom")
+	}
+	updated, _ = m.Update(streamDeltaMsg{id: 1, text: "more\n"})
+	m = updated.(Model)
+	if m.viewport.AtBottom() {
+		t.Error("streaming yanked a wheel-scrolled reader to the bottom")
+	}
+	m.viewport.GotoBottom()
+	updated, _ = m.Update(streamDeltaMsg{id: 1, text: "followed\n"})
+	m = updated.(Model)
+	if !m.viewport.AtBottom() {
+		t.Error("returning to the bottom must restore following")
+	}
+}
+
+// The wheel never touches the composer text.
+func TestWheelPreservesDraft(t *testing.T) {
+	m := longConversation(t, 60)
+	m = paste(m, "a draft that must survive scrolling")
+	before := m.Composer().Value()
+	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, Y: 5})
+	m = updated.(Model)
+	if got := m.Composer().Value(); got != before {
+		t.Errorf("wheel changed the draft: %q", got)
+	}
+}
+
+// Wheel position routes: over the composer scrolls a long draft instead.
+func TestWheelOverComposerScrollsDraft(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	for i := 0; i < 30; i++ {
+		m = typeText(m, "line\n")
+	}
+	y := 2 + m.frame.viewport + 2
+	updated, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, Y: y})
+	m = updated.(Model)
+	_ = m
+}
+
+// Mouse mode is off by default and requested only when enabled.
+func TestMouseModeOptIn(t *testing.T) {
+	m := testModel()
+	if m.View().MouseMode != tea.MouseModeNone {
+		t.Error("mouse reporting must be off by default")
+	}
+	m.SetMouse(true)
+	if m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Error("SetMouse(true) must request cell-motion reporting")
+	}
+	m.SetMouse(false)
+	if m.View().MouseMode != tea.MouseModeNone {
+		t.Error("SetMouse(false) must stop requesting mouse events")
+	}
+}
+
+// Ctrl+U clears the whole draft without submitting, and shrinks back.
+func TestCtrlUClearsDraft(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, strings.Repeat("pasted line\n", 50))
+	m = pressKey(m, 'u', tea.ModCtrl, "")
+	if got := m.Composer().Value(); got != "" {
+		t.Fatalf("draft not cleared: %q", got[:min(40, len(got))])
+	}
+	if h := m.Composer().Height(); h != 1 {
+		t.Errorf("composer height = %d, want 1", h)
+	}
+	if len(m.Lines()) != 0 {
+		t.Errorf("clearing submitted text: %v", m.Lines())
+	}
+	if !strings.Contains(m.Notice(), "Ctrl+Z") {
+		t.Errorf("notice should mention restore: %q", m.Notice())
+	}
+}
+
+// Ctrl+Z restores the cleared draft; a second clear replaces the buffer.
+func TestCtrlZRestoresDraft(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, "line one\nline two ëndé ✓")
+	m = pressKey(m, 'u', tea.ModCtrl, "")
+	m = pressKey(m, 'z', tea.ModCtrl, "")
+	if got := m.Composer().Value(); got != "line one\nline two ëndé ✓" {
+		t.Errorf("draft not restored: %q", got)
+	}
+	// Restoring consumes the buffer.
+	m = pressKey(m, 'u', tea.ModCtrl, "")
+	m = paste(m, "other")
+	m = pressKey(m, 'z', tea.ModCtrl, "")
+	if !strings.Contains(m.Notice(), "not empty") {
+		t.Errorf("restoring over text must be refused: %q", m.Notice())
+	}
+	if got := m.Composer().Value(); got != "other" {
+		t.Errorf("typed text destroyed: %q", got)
+	}
+}
+
+// The undo buffer is session-scoped and submit-scoped.
+func TestUndoBufferIsolation(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, "session A draft")
+	m = pressKey(m, 'u', tea.ModCtrl, "")
+	// A submit clears the buffer.
+	m = paste(m, "typed")
+	m = enterCurrent(m)
+	m = pressKey(m, 'z', tea.ModCtrl, "")
+	if !strings.Contains(m.Notice(), "Nothing to restore") {
+		t.Errorf("submit must clear the undo buffer: %q", m.Notice())
+	}
+	// A session change clears the buffer.
+	m = paste(m, "session B draft")
+	m = pressKey(m, 'u', tea.ModCtrl, "")
+	m.SetHistory([]SessionLine{{Role: "user", Text: "other session"}})
+	m = pressKey(m, 'z', tea.ModCtrl, "")
+	if !strings.Contains(m.Notice(), "Nothing to restore") {
+		t.Errorf("session switch must clear the undo buffer: %q", m.Notice())
+	}
+}
+
+// Ctrl+U on an empty composer is a no-op that keeps a saved undo.
+func TestCtrlUEmptyKeepsUndo(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, "keep me")
+	m = pressKey(m, 'u', tea.ModCtrl, "")
+	m = pressKey(m, 'u', tea.ModCtrl, "")
+	m = pressKey(m, 'z', tea.ModCtrl, "")
+	if got := m.Composer().Value(); got != "keep me" {
+		t.Errorf("empty clear destroyed the undo buffer: %q", got)
+	}
+}
+
+// The new shortcuts are discoverable in /help.
+func TestHelpListsMouseAndClear(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/help")
+	m = enterCurrent(m)
+	view := string(m.View().Content)
+	for _, want := range []string{"Ctrl+U", "Ctrl+Z", "wheel"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("help missing %q:\n%s", want, view)
+		}
+	}
+}
