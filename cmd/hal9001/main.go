@@ -14,6 +14,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/flowbyte-com/HAL9001/internal/clipboard"
 	"github.com/flowbyte-com/HAL9001/internal/config"
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/persona"
@@ -96,8 +97,26 @@ func (a *app) run() error {
 		SwitchModel:    a.switchModel,
 		CurrentOnboard: a.currentOnboard,
 		NewSession:     a.newSession,
+		Theme:          a.currentTheme,
+		SaveTheme:      a.saveTheme,
+		ListSessions:   a.listSessionNames,
+		SwitchSession:  a.switchSession,
+		Copy:           a.copyText,
 	}
 	m := tui.NewWithHooks(a.eng, hooks)
+	m.SetModelName(a.activeModelID())
+	m.SetTheme(tui.ThemeByName(a.stored.Theme))
+	if history, err := a.store.History(); err == nil {
+		lines := make([]tui.SessionLine, 0, len(history))
+		for _, msg := range history {
+			role := "assistant"
+			if msg.Role == session.RoleUser {
+				role = "user"
+			}
+			lines = append(lines, tui.SessionLine{Role: role, Text: msg.Content})
+		}
+		m.SetHistory(lines)
+	}
 	if !a.hasConfig() {
 		m.EnterOnboarding()
 	}
@@ -253,4 +272,61 @@ func (a *app) newSession() (tui.Engine, error) {
 	a.session = name
 	a.rebuildEngine()
 	return a.eng, nil
+}
+
+func (a *app) activeModelID() string {
+	if a.model != "" {
+		return a.model
+	}
+	if a.cfg.Model != "" {
+		return a.cfg.Model
+	}
+	if active, ok := a.stored.Active(); ok {
+		return active.ID
+	}
+	return ""
+}
+
+func (a *app) currentTheme() string {
+	return a.stored.Theme
+}
+
+func (a *app) saveTheme(name string) error {
+	a.stored.Theme = name
+	return config.SaveFile(config.ConfigPath(), a.stored)
+}
+
+func (a *app) listSessionNames() ([]string, error) {
+	return config.ListSessions(a.cfg.StoreDir)
+}
+
+func (a *app) switchSession(name string) (tui.Engine, []tui.SessionLine, error) {
+	store, err := session.Open(a.cfg.StoreDir, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	history, err := store.History()
+	if err != nil {
+		return nil, nil, err
+	}
+	a.store = store
+	a.session = name
+	a.rebuildEngine()
+	lines := make([]tui.SessionLine, 0, len(history))
+	for _, msg := range history {
+		role := "assistant"
+		if msg.Role == session.RoleUser {
+			role = "user"
+		}
+		lines = append(lines, tui.SessionLine{Role: role, Text: msg.Content})
+	}
+	return a.eng, lines, nil
+}
+
+func (a *app) copyText(text string) error {
+	copier, err := clipboard.System()
+	if err != nil {
+		return err
+	}
+	return copier.Copy(text)
 }

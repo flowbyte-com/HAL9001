@@ -58,6 +58,25 @@ is never stored in the session, keeping history provider-independent
 and the instruction foundation byte-stable. Assistant messages are
 persisted only after successful generation.
 
+## Terminal interface
+
+Full-screen chat with three areas: a one-line `● HAL9001` header, a
+scrollable Markdown viewport, and a borderless composer that grows to
+eight lines between two thin rules, plus a one-line footer (`444 READ
+ONLY · /help` left, active model right) that degrades gracefully on
+narrow terminals.
+
+Views: chat, onboarding, model picker, theme picker (five presets with
+live preview, persisted), help, and stored sessions. A slash dispatcher
+handles `/help`, `/copy`, `/copy code`, `/theme`, `/model`, `/new` and
+`/sessions` locally — commands never reach the model, and `//` escapes
+to a literal slash message. `/copy` writes the last response (or its
+latest fenced block) via OSC 52; the mouse is deliberately never
+captured so native selection keeps working. Pasted text (bracketed or
+keystroke) is inserted with newlines preserved and never submitted.
+Scrolling is sticky: streams follow only when already at the bottom.
+See `docs/terminal-support.md` for the tested/unsupported matrix.
+
 ## Conversation continuity
 
 `internal/session` persists one JSONL file per session. History is

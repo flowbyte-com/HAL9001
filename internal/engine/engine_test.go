@@ -193,3 +193,28 @@ func (h *hangingProvider) Chat(ctx context.Context, _ []provider.Message, _ prov
 	<-ctx.Done()
 	return provider.Response{}, ctx.Err()
 }
+
+func TestHistoryAccumulatesAcrossTurns(t *testing.T) {
+	st, err := session.Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []provider.Message
+	spy := &spyProvider{fn: func(messages []provider.Message) {
+		got = append([]provider.Message(nil), messages...)
+	}}
+	eng := New(st, spy, provider.Model{ID: "m"})
+	if _, err := eng.Respond(context.Background(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.Respond(context.Background(), "second"); err != nil {
+		t.Fatal(err)
+	}
+	// Second request carries both turns: user, assistant, user.
+	if len(got) != 3 {
+		t.Fatalf("second request should carry 3 messages, got %+v", got)
+	}
+	if got[0].Content != "first" || got[1].Content != "ok" || got[2].Content != "second" {
+		t.Errorf("history wrong: %+v", got)
+	}
+}

@@ -44,10 +44,15 @@ hal9001 --provider openai-compatible \
   --model MiniMax-M3.1-Flash               # flags win over the file
 ```
 
-In the TUI: `Ctrl+M` opens the model picker (switch or add a model),
-`Ctrl+N` starts a new conversation, `Esc` cancels a stream,
-`Ctrl+C` quits. Switching models keeps the conversation history: the
-session store is model-independent.
+In the TUI: `Ctrl+S` sends (`Enter` is always a newline),
+`Ctrl+M` or `/model` opens the model picker, `/theme` opens the theme
+picker with a live preview, `/help` lists every command and key,
+`/copy` copies the last response and `/copy code` copies its latest
+fenced code block, `/sessions` resumes a stored conversation, `/new`
+starts one, `Esc` cancels a stream or closes a panel, `Ctrl+C` quits.
+A leading `//` sends a literal slash command as an ordinary message.
+Switching models keeps the conversation history and the unsent draft:
+the session store is model-independent.
 
 ## Layout
 
@@ -76,6 +81,9 @@ legacy_base/          preserved DeepClaw/PicoClaw reference (separate module)
   in logs, sessions, or Git. HAL9001 never reads PicoClaw, OpenCode or
   MPM credentials.
 - No PicoClaw or lobster branding anywhere in the new application.
+- Copying is a UI feature, not a tool: OSC 52 writes to the terminal,
+  never to the model. Native terminal selection keeps working because
+  HAL never captures the mouse.
 
 ## Limitations (Milestone 002)
 
