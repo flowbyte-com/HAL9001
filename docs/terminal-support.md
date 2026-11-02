@@ -84,10 +84,13 @@ submission and never fails silently.
   invoked.
 - The mouse is never captured unless the operator asks for it with
   `--mouse` or `HAL9001_MOUSE=1`, in which case HAL requests cell-motion
-  reporting (`CSI ?1002h` with SGR `CSI ?1006h`) and the wheel scrolls the
-  conversation. With reporting on, the terminal sends mouse events instead
-  of selecting text, so native drag selection needs Shift+drag and
-  right-click behaviour varies.
+  reporting (`CSI ?1002h` with SGR `CSI ?1006h`) and takes over the
+  pointer: the wheel scrolls, and a left drag selects and copies text.
+  With reporting on, the terminal sends mouse events instead of selecting
+  text, so the terminal's own selection needs Shift+drag and right-click
+  behaviour varies.
+- A released selection is written with the same OSC 52 sequence as
+  `/copy`, to `/dev/tty`.
 - OSC 52 is strictly write-only. HAL cannot read what the terminal has
   selected and does not try.
 - Terminals differ in whether they accept OSC 52 and whether they ask
@@ -122,11 +125,29 @@ Mouse reporting is off unless `--mouse` or `HAL9001_MOUSE=1` is given, in
 which case HAL requests cell-motion reporting (`CSI ?1002h` with SGR
 `CSI ?1006h`) and the wheel scrolls the history — or a long draft, or the
 open panel, depending on pointer position. With reporting on, the
-terminal sends mouse events instead of selecting text, so native drag
-selection needs Shift+drag. Drag selection can never be auto-copied into
-the regular clipboard: OSC 52 is write-only, and the viewport keeps no
-selection model. Native selection, PRIMARY middle-click paste on Linux,
-right-click paste and `/copy` cover every real clipboard need.
+terminal sends mouse events instead of selecting text, so the terminal's
+own selection needs Shift+drag.
+
+With reporting on HAL also owns the selection, the way Pi does. A left
+press starts it, the drag extends it, the release copies it through
+OSC 52. The selection is drawn in reverse video while it is dragged. HAL
+maps the cells the pointer crossed back to the text it rendered, so the
+copy is the reply's own text: no colours, no borders, no `You > ` or
+`HAL > ` labels, and no line break where the renderer wrapped a line.
+
+What the terminal cannot do is read a selection the *terminal* made, so
+the native selection and the regular clipboard stay separate things:
+with reporting off, the native selection, PRIMARY middle-click paste on
+Linux, right-click paste and `/copy` cover every real clipboard need.
+
+Terminal differences to check by hand:
+
+- GNOME Terminal: with `--mouse`, a plain left drag selects and copies
+  inside HAL; the terminal's own selection needs Shift+drag, and the
+  context menu may need Shift as well. Without `--mouse`, everything is
+  the terminal's own, as before.
+- Terminals that do not implement SGR mouse reporting (`CSI ?1006h`) get
+  no pointer events at all, and HAL falls back to keyboard scrolling.
 
 ## Known limitations
 
@@ -134,6 +155,8 @@ right-click paste and `/copy` cover every real clipboard need.
   mouse copies from the alternate buffer, so the selection does not
   survive the exit of HAL and may differ from what was on the shell
   screen before. Terminals that support "copy on select" still work.
+  With `--mouse` HAL does its own selection and copies it through
+  OSC 52, which does survive the exit.
 - **Modifier-aware keys.** `Shift+Enter` needs the Kitty keyboard
   protocol (kitty, Ghostty, WezTerm, foot, recent Konsole). GNOME
   Terminal, xterm and most VTE terminals do not implement it, so `Ctrl+J`

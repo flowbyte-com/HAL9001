@@ -10,6 +10,7 @@ setup points HAL9001 at a local OpenAI-compatible stub:
 
 Every check prints ok or FAIL; the exit status is non-zero on failure.
 """
+import base64
 import json
 import os
 import re
@@ -237,6 +238,66 @@ def run_fixture_text(session):
     return run_fixture(session)
 
 
+def selection_checks():
+    """A drag over the conversation selects text, and the release copies
+    it through OSC 52. The copied text must be the reply's own text: no
+    interface labels, no colours."""
+    write_scroll_fixture()
+    os.environ["HAL9001_MOUSE"] = "1"
+    try:
+        # SGR press, drag and release on one screen row.
+        dragging = run([(2.5, b"\x1b[<0;8;12M"), (0.6, b"\x1b[<32;44;12M")],
+                       timeout=9.0, fresh=False, session="scrollfixture")
+        check("mouse: the selection is highlighted while it is dragged",
+              "\x1b[7m" in dragging.decode("utf-8", "replace"),
+              dragging.decode("utf-8", "replace")[-200:])
+        raw = run([(2.5, b"\x1b[<0;8;12M"), (0.5, b"\x1b[<32;44;12M"),
+                   (0.5, b"\x1b[<0;44;12m")], timeout=9.0,
+                  fresh=False, session="scrollfixture")
+        text = raw.decode("utf-8", "replace")
+        found = re.search(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07", text)
+        check("mouse: a drag copies the selection", found is not None,
+              text[-300:])
+        if not found:
+            return
+        copied = base64.b64decode(found.group(1)).decode("utf-8", "replace")
+        check("mouse: the copy holds text", copied.strip() != "", repr(copied))
+        check("mouse: the copy has no interface labels",
+              "HAL >" not in copied and "You >" not in copied, repr(copied))
+        check("mouse: the copy has no escape sequences",
+              "\x1b" not in copied, repr(copied))
+        check("mouse: the copy is part of the reply",
+              "paragraph" in copied or "Section" in copied, repr(copied))
+    finally:
+        os.environ.pop("HAL9001_MOUSE", None)
+
+
+def composer_mouse_checks():
+    """The wheel over the composer scrolls the draft instead of the
+    conversation, and the caret stays where it was."""
+    write_scroll_fixture()
+    os.environ["HAL9001_MOUSE"] = "1"
+    try:
+        before = run([(2.0, b"draft line\r draft line\r draft line\r")],
+                     timeout=6.0, fresh=False, session="scrollfixture")
+        before_text = render(before).text()
+        # The composer sits above the footer: row 21 of 24.
+        moved = run([(2.0, b"draft line\r draft line\r draft line\r"),
+                     (0.6, b"\x1b[<64;20;21M"), (0.6, b"\x1b[<64;20;21M")],
+                    timeout=9.0, fresh=False, session="scrollfixture")
+        moved_text = render(moved).text()
+        check("mouse: the wheel over the composer leaves the conversation alone",
+              "Section" in moved_text, moved_text[:400])
+        check("mouse: the wheel over the composer keeps the draft",
+              "draft line" in moved_text, moved_text[:400])
+        check("mouse: the composer window does not move the caret",
+              before_text.count("draft line") == moved_text.count("draft line"),
+              "%d vs %d" % (before_text.count("draft line"),
+                            moved_text.count("draft line")))
+    finally:
+        os.environ.pop("HAL9001_MOUSE", None)
+
+
 def exit_checks():
     for name in ("/q", "/quit", "/exit"):
         raw = run([(2.0, (name + "\r").encode())], timeout=5.0,
@@ -407,6 +468,8 @@ def main():
     token_checks()
     rename_checks()
     mouse_checks()
+    selection_checks()
+    composer_mouse_checks()
 
     # Common terminal sizes keep the frame the right size.
     for cols, rows in [(120, 40), (160, 50)]:

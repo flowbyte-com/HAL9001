@@ -60,6 +60,11 @@ something fails.
   answer carries a metadata line and the composer starts at one row.
 - The wheel scrolls symmetrically with `--mouse`; without it no mouse
   reporting (`?1002h`) is requested and native selection is untouched.
+- A left drag over the conversation copies the selected text through
+  OSC 52: the payload is the reply's own text, without labels, colours
+  or escape sequences.
+- The wheel over the composer scrolls the draft and leaves the caret
+  where it was.
 - `Ctrl+U` clears the draft, `Ctrl+Z` restores it.
 
 ## Files

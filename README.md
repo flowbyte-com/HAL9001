@@ -70,7 +70,8 @@ footer stay at the bottom.
 | `Home` / `End` | Jump to the start / end of the conversation |
 | `Ctrl+U` | Clear the entire draft (Ctrl+Z restores it) |
 | `Ctrl+Z` | Restore the last cleared draft |
-| mouse wheel | Scroll history (only with `--mouse`) |
+| mouse wheel | Scroll history, or the draft (only with `--mouse`) |
+| left drag | Select conversation text and copy it (only with `--mouse`) |
 
 `Enter` and `Ctrl+M` are the same byte on a terminal, so the model
 picker moved to `Ctrl+K`; `/model` works everywhere. Most terminals
@@ -89,7 +90,7 @@ partial one runs the highlighted suggestion), `Esc` to dismiss it and
 keep the draft. A leading `//` sends a literal slash-prefixed message.
 
 The composer is a single bordered one-line input that grows as you write,
-up to eight rows, and shrinks back when you delete. A blank row separates
+up to five rows, and shrinks back when you delete. A blank row separates
 it from the conversation. Pasting never submits. `Ctrl+U` clears the whole
 draft (even hundreds of pasted lines) without submitting anything and
 returns the composer to one row; `Ctrl+Z` puts it back, but only into an
@@ -98,7 +99,9 @@ conversation — that is what `/clear` is for. Pasting never submits: multiline 
 their line breaks, indentation and code fences in the composer, where
 you can edit them before sending. Switching models keeps the
 conversation history and the unsent draft: the session store is
-model-independent.
+model-independent. When the draft is taller than five rows the wheel
+scrolls it and the caret stays where it was; typing brings the caret
+back into view.
 
 **Long prompts.** A prompt that fills more than a few lines is collapsed
 to a four-line preview after you send it, so HAL's answer stays in view.
@@ -122,15 +125,33 @@ exact escape sequence, so they work even when the terminal reports
 Fn+PageUp as `shift+pgup`. New output only follows the bottom when you
 were already there; scrolling up during a reply keeps your place.
 Resizing the terminal and collapsing or expanding a long prompt preserve
-the line you were reading. The mouse wheel scrolls too, but only when
-mouse reporting is enabled with `--mouse` or `HAL9001_MOUSE=1`: reporting
-makes the terminal send wheel events instead of selecting text, so it
-stays off by default. Native selection and right-click paste keep working
-— including middle-click paste of the PRIMARY selection on Linux, which
-is separate from the regular clipboard that `/copy` writes through
-OSC 52. Drag selection cannot be auto-copied without mouse tracking, and
-mouse tracking would break native selection, so HAL does not try: `/copy`
-remains the reliable path to the clipboard.
+the line you were reading.
+
+**Mouse.** Mouse reporting is off by default. With `--mouse` (or
+`HAL9001_MOUSE=1`) HAL asks the terminal for mouse events and takes over
+the pointer itself, the way Pi does:
+
+- The wheel scrolls the conversation, or a long draft under the pointer,
+  or an open panel.
+- Left-dragging selects text in the conversation. The selection is
+  highlighted while it is dragged, and releasing the pointer copies it to
+  the clipboard through OSC 52 — the same mechanism `/copy` uses.
+- The copied text is the reply's own text: no colours, no borders, no
+  `You > ` / `HAL > ` labels, and no artificial line breaks. A wrapped
+  paragraph comes back as the one line it was written as, and a word the
+  renderer had to break comes back whole.
+- An ordinary click copies nothing.
+- The selection survives scrolling, so a selection can be made across a
+  long reply; it is dropped when the conversation changes or the terminal
+  is resized.
+
+With reporting on, the terminal sends mouse events instead of selecting
+text, so the terminal's own selection needs Shift+drag in most emulators
+and right-click behaviour varies. That is why reporting stays off by
+default: without it the native selection, right-click paste and
+middle-click paste of the PRIMARY selection on Linux all keep working,
+and they are separate from the regular clipboard that `/copy` and a
+selection write through OSC 52.
 
 **Bottom-anchored history.** A new or short conversation sits just above
 the composer, with the unused space above it, the way a chat application

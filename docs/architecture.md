@@ -68,7 +68,7 @@ terminal never scrolls.
 Layout: a one-line `● HAL9001` header, a rule, the scrollable Markdown
 conversation, exactly one blank row, an optional command suggestion
 panel, a bordered composer with one text row by default (growing to
-eight), a one-line status footer (`444 READ ONLY · /help` left, model and
+five), a one-line status footer (`444 READ ONLY · /help` left, model and
 effort right) and a notice line. A `chatFrame` resolves that geometry
 once per size change; on short terminals it gives up the suggestion
 panel, the separator, the notice, the rules and finally the border —
@@ -86,6 +86,34 @@ string form, so a terminal that reports Fn+PageUp as `shift+pgup` still
 pages. The reading position is anchored to an entry and a
 row inside it, so resizing or re-wrapping Markdown restores the same
 content rather than a stale line number.
+
+With mouse reporting on, HAL owns the pointer. A left press starts a
+selection, the drag extends it, and the release copies it through OSC 52
+— the same write-only path `/copy` uses, so the model never sees it. The
+selection lives in conversation coordinates, not screen coordinates, so
+scrolling the history does not move it; it is dropped when the
+conversation changes or the terminal is resized.
+
+Copying needs a map from screen cells back to text, and the screen shows
+wrapped, styled, padded lines. `internal/tui/cells.go` scans a rendered
+row into grapheme clusters and records the cell boundaries and the
+origin of every byte, so a cell can be traced back to a character and a
+selection can be drawn in reverse video at exactly the right place.
+`internal/tui/selection.go` maps the conversation onto its *logical*
+lines — the unwrapped text — by rendering each reply a second time
+without wrapping and matching the rendered rows against those lines. A
+selection therefore copies the text as it was written: a wrapped
+paragraph stays one line, a word the renderer had to break comes back
+whole, and the interface labels are never part of it.
+
+The composer keeps its own window. The bubbles textarea pins its view to
+the cursor on every update, which makes the wheel fight the caret, so
+HAL renders the whole draft through the textarea and shows the slice it
+wants. The height of the draft and the row of the cursor come from a
+copy of the textarea's own soft wrap (`internal/tui/composer.go`), so the
+rows HAL counts are the rows the textarea draws. The wheel moves the
+window and never reaches the textarea; typing pulls the window back to
+the caret.
 
 Short conversations are bottom-aligned in the presentation layer: the
 viewport pads its rendered rows above the content, leaving the viewport
