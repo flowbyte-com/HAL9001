@@ -1079,3 +1079,37 @@ func TestEnterAfterGracePeriodSends(t *testing.T) {
 		t.Fatalf("calls = %d, want 1", eng.calls)
 	}
 }
+
+// Every overlay must leave the draft and the composer focus untouched.
+func TestDraftSurvivesEveryOverlay(t *testing.T) {
+	open := map[string]func(m *Model){
+		"model":    func(m *Model) { m.enterPicker() },
+		"theme":    func(m *Model) { m.enterTheme() },
+		"sessions": func(m *Model) { m.enterSessions() },
+	}
+	for name, enter := range open {
+		m := testModel()
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = updated.(Model)
+		m = typeText(m, "draft for "+name)
+		enter(&m)
+		m = pressKey(m, tea.KeyEscape, 0, "")
+		if got := m.Composer().Value(); got != "draft for "+name {
+			t.Errorf("%s panel: draft = %q", name, got)
+		}
+		if !m.Composer().Focused() {
+			t.Errorf("%s panel: composer lost the focus", name)
+		}
+	}
+	// The help panel is opened by a slash command and closed by Esc.
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "draft for help")
+	m.enterOnboard(OnboardData{})
+	m.view = viewHelp
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	if got := m.Composer().Value(); got != "draft for help" {
+		t.Errorf("help panel: draft = %q", got)
+	}
+}
