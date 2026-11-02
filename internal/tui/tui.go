@@ -1,8 +1,9 @@
 // Package tui is HAL9001's dedicated terminal interface: a scrollable
-// conversation area, a multiline composer with explicit send, and a
-// permanent 444 indicator. Presentation only — the conversation core lives
-// in internal/engine. There is deliberately no coding IDE, command console
-// or dashboard here.
+// conversation area, a multiline composer with explicit send, an
+// onboarding screen, and a model picker. Presentation only — the
+// conversation core lives in internal/engine, configuration in
+// internal/config. There is deliberately no coding IDE, command console
+// or task dashboard here.
 package tui
 
 import (
@@ -13,23 +14,22 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
-	"github.com/sipeed/picoclaw/hal9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/engine"
 )
 
-// Engine runs the conversation behind the interface.
-type Engine interface {
-	Respond(ctx context.Context, input string) (string, error)
-}
-
-// Send keys: the composer sends explicitly, Enter always means newline.
+// Keys. Enter always means newline in the composer; sending, quitting and
+// navigation are explicit chords.
 const (
-	keySend  = "ctrl+s"
-	keyQuit  = "ctrl+c"
-	keyQuit2 = "ctrl+q"
+	keySend   = "ctrl+s"
+	keyQuit   = "ctrl+c"
+	keyQuit2  = "ctrl+q"
+	keyPicker = "ctrl+m"
+	keyNew    = "ctrl+n"
 )
 
 // ColorEnabled reports whether styled output is appropriate. NO_COLOR and
@@ -42,69 +42,193 @@ func ColorEnabled() bool {
 	return strings.ToLower(os.Getenv("TERM")) != "dumb"
 }
 
+// OnboardData is one onboarding form submission.
+type OnboardData struct {
+	Endpoint string
+	Model    string
+	Key      string
+}
+
+// ValidateOnboard checks the three onboarding fields without touching the
+// network or the disk.
+func ValidateOnboard(d OnboardData) error {
+	endpoint := strings.TrimSpace(d.Endpoint)
+	if endpoint == "" {
+		return errOnboard("endpoint is required")
+	}
+	if !strings.HasPrefix(endpoint, "https://") && !strings.HasPrefix(endpoint, "http://localhost") && !strings.HasPrefix(endpoint, "http://127.") {
+		return errOnboard("endpoint must be an https URL (http is allowed for localhost only)")
+	}
+	if strings.TrimSpace(d.Model) == "" {
+		return errOnboard("model name is required")
+	}
+	if strings.TrimSpace(d.Key) == "" {
+		return errOnboard("API key is required")
+	}
+	return nil
+}
+
+type onboardError struct{ msg string }
+
+func errOnboard(msg string) error { return &onboardError{msg: msg} }
+
+func (e *onboardError) Error() string { return e.msg }
+
+// ModelInfo describes one configured model for the picker.
+type ModelInfo struct {
+	ID     string
+	Label  string
+	Active bool
+}
+
+// Hooks connect the interface to the application. Every hook is optional
+// in tests; main wires them all.
+type Hooks struct {
+	// SaveOnboard persists onboarding data and returns the new engine.
+	SaveOnboard func(OnboardData) (Engine, error)
+	// TestOnboard probes the endpoint and key, returning a human summary.
+	TestOnboard func(OnboardData) (string, error)
+	// HasConfig reports whether any model is configured yet.
+	HasConfig func() bool
+	// ListModels returns configured models with the active one marked.
+	ListModels func() []ModelInfo
+	// SwitchModel activates a configured model id, returning the engine.
+	SwitchModel func(id string) (Engine, error)
+	// CurrentOnboard prefills the add-model form with current values.
+	CurrentOnboard func() OnboardData
+	// NewSession starts a fresh conversation, returning the engine.
+	NewSession func() (Engine, error)
+}
+
+// Engine runs the conversation behind the interface. It matches
+// internal/engine's streaming method; tests supply scripted doubles.
+type Engine interface {
+	RespondStream(ctx context.Context, input string, emit func(string)) (string, error)
+}
+
+// View selects the full-screen mode.
+type View int
+
+const (
+	viewChat View = iota
+	viewOnboard
+	viewPicker
+)
+
 // Model is the Bubble Tea application state.
 type Model struct {
 	engine   Engine
+	hooks    Hooks
 	viewport viewport.Model
 	composer textarea.Model
 	lines    []string
+	display  []string
+	pending  string
 	width    int
 	height   int
 	ready    bool
 	sending  bool
-	notice   string
 	quitting bool
+	notice   string
 	color    bool
+	view     View
+	sender   func(tea.Msg)
+	cancel   context.CancelFunc
+	// Onboarding form.
+	obEndpoint textinput.Model
+	obModel    textinput.Model
+	obKey      textinput.Model
+	obFocus    int
+	obNotice   string
+	// Picker state.
+	pickerModels []ModelInfo
+	pickerCursor int
+	pickerNotice string
 }
 
 // New builds the interface. Color follows ColorEnabled at construction so
 // tests can pin either mode deterministically.
 func New(engine Engine) Model {
+	return NewWithHooks(engine, Hooks{})
+}
+
+// NewWithHooks builds the interface with application hooks.
+func NewWithHooks(engine Engine, hooks Hooks) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message — Enter newline, Ctrl+S send, Ctrl+C quit"
+	ta.Placeholder = "Type a message (Enter newline, Ctrl+S send, Ctrl+C quit)"
 	ta.Focus()
-	return Model{engine: engine, composer: ta, color: ColorEnabled()}
+	return Model{engine: engine, hooks: hooks, composer: ta, color: ColorEnabled()}
 }
 
 // SetColor overrides color mode; used by tests.
 func (m *Model) SetColor(enabled bool) { m.color = enabled }
 
+// SetSender installs the live message sender (the tea.Program). Headless
+// tests leave it nil and run synchronously instead.
+func (m *Model) SetSender(sender func(tea.Msg)) { m.sender = sender }
+
+// SetEngine swaps the conversation core (model switching keeps history).
+func (m *Model) SetEngine(e Engine) { m.engine = e }
+
+// EnterOnboarding opens the setup form, for first run.
+func (m *Model) EnterOnboarding() { m.enterOnboard(OnboardData{}) }
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd { return nil }
 
+type streamDeltaMsg struct{ text string }
+type streamStartedMsg struct{}
 type responseMsg struct{ text string }
 type errorMsg struct{ err error }
 
-// sendCmd runs the engine off the render path.
-func (m Model) sendCmd(input string) tea.Cmd {
-	return func() tea.Msg {
-		text, err := m.engine.Respond(context.Background(), input)
-		if err != nil {
-			return errorMsg{err: err}
-		}
-		return responseMsg{text: text}
+// sendCmd starts the streamed turn. With a live sender it runs in the
+// background and posts deltas; headless it runs inline for determinism.
+func (m Model) sendCmd(input string, ctx context.Context) tea.Cmd {
+	if m.sender == nil {
+		return func() tea.Msg { return m.runRespond(input, ctx) }
 	}
+	return func() tea.Msg {
+		go m.runStream(input, ctx)
+		return streamStartedMsg{}
+	}
+}
+
+func (m Model) runRespond(input string, ctx context.Context) tea.Msg {
+	reply, err := m.engine.RespondStream(ctx, input, nil)
+	if err != nil {
+		return errorMsg{err: err}
+	}
+	return responseMsg{text: reply}
+}
+
+func (m Model) runStream(input string, ctx context.Context) {
+	reply, err := m.engine.RespondStream(ctx, input, func(text string) {
+		m.sender(streamDeltaMsg{text: text})
+	})
+	if err != nil {
+		m.sender(errorMsg{err: err})
+		return
+	}
+	m.sender(responseMsg{text: reply})
 }
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch m.view {
+	case viewOnboard:
+		return m.updateOnboard(msg)
+	case viewPicker:
+		return m.updatePicker(msg)
+	}
+	return m.updateChat(msg)
+}
+
+func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.ready = true
-		compHeight := 5
-		viewHeight := m.height - compHeight - 4
-		if viewHeight < 1 {
-			viewHeight = 1
-		}
-		if m.viewport.Width() == 0 {
-			m.viewport = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(viewHeight))
-		} else {
-			m.viewport.SetWidth(m.width)
-			m.viewport.SetHeight(viewHeight)
-		}
-		m.composer.SetWidth(m.width - 2)
-		m.composer.SetHeight(3)
+		m.sizePanes()
 		m.renderConversation()
 		return m, nil
 	case tea.KeyPressMsg:
@@ -112,7 +236,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key {
 		case keyQuit, keyQuit2:
 			m.quitting = true
+			m.stopStream()
 			return m, tea.Quit
+		case keyPicker:
+			m.enterPicker()
+			return m, nil
+		case keyNew:
+			m.newSession()
+			return m, nil
+		case "esc":
+			if m.sending {
+				m.stopStream()
+				m.sending = false
+				m.notice = "cancelled — stored nothing from the assistant"
+				return m, nil
+			}
 		case keySend:
 			if m.sending {
 				return m, nil
@@ -123,9 +261,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.composer.Reset()
 			m.appendLine("You > " + input)
+			m.pending = ""
 			m.sending = true
-			m.notice = "thinking…"
-			return m, m.sendCmd(input)
+			m.notice = "streaming… (Esc cancels)"
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancel = cancel
+			return m, m.sendCmd(input, ctx)
 		case "pgup":
 			m.viewport.PageUp()
 			return m, nil
@@ -133,13 +274,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.PageDown()
 			return m, nil
 		}
+	case streamDeltaMsg:
+		m.pending += msg.text
+		m.renderConversation()
+		m.viewport.GotoBottom()
+		return m, nil
 	case responseMsg:
 		m.sending = false
+		m.stopStream()
 		m.notice = ""
-		m.appendLine("HAL > " + msg.text)
+		m.pending = ""
+		m.replaceLast(msg.text)
 		return m, nil
 	case errorMsg:
 		m.sending = false
+		m.stopStream()
+		if errors.Is(msg.err, context.Canceled) {
+			m.notice = "cancelled — stored nothing from the assistant"
+			return m, nil
+		}
 		if errors.Is(msg.err, engine.ErrNoProvider) {
 			m.notice = "No provider configured — message stored in this session."
 			return m, nil
@@ -157,30 +310,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
 	}
-	// Before the first resize, only the composer exists.
 	var cmd tea.Cmd
 	m.composer, cmd = m.composer.Update(msg)
 	return m, cmd
 }
 
+func (m *Model) stopStream() {
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+}
+
+func (m *Model) sizePanes() {
+	compHeight := 5
+	viewHeight := m.height - compHeight - 5
+	if viewHeight < 1 {
+		viewHeight = 1
+	}
+	if m.viewport.Width() == 0 {
+		m.viewport = viewport.New(viewport.WithWidth(m.width), viewport.WithHeight(viewHeight))
+	} else {
+		m.viewport.SetWidth(m.width)
+		m.viewport.SetHeight(viewHeight)
+	}
+	m.composer.SetWidth(m.width - 2)
+	m.composer.SetHeight(3)
+}
+
 func (m *Model) appendLine(line string) {
 	m.lines = append(m.lines, line)
+	m.display = append(m.display, line)
+	m.renderConversation()
+	m.viewport.GotoBottom()
+}
+
+// replaceLast swaps the pending raw stream for the final rendered answer.
+func (m *Model) replaceLast(text string) {
+	rendered := renderMarkdown(text, m.width)
+	m.lines = append(m.lines, "HAL > "+text)
+	m.display = append(m.display, "HAL > "+rendered)
 	m.renderConversation()
 	m.viewport.GotoBottom()
 }
 
 func (m *Model) renderConversation() {
-	m.viewport.SetContent(strings.Join(m.lines, "\n"))
+	content := append([]string(nil), m.display...)
+	if m.pending != "" {
+		content = append(content, "HAL > "+m.pending)
+	}
+	m.viewport.SetContent(strings.Join(content, "\n"))
 }
 
-var ansiSequence = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
-
-// stripANSI removes ANSI escape sequences for monochrome terminals.
-// Bubbles widgets style themselves internally, so the fallback applies at
-// the final view: with color disabled, the interface is plain text.
-func stripANSI(s string) string {
-	return ansiSequence.ReplaceAllString(s, "")
+// View implements tea.View.
+func (m Model) View() tea.View {
+	switch m.view {
+	case viewOnboard:
+		return tea.NewView(m.onboardView())
+	case viewPicker:
+		return tea.NewView(m.pickerView())
+	}
+	return tea.NewView(m.chatView())
 }
+
 func (m Model) heading() string {
 	if !m.color {
 		return "● HAL9001"
@@ -189,7 +381,7 @@ func (m Model) heading() string {
 }
 
 func (m Model) statusBar() string {
-	left := "Enter newline · Ctrl+S send · Ctrl+C quit · PgUp/PgDn scroll"
+	left := "Enter newline · Ctrl+S send · Ctrl+M models · Ctrl+N new · Ctrl+C quit"
 	right := "[444 read-only]"
 	gap := m.width - len(left) - len(right) - 1
 	if gap < 1 {
@@ -202,13 +394,20 @@ func (m Model) statusBar() string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(bar)
 }
 
-// View implements tea.Model.
-func (m Model) View() tea.View {
+var ansiSequence = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
+
+// stripANSI removes escape sequences for monochrome terminals. Widgets
+// style themselves internally, so the fallback applies at the final view.
+func stripANSI(s string) string {
+	return ansiSequence.ReplaceAllString(s, "")
+}
+
+func (m Model) chatView() string {
 	if m.quitting {
-		return tea.NewView("Goodbye.\n")
+		return "Goodbye.\n"
 	}
 	if !m.ready {
-		return tea.NewView("Starting HAL9001…\n")
+		return "Starting HAL9001…\n"
 	}
 	var sb strings.Builder
 	sb.WriteString(m.heading())
@@ -226,13 +425,28 @@ func (m Model) View() tea.View {
 	if !m.color {
 		out = stripANSI(out)
 	}
-	return tea.NewView(out)
+	return out
 }
 
-// Run launches the interface on the real terminal.
-func Run(engine Engine) error {
-	_, err := tea.NewProgram(New(engine)).Run()
+// RunWithModel launches a prebuilt interface (used when the caller sets
+// the initial view, for example first-run onboarding).
+func RunWithModel(m Model) error {
+	var p *tea.Program
+	m.sender = func(msg tea.Msg) {
+		if p != nil {
+			p.Send(msg)
+		}
+	}
+	p = tea.NewProgram(m)
+	_, err := p.Run()
 	return err
+}
+
+// Run launches the interface on the real terminal. The sender is wired
+// after program construction through a closure so streamed deltas can
+// reach the event loop from the engine goroutine.
+func Run(engine Engine, hooks Hooks) error {
+	return RunWithModel(NewWithHooks(engine, hooks))
 }
 
 // Lines returns the conversation lines, for tests.

@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sipeed/picoclaw/hal9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/engine"
 )
 
 type scriptEngine struct {
@@ -15,7 +15,7 @@ type scriptEngine struct {
 	calls   int
 }
 
-func (s *scriptEngine) Respond(_ context.Context, input string) (string, error) {
+func (s *scriptEngine) RespondStream(_ context.Context, input string, emit func(string)) (string, error) {
 	s.calls++
 	if r, ok := s.replies[input]; ok {
 		return r, nil
@@ -158,7 +158,7 @@ func TestMonochromeView(t *testing.T) {
 	if strings.Contains(view, "🦞") {
 		t.Error("view must never contain the lobster emoji")
 	}
-	for _, want := range []string{"● HAL9001", "You > hi", "HAL > hello", "[444 read-only]"} {
+	for _, want := range []string{"● HAL9001", "You > hi", "hello", "[444 read-only]"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q:\n%s", want, view)
 		}
@@ -207,5 +207,132 @@ func TestNoProviderNoticeWithoutFabrication(t *testing.T) {
 	}
 	if !strings.Contains(m.Notice(), "No provider configured") {
 		t.Errorf("notice must explain, got %q", m.Notice())
+	}
+}
+
+func TestCtrlMOpensPickerAndEscReturns(t *testing.T) {
+	hooks := Hooks{
+		ListModels: func() []ModelInfo {
+			return []ModelInfo{{ID: "a", Active: true}, {ID: "b"}}
+		},
+	}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = pressKey(m, 'm', tea.ModCtrl, "")
+	view := string(m.View().Content)
+	if !strings.Contains(view, "Models") || !strings.Contains(view, "(active)") {
+		t.Fatalf("picker must list models with the active mark:\n%s", view)
+	}
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	view = string(m.View().Content)
+	if strings.Contains(view, "Models (Enter switches") {
+		t.Fatal("Esc must return to the conversation")
+	}
+}
+
+func TestPickerSwitchesModel(t *testing.T) {
+	switched := ""
+	hooks := Hooks{
+		ListModels: func() []ModelInfo {
+			var active string
+			if switched != "" {
+				active = switched
+			} else {
+				active = "a"
+			}
+			return []ModelInfo{{ID: "a", Active: active == "a"}, {ID: "b", Active: active == "b"}}
+		},
+		SwitchModel: func(id string) (Engine, error) { switched = id; return nil, nil },
+	}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = pressKey(m, 'm', tea.ModCtrl, "")
+	m = pressKey(m, tea.KeyDown, 0, "")
+	m = pressKey(m, tea.KeyEnter, 0, "")
+	if switched != "b" {
+		t.Fatalf("switched = %q, want b", switched)
+	}
+	if !strings.Contains(m.Notice(), "Model: b") {
+		t.Errorf("notice should confirm the switch, got %q", m.Notice())
+	}
+}
+
+func TestCtrlNStartsNewConversation(t *testing.T) {
+	news := 0
+	hooks := Hooks{NewSession: func() (Engine, error) { news++; return nil, nil }}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "old message")
+	m = pressKey(m, 'n', tea.ModCtrl, "")
+	if news != 1 {
+		t.Fatal("Ctrl+N must start a new session")
+	}
+	if len(m.Lines()) != 0 {
+		t.Errorf("new conversation must clear the view, got %v", m.Lines())
+	}
+}
+
+func TestOnboardingValidation(t *testing.T) {
+	if err := ValidateOnboard(OnboardData{}); err == nil {
+		t.Error("empty onboarding must fail")
+	}
+	bad := OnboardData{Endpoint: "ftp://x", Model: "m", Key: "k"}
+	if err := ValidateOnboard(bad); err == nil {
+		t.Error("non-HTTP endpoint must fail")
+	}
+	good := OnboardData{Endpoint: "https://api.example.com/v1", Model: "m", Key: "k"}
+	if err := ValidateOnboard(good); err != nil {
+		t.Errorf("valid onboarding rejected: %v", err)
+	}
+	local := OnboardData{Endpoint: "http://localhost:11434/v1", Model: "m", Key: "k"}
+	if err := ValidateOnboard(local); err != nil {
+		t.Errorf("localhost HTTP must be allowed: %v", err)
+	}
+}
+
+func TestOnboardingSubmitSaves(t *testing.T) {
+	var saved OnboardData
+	hooks := Hooks{SaveOnboard: func(d OnboardData) (Engine, error) { saved = d; return nil, nil }}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	m.SetColor(false)
+	m.enterOnboard(OnboardData{})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	for _, key := range []string{"https://api.example.com/v1", "m1", "k1"} {
+		for _, r := range key {
+			m = pressKey(m, r, 0, string(r))
+		}
+		if key != "k1" {
+			m = pressKey(m, tea.KeyEnter, 0, "")
+		}
+	}
+	m = pressKey(m, 's', tea.ModCtrl, "")
+	if saved.Endpoint != "https://api.example.com/v1" || saved.Model != "m1" || saved.Key != "k1" {
+		t.Fatalf("saved = %+v", saved)
+	}
+}
+
+func TestEscapeCancelsStream(t *testing.T) {
+	m := testModel()
+	m = typeText(m, "hi")
+	m = pressKey(m, 's', tea.ModCtrl, "")
+	if !m.Sending() {
+		t.Fatal("expected in-flight send")
+	}
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	if m.Sending() {
+		t.Error("Esc must cancel the in-flight send")
+	}
+	if !strings.Contains(m.Notice(), "cancelled") {
+		t.Errorf("notice = %q", m.Notice())
+	}
+}
+
+func TestRenderMarkdownFallback(t *testing.T) {
+	if got := renderMarkdown("**bold** and text", 0); !strings.Contains(got, "bold") {
+		t.Errorf("fallback must keep content, got %q", got)
 	}
 }
