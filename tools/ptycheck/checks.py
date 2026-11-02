@@ -115,6 +115,73 @@ def layout_checks():
           "Ctrl+O to expand" in text, text)
 
 
+def session_checks():
+    """The acceptance flow for active-session persistence, against real
+    files on disk (no mocks)."""
+    cfg = os.path.join(HOME, "session-config.json")
+    with open(cfg, "w") as fh:
+        json.dump({
+            "provider": "openai-compatible",
+            "endpoint": os.environ.get("HAL9001_ENDPOINT", "http://127.0.0.1:8099/v1"),
+            "api_key": "test-key",
+            "models": [{"id": "MiniMax-M3.1-Flash"}],
+            "active_model": "MiniMax-M3.1-Flash",
+        }, fh)
+    pty_drive.CONFIG = cfg
+    sessions = os.path.join(HOME, "sessions")
+    for name in os.listdir(sessions) if os.path.isdir(sessions) else []:
+        if name.endswith(".jsonl"):
+            os.remove(os.path.join(sessions, name))
+
+    def run_keys(script, timeout=12.0):
+        # No --session: the application must choose from its own metadata.
+        raw = run(script, timeout=timeout, fresh=False, session="")
+        # Render the screen as it was before /q left the alternate buffer.
+        end = raw.find(b"\x1b[?1049l")
+        if end >= 0:
+            raw = raw[:end]
+        return render(raw).text()
+
+    # 1. First launch, one exchange.
+    first = run_keys([(2.0, b"first question\r"), (3.0, b"/q\r")], timeout=10.0)
+    check("session: first conversation is active", "HAL9001" in first, first)
+
+    # 2. Clear and quit.
+    cleared = run_keys([(2.0, b"/clear\r"), (1.5, b"")], timeout=8.0)
+    check("session: /clear starts a fresh conversation",
+          "Conversation cleared" in cleared, cleared)
+    check("session: /clear does not show the old conversation",
+          "first question" not in cleared, cleared)
+
+    # 3. Relaunch: the cleared (empty) session is still active.
+    relaunched = run_keys([(2.0, b"")], timeout=6.0)
+    check("session: the cleared conversation survives a restart",
+          "first question" not in relaunched, relaunched)
+
+    # 4. Recover the original through /sessions and quit.
+    recovered = run_keys([(2.0, b"/sessions\r"), (0.6, b"\r"), (1.0, b"/q\r")], timeout=10.0)
+    check("session: the previous conversation is recoverable",
+          "first question" in recovered, recovered)
+
+    # 5. The selected older session is active on the next launch.
+    again = run_keys([(2.0, b"")], timeout=6.0)
+    check("session: the selected conversation resumes on restart",
+          "first question" in again, again)
+
+
+def token_checks():
+    text = run([(2.0, b"count my tokens\r"), (3.0, b"")], timeout=10.0,
+               fresh=False, session="tokenchat").decode("utf-8", "replace")
+    rendered = render(text.encode()).text()
+    check("tokens: the footer reports provider usage",
+          "Tokens:" in rendered and " in / " in rendered, rendered)
+    usage = run([(2.0, b"count my tokens\r"), (3.0, b"/usage\r")], timeout=10.0,
+                fresh=False, session="tokenchat").decode("utf-8", "replace")
+    panel = render(usage.encode()).text()
+    for label in ("input", "output", "reasoning", "completed"):
+        check("tokens: /usage shows %s" % label, label in panel, panel)
+
+
 def exit_checks():
     for name in ("/q", "/quit", "/exit"):
         raw = run([(2.0, (name + "\r").encode())], timeout=5.0,
@@ -157,6 +224,7 @@ def ui_checks():
     check("commands: the conversation stays visible",
           "I read your message" in panel, panel)
     check("commands: nothing submitted", "You > /" not in panel, panel)
+
 
     filtered = screen(run([(2.0, b"/ef")], timeout=5.0)).text()
     check("commands: typing filters", "/effort" in filtered and "/theme" not in filtered, filtered)
@@ -280,6 +348,8 @@ def main():
     theme_checks()
     layout_checks()
     exit_checks()
+    session_checks()
+    token_checks()
 
     # Common terminal sizes keep the frame the right size.
     for cols, rows in [(120, 40), (160, 50)]:

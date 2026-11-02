@@ -54,6 +54,9 @@ something fails.
   collapses to at most four preview lines.
 - `/q`, `/quit` and `/exit` leave the alternate screen and restore the
   terminal colours and cursor.
+- The active conversation survives `/clear` and a relaunch, an empty new
+  session stays selected, and `/sessions` recovers the previous one.
+- The footer and `/usage` report provider token usage.
 - The mouse is never captured, so native selection keeps working.
 
 ## Files

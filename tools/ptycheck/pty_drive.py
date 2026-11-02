@@ -28,7 +28,9 @@ STORE = os.path.join(HOME, "sessions")
 
 def reset_session(session=None):
     """Start from an empty conversation."""
-    path = os.path.join(STORE, (session or SESSION) + ".jsonl")
+    if not session:
+        return
+    path = os.path.join(STORE, session + ".jsonl")
     try:
         os.remove(path)
     except FileNotFoundError:
@@ -42,7 +44,7 @@ def run(script, cols=80, rows=24, timeout=12.0, fresh=True, session=None):
     to write or a ("resize", cols, rows) tuple. session selects a stored
     conversation (default demo).
     """
-    session = session or SESSION
+    session = SESSION if session is None else session
     if fresh:
         reset_session(session)
     pid, fd = pty.fork()
@@ -50,7 +52,12 @@ def run(script, cols=80, rows=24, timeout=12.0, fresh=True, session=None):
         os.environ["TERM"] = "xterm-256color"
         os.environ["HAL9001_CONFIG"] = CONFIG
         os.environ["HAL9001_HOME"] = HOME
-        os.execv(BINARY, [BINARY, "--session", session, "--store", STORE])
+        args = [BINARY, "--store", STORE]
+        if session:
+            # An explicit --session wins over the stored active session;
+            # omit it to exercise the persisted choice.
+            args = [BINARY, "--session", session, "--store", STORE]
+        os.execv(BINARY, args)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     out = bytearray()
     start = time.time()

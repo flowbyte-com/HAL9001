@@ -132,7 +132,7 @@ so a stall can be explained after the fact.
 |---|---|---|---|
 | Output cap | 15000 tokens | `--max-tokens` | `HAL9001_MAX_TOKENS` |
 | Idle timeout | 45 s | `--stream-idle-timeout` | `HAL9001_STREAM_IDLE_TIMEOUT` |
-| Turn ceiling | 2 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
+| Turn ceiling | 4 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
 
 They are also persisted in the user configuration file as
 `max_tokens`, `stream_idle_timeout_seconds` and
@@ -141,7 +141,7 @@ malformed environment value is ignored rather than silently disabling
 the safeguard.
 
 These are the operator's chosen defaults: a bounded reply, a stall
-detected in under a minute, and a hard two-minute ceiling. An explicit
+detected in under a minute, and a hard four-minute ceiling. An explicit
 flag, environment value or configuration entry overrides any of them.
 
 The idle window resets on every chunk the provider sends, so a slow but

@@ -149,6 +149,21 @@ Nothing retries and nothing raises the cap implicitly.
 application for a new session store, reset the visible conversation. The
 previous session file is never deleted and stays listed by `/sessions`.
 
+The active conversation is recorded in the user configuration
+(`active_session`) whenever a session starts or is selected, and resolved
+at startup as: explicit `--session`, then the recorded session (honoured
+even when its file does not exist yet), then the most recently modified
+stored conversation for installations that predate the metadata, then the
+default empty session. A corrupt or unsafe name is ignored rather than
+crashing or silently reopening the earliest conversation.
+
+Token accounting lives in `internal/usage` as a per-session record in
+`usage.json`: input, output, reasoning and cached-input totals, completed
+and incomplete turn counts and the last turn. Only provider-reported
+numbers are stored — reasoning tokens are kept separate because they are
+already inside the completion total, and a turn without reported usage
+increments the incomplete count instead of inventing tokens.
+
 `provider.TurnStats` records content-free telemetry per turn: status,
 elapsed time, time to first visible output and to first reasoning event,
 SSE event and keep-alive counts, visible and reasoning chunk/byte counts,

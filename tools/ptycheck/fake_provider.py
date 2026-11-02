@@ -31,6 +31,16 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(("data: " + json.dumps(payload) + "\n\n").encode())
             self.wfile.flush()
             time.sleep(0.05)
+        self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+        self.wfile.write(("data: " + json.dumps({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200,
+                "completion_tokens_details": {"reasoning_tokens": 30},
+                "prompt_tokens_details": {"cached_tokens": 20},
+            },
+        }) + "\n\n").encode())
+        self.wfile.flush()
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 

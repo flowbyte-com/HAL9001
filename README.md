@@ -77,7 +77,8 @@ the terminal reports modifier combinations and says so in `/help`.
 
 Slash commands run locally and never reach the model: `/help`,
 `/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/clear`, `/sessions`,
-`/effort`, `/expand`, `/collapse`, `/diag`, `/q`, `/quit`, `/exit`.
+`/effort`, `/expand`, `/collapse`, `/diag`, `/usage`, `/q`, `/quit`,
+`/exit`.
 Typing `/` opens a suggestion
 panel above the composer: keep typing to filter, `Up`/`Down` to move,
 `Tab` to complete, `Enter` to run (a complete command runs as typed, a
@@ -140,9 +141,26 @@ path as `Ctrl+C`: an active request is cancelled, nothing incomplete is
 stored, and the alternate screen, cursor and terminal colours are
 restored.
 
+**Sessions.** HAL remembers which conversation was active. `/clear` and
+`/new` start a genuinely new one, select it immediately, and that choice
+survives quitting and relaunching — including while it is still empty.
+Picking an older conversation in `/sessions` makes it active again for
+the next launch. Nothing is ever deleted: every earlier conversation
+stays on disk.
+
+**Token usage.** The footer shows the session's cumulative provider-reported
+tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;
+narrow terminals hide it before the model name or the 444 marker. `/usage`
+breaks it down: input, output, reasoning, cached input, the last turn and
+how many turns were completed versus ended without a usage report. Counts
+come only from the provider — HAL never estimates or prices tokens — and
+are stored per session across restarts. `/diag` remains the place for
+streaming diagnostics.
+
 **Clearing.** `/clear` empties the visible conversation and starts a fresh
-context for the next request. The previous conversation is **not**
-deleted: it stays recoverable through `/sessions`. Model, effort and
+context for the next request, and selects that new session for later
+launches. The previous conversation is **not** deleted: it stays
+recoverable through `/sessions`. Model, effort and
 theme are kept. `/new` does the same and is the shortcut (`Ctrl+N`) for
 it; `/clear` is the explicit name for "start over". `/clear` works during
 a running turn — it cancels the turn first, so nothing from it can appear
@@ -209,7 +227,7 @@ so a provider cannot generate or stall without limit:
 |---|---|---|---|
 | Output cap | 15000 tokens | `--max-tokens` | `HAL9001_MAX_TOKENS` |
 | Idle timeout | 45 s | `--stream-idle-timeout` | `HAL9001_STREAM_IDLE_TIMEOUT` |
-| Turn ceiling | 2 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
+| Turn ceiling | 4 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
 
 The values also persist in the user configuration file. Zero means "use
 the built-in default"; an explicit value always wins, so an operator who
