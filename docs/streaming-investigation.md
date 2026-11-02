@@ -80,9 +80,10 @@ reply when the reader was already at the bottom.
 timeout applies to the whole body read, not just the headers. The old
 code relied on exactly that, which is why a single turn could not exceed
 120 s. The new turn ceiling is tested the same way
-(`TestChatStreamTurnTimeoutWhileTrickling`): a stream that keeps sending
-data but never finishes is cut by the turn limit while the idle watchdog
-never fires.
+(`TestChatStreamTurnTimeoutWhileTrickling` and
+`TestTurnTimeoutDuringReasoningTrickle`): a stream that keeps sending
+content or reasoning but never finishes is cut by the turn limit while
+the idle watchdog never fires.
 
 **Consequence:** in this build a single turn could not have displayed
 `streaming…` for five minutes. The hard ceiling was 120 s. The observed
@@ -129,9 +130,9 @@ so a stall can be explained after the fact.
 
 | Setting | Default | Flag | Environment |
 |---|---|---|---|
-| Output cap | 16384 tokens | `--max-tokens` | `HAL9001_MAX_TOKENS` |
-| Idle timeout | 120 s | `--stream-idle-timeout` | `HAL9001_STREAM_IDLE_TIMEOUT` |
-| Turn ceiling | 15 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
+| Output cap | 8192 tokens | `--max-tokens` | `HAL9001_MAX_TOKENS` |
+| Idle timeout | 45 s | `--stream-idle-timeout` | `HAL9001_STREAM_IDLE_TIMEOUT` |
+| Turn ceiling | 2 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
 
 They are also persisted in the user configuration file as
 `max_tokens`, `stream_idle_timeout_seconds` and
@@ -139,12 +140,23 @@ They are also persisted in the user configuration file as
 malformed environment value is ignored rather than silently disabling
 the safeguard.
 
-The cap is deliberately generous: a normal reply is far shorter, and the
-cap only bounds a runaway. The turn ceiling replaces the old 120 s
-client timeout, which cut legitimate answers; the idle watchdog now
-catches a genuinely stalled stream in 120 s instead. After
+These are the operator's chosen defaults: a bounded reply, a stall
+detected in under a minute, and a hard two-minute ceiling. An explicit
+flag, environment value or configuration entry overrides any of them.
+
+The idle window resets on every chunk the provider sends, so a slow but
+active stream is never cut. The turn ceiling is absolute: a reasoning
+phase that keeps emitting events is still stopped at two minutes, which
+is the behaviour `TestTurnTimeoutDuringReasoningTrickle` pins down. After
 `finish_reason`, the idle window shrinks to three seconds so a provider
 that keeps the socket open does not hold the turn.
+
+The old implementation also had a 120 s bound, but it was a blunt
+`http.Client.Timeout` over the whole body read with no progress signal,
+no idle distinction and a generic error. The new ceiling is the same
+number with different machinery: it is paired with a 45 s idle
+watchdog, a visible elapsed-time indicator and an explanation when it
+fires. The number matching is coincidence, not a restoration.
 
 ### Visible progress
 

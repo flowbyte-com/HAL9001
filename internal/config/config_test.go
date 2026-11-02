@@ -216,18 +216,20 @@ func TestSafeguardFlagsWin(t *testing.T) {
 	t.Setenv("HAL9001_HOME", dir)
 	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "config.json"))
 	t.Setenv("HAL9001_MAX_TOKENS", "4096")
-	cfg, err := LoadErr([]string{"--max-tokens", "2048", "--stream-idle-timeout", "45", "--turn-timeout", "300"})
+	// Every value differs from the built-in default, so the assertion
+	// proves precedence rather than accidental agreement.
+	cfg, err := LoadErr([]string{"--max-tokens", "2048", "--stream-idle-timeout", "30", "--turn-timeout", "300"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MaxTokens != 2048 || cfg.StreamIdleSeconds != 45 || cfg.TurnTimeoutSeconds != 300 {
+	if cfg.MaxTokens != 2048 || cfg.StreamIdleSeconds != 30 || cfg.TurnTimeoutSeconds != 300 {
 		t.Errorf("flags not applied: %+v", cfg)
 	}
 }
 
 func TestSafeguardsRoundTripInFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	fc := FileConfig{MaxTokens: 8192, StreamIdleSeconds: 120, TurnTimeoutSeconds: 900}
+	fc := FileConfig{MaxTokens: 8192, StreamIdleSeconds: 45, TurnTimeoutSeconds: 120}
 	if err := SaveFile(path, fc); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +237,7 @@ func TestSafeguardsRoundTripInFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.MaxTokens != 8192 || loaded.StreamIdleSeconds != 120 || loaded.TurnTimeoutSeconds != 900 {
+	if loaded.MaxTokens != 8192 || loaded.StreamIdleSeconds != 45 || loaded.TurnTimeoutSeconds != 120 {
 		t.Errorf("file round-trip lost the safeguards: %+v", loaded)
 	}
 }

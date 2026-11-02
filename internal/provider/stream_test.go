@@ -352,3 +352,161 @@ func TestChatStreamTurnTimeoutWhileTrickling(t *testing.T) {
 		t.Errorf("turn ceiling took %v", elapsed)
 	}
 }
+
+// The operator's defaults are part of the contract: 8192 output tokens, a
+// 45-second idle window, a 120-second turn ceiling, a 3-second finish
+// grace.
+func TestDefaultSafeguards(t *testing.T) {
+	if DefaultMaxTokens != 8192 {
+		t.Errorf("DefaultMaxTokens = %d, want 8192", DefaultMaxTokens)
+	}
+	if DefaultIdleTimeout != 45*time.Second {
+		t.Errorf("DefaultIdleTimeout = %v, want 45s", DefaultIdleTimeout)
+	}
+	if DefaultTurnTimeout != 120*time.Second {
+		t.Errorf("DefaultTurnTimeout = %v, want 120s", DefaultTurnTimeout)
+	}
+	if finishGrace != 3*time.Second {
+		t.Errorf("finishGrace = %v, want 3s", finishGrace)
+	}
+
+	// A zero-valued provider resolves to exactly those defaults.
+	p := &OpenAICompatible{}
+	if got := p.maxTokens(); got != 8192 {
+		t.Errorf("resolved max tokens = %d", got)
+	}
+	if got := p.idleTimeout(); got != 45*time.Second {
+		t.Errorf("resolved idle timeout = %v", got)
+	}
+	if got := p.turnTimeout(); got != 120*time.Second {
+		t.Errorf("resolved turn timeout = %v", got)
+	}
+}
+
+// Any data from the provider resets the idle watchdog: a stream that keeps
+// producing events for longer than the idle window is never cut.
+func TestIdleWatchdogResetsOnActivity(t *testing.T) {
+	const (
+		idle = 400 * time.Millisecond
+		gap  = 100 * time.Millisecond
+	)
+	var lines []string
+	for i := 0; i < 10; i++ {
+		lines = append(lines, contentLine("tick "))
+	}
+	lines = append(lines, doneLine)
+	srv := miniMaxServer(t, lines, gap)
+	defer srv.Close()
+
+	p := &OpenAICompatible{Endpoint: srv.URL, APIKey: "k", IdleTimeout: idle}
+	start := time.Now()
+	resp, err := p.ChatStream(context.Background(),
+		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, func(Delta) error { return nil })
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("a busy stream must not hit the idle timeout: %v", err)
+	}
+	if elapsed < 2*idle {
+		t.Fatalf("test ran %v, shorter than the idle window; it proves nothing", elapsed)
+	}
+	if resp.Stats.Status != StatusDone {
+		t.Errorf("status = %q", resp.Stats.Status)
+	}
+	if resp.Content != strings.Repeat("tick ", 10) {
+		t.Errorf("content = %q", resp.Content)
+	}
+}
+
+// A reasoning phase that keeps trickling output is still bounded by the
+// turn ceiling: the idle watchdog never fires, so only the ceiling can
+// stop it.
+func TestTurnTimeoutDuringReasoningTrickle(t *testing.T) {
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-r.Context().Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+			fmt.Fprint(w, reasoningLine("private thought")+"\n\n")
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+	defer close(stop)
+
+	p := &OpenAICompatible{
+		Endpoint:    srv.URL,
+		APIKey:      "k",
+		IdleTimeout: 5 * time.Second, // never fires: reasoning keeps coming
+		TurnTimeout: 250 * time.Millisecond,
+	}
+	start := time.Now()
+	resp, err := p.ChatStream(context.Background(),
+		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, func(Delta) error { return nil })
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrTurnTimeout) {
+		t.Fatalf("err = %v, want ErrTurnTimeout", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("turn ceiling took %v", elapsed)
+	}
+	if resp.Stats.Status != StatusTimeout {
+		t.Errorf("status = %q, want timeout", resp.Stats.Status)
+	}
+	if resp.Stats.ReasoningChunks == 0 {
+		t.Error("the stream produced no reasoning events; the test proves nothing")
+	}
+}
+
+// The configured output limit is the one sent, and /diag's stats report
+// the same value.
+func TestConfiguredLimitIsSentAndReported(t *testing.T) {
+	var captured capturedRequest
+	srv := streamServer(t, []string{contentLine("ok")}, &captured)
+	defer srv.Close()
+
+	p := &OpenAICompatible{Endpoint: srv.URL, APIKey: "k", DefaultMaxTokens: 2048,
+		IdleTimeout: 30 * time.Second, TurnTimeout: 90 * time.Second}
+	resp, err := p.ChatStream(context.Background(),
+		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, func(Delta) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := captured.body["max_tokens"].(float64); !ok || int(got) != 2048 {
+		t.Errorf("sent max_tokens = %v, want 2048", captured.body["max_tokens"])
+	}
+	if resp.Stats.MaxTokens != 2048 {
+		t.Errorf("reported max tokens = %d, want 2048", resp.Stats.MaxTokens)
+	}
+	if resp.Stats.IdleTimeout != 30*time.Second || resp.Stats.TurnTimeout != 90*time.Second {
+		t.Errorf("reported limits = idle %v turn %v", resp.Stats.IdleTimeout, resp.Stats.TurnTimeout)
+	}
+}
+
+// A default provider reports the default limits in its stats.
+func TestDefaultLimitsReportedInStats(t *testing.T) {
+	srv := miniMaxServer(t, []string{contentLine("ok"), doneLine}, 0)
+	defer srv.Close()
+
+	p := &OpenAICompatible{Endpoint: srv.URL, APIKey: "k"}
+	resp, err := p.ChatStream(context.Background(),
+		[]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, func(Delta) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Stats.MaxTokens != 8192 {
+		t.Errorf("max tokens = %d, want 8192", resp.Stats.MaxTokens)
+	}
+	if resp.Stats.IdleTimeout != 45*time.Second {
+		t.Errorf("idle = %v, want 45s", resp.Stats.IdleTimeout)
+	}
+	if resp.Stats.TurnTimeout != 120*time.Second {
+		t.Errorf("turn = %v, want 120s", resp.Stats.TurnTimeout)
+	}
+}

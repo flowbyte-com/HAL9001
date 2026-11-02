@@ -83,18 +83,20 @@ var (
 	ErrTurnTimeout = errors.New("provider: turn exceeded the time limit")
 )
 
-// Defaults for the safeguards. They are deliberately generous: the point
-// is to stop runaway or silent turns, not to cut normal long answers.
+// Defaults for the safeguards. They are deliberately moderate: the point
+// is to stop runaway or silent turns quickly, while leaving operators a
+// supported way to request a larger budget when they need one.
 const (
 	// DefaultMaxTokens caps one response when the model does not set its
 	// own limit. Without it the provider default governs, which for a
-	// reasoning model can be very large. It is deliberately generous: a
-	// normal answer is far shorter, and the cap only bounds a runaway.
-	DefaultMaxTokens = 16384
-	// DefaultIdleTimeout aborts a stream that sends nothing for this long.
-	DefaultIdleTimeout = 120 * time.Second
-	// DefaultTurnTimeout bounds one whole turn.
-	DefaultTurnTimeout = 15 * time.Minute
+	// reasoning model can be very large.
+	DefaultMaxTokens = 8192
+	// DefaultIdleTimeout aborts a stream that sends nothing for this
+	// long. Any data from the provider resets it.
+	DefaultIdleTimeout = 45 * time.Second
+	// DefaultTurnTimeout bounds one whole turn, including a reasoning
+	// phase that keeps producing output.
+	DefaultTurnTimeout = 120 * time.Second
 	// finishGrace is how long to keep reading after finish_reason for a
 	// usage chunk or [DONE] before closing the stream.
 	finishGrace = 3 * time.Second

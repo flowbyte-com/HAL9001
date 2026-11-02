@@ -1364,14 +1364,17 @@ func TestDiagPanelIsContentFree(t *testing.T) {
 		HasUsage:        true,
 		Usage:           provider.Usage{PromptTokens: 1204, CompletionTokens: 3880, TotalTokens: 5084, ReasoningTokens: 3400},
 		OutputLimitHit:  true,
-		MaxTokens:       16384,
-		IdleTimeout:     2 * time.Minute,
-		TurnTimeout:     15 * time.Minute,
+		MaxTokens:       8192,
+		IdleTimeout:     45 * time.Second,
+		TurnTimeout:     120 * time.Second,
 	}
 	m = typeText(m, "/diag")
 	m = enterCurrent(m)
 	view := string(m.View().Content)
-	for _, want := range []string{"diagnostics", "done", "812", "5084", "max_tokens"} {
+	for _, want := range []string{
+		"diagnostics", "done", "812", "5084",
+		"max_tokens 8192", "idle 45s", "turn 2m0s",
+	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("diag missing %q:\n%s", want, view)
 		}
@@ -1429,5 +1432,37 @@ func TestStreamFollowsWhenAtBottom(t *testing.T) {
 	}
 	if !m.viewport.AtBottom() {
 		t.Error("the viewport must follow a stream it was already following")
+	}
+}
+
+// A turn cut by the ceiling explains itself, and never pretends the reply
+// completed: the partial stream is not stored or shown as an answer.
+func TestTurnTimeoutNotice(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m.streamID = 1
+	m.sending = true
+	m.pending = "partial answer"
+	updated, _ = m.Update(errorMsg{id: 1, err: provider.ErrTurnTimeout})
+	m = updated.(Model)
+	if m.Sending() {
+		t.Error("a time limit must end the turn")
+	}
+	if m.pending != "" {
+		t.Error("an incomplete stream must not be kept as the answer")
+	}
+	if !strings.Contains(m.Notice(), "time limit") {
+		t.Errorf("notice = %q, want the time-limit explanation", m.Notice())
+	}
+	lines := m.Lines()
+	if len(lines) != 1 {
+		t.Fatalf("exactly one explanation line expected, got %v", lines)
+	}
+	if !strings.Contains(lines[0], "exceeded its time limit") {
+		t.Errorf("explanation = %q", lines[0])
+	}
+	if strings.Contains(lines[0], "partial answer") {
+		t.Errorf("partial output presented as an answer: %q", lines[0])
 	}
 }

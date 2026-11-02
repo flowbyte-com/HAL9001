@@ -142,14 +142,18 @@ so a provider cannot generate or stall without limit:
 
 | Setting | Default | Flag | Environment |
 |---|---|---|---|
-| Output cap | 16384 tokens | `--max-tokens` | `HAL9001_MAX_TOKENS` |
-| Idle timeout | 120 s | `--stream-idle-timeout` | `HAL9001_STREAM_IDLE_TIMEOUT` |
-| Turn ceiling | 15 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
+| Output cap | 8192 tokens | `--max-tokens` | `HAL9001_MAX_TOKENS` |
+| Idle timeout | 45 s | `--stream-idle-timeout` | `HAL9001_STREAM_IDLE_TIMEOUT` |
+| Turn ceiling | 2 min | `--turn-timeout` | `HAL9001_TURN_TIMEOUT` |
 
 The values also persist in the user configuration file. Zero means "use
-the built-in default". When the idle timeout or the turn ceiling fires,
-the HTTP request is closed, so the provider stops generating and stops
-billing. `Esc` does the same immediately.
+the built-in default"; an explicit value always wins, so an operator who
+needs a larger budget or a longer thinking phase raises it here. The
+idle window resets on every chunk the provider sends, while the turn
+ceiling is absolute: a reasoning phase that keeps streaming is still
+bounded by it. When either fires, the HTTP request is closed, so the
+provider stops generating and stops billing. `Esc` does the same
+immediately.
 
 ## Limitations (Milestone 003.1)
 

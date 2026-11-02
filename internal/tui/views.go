@@ -716,7 +716,7 @@ func fmtDuration(d time.Duration) string {
 	return d.Round(time.Millisecond).String()
 }
 
-// shortDuration renders a limit compactly (2m0s, 15m0s).
+// shortDuration renders a limit compactly (45s, 2m0s).
 func shortDuration(d time.Duration) string {
 	if d <= 0 {
 		return "none"
