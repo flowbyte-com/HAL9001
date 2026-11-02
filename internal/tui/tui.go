@@ -177,8 +177,13 @@ type SessionLine struct {
 	Text string
 }
 
-// maxComposerHeight caps the growing composer; the viewport keeps the rest.
-const maxComposerHeight = 8
+// Composer geometry: three visible text rows by default, growing with the
+// content up to maxComposerHeight. The border is drawn around them.
+const (
+	maxComposerHeight = 8
+	minComposerRows   = 3
+	maxSuggestions    = 8
+)
 
 // Long user prompts are collapsed to a short preview: a pasted prompt is
 // often a whole page, and it would otherwise push HAL's answer out of
@@ -221,9 +226,13 @@ type Model struct {
 	cancel   context.CancelFunc
 	model    string
 	title    string
-	// viewHeight and compHeight are the row budgets for the conversation
-	// area and the composer. They are recomputed on every resize so the
-	// frame always fits the terminal exactly.
+	// frame is the resolved vertical geometry. It is recomputed on every
+	// resize so the frame always fits the terminal exactly.
+	frame chatFrame
+	// desiredComposer is the height the content asks for, before the
+	// frame fits it to the terminal.
+	desiredComposer int
+	// viewHeight and compHeight mirror frame.viewport and frame.composer.
 	viewHeight int
 	compHeight int
 	// keyDisambiguation records whether the terminal reports modifier
@@ -252,6 +261,10 @@ type Model struct {
 	// Effort picker state.
 	effortCursor int
 	effortNotice string
+	// Slash-command suggestions.
+	suggestOpen   bool
+	suggestItems  []*command
+	suggestCursor int
 	// Onboarding form.
 	obEndpoint textinput.Model
 	obModel    textinput.Model
@@ -291,7 +304,7 @@ func NewWithHooks(engine Engine, hooks Hooks) Model {
 	ta.Placeholder = "Type a message — Enter sends, Ctrl+J adds a line"
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
-	ta.SetHeight(1)
+	ta.SetHeight(minComposerRows)
 	// Ctrl+K opens the model picker at the application level, so the
 	// composer's own delete-after-cursor binding moves out of the way.
 	ta.KeyMap.DeleteAfterCursor = key.NewBinding(key.WithKeys("ctrl+shift+k"))
@@ -305,13 +318,14 @@ func NewWithHooks(engine Engine, hooks Hooks) Model {
 	vp.KeyMap = viewport.KeyMap{}
 
 	return Model{
-		engine:   engine,
-		hooks:    hooks,
-		composer: ta,
-		viewport: vp,
-		color:    ColorEnabled(),
-		theme:    ThemeHALClassic,
-		now:      time.Now,
+		engine:          engine,
+		hooks:           hooks,
+		composer:        ta,
+		viewport:        vp,
+		color:           ColorEnabled(),
+		theme:           ThemeHALClassic,
+		now:             time.Now,
+		desiredComposer: minComposerRows,
 	}
 }
 
@@ -476,11 +490,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		anchor := m.anchor()
 		m.width, m.height = msg.Width, msg.Height
 		m.ready = true
 		m.sizePanes()
 		m.rewrap()
 		m.renderConversation()
+		m.restoreAnchor(anchor)
 		return m, nil
 	case tea.KeyboardEnhancementsMsg:
 		m.keyDisambiguation = msg.SupportsKeyDisambiguation()
@@ -492,6 +508,23 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// its second half.
 		if key != "esc" && key != keyEnter && key != keySend {
 			m.escapedAt = time.Time{}
+		}
+		if m.suggestOpen {
+			switch key {
+			case "up", "shift+tab":
+				m.moveSuggestion(-1)
+				return m, nil
+			case "down":
+				m.moveSuggestion(1)
+				return m, nil
+			case "tab":
+				m.completeSuggestion()
+				return m, nil
+			case "esc":
+				// Close the panel but keep the draft.
+				m.closeSuggestions()
+				return m, nil
+			}
 		}
 		switch key {
 		case keyQuit, keyQuit2:
@@ -538,14 +571,22 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgdown":
 			m.viewport.PageDown()
 			return m, nil
+		case "home":
+			m.viewport.GotoTop()
+			return m, nil
+		case "end":
+			m.viewport.GotoBottom()
+			return m, nil
 		case "ctrl+o":
 			m.toggleLastUser()
 			return m, nil
 		}
 	case tea.PasteMsg:
 		// A paste ends any escape-sequence window: the user is typing.
+		// Pasted text is inserted, never executed.
 		m.escapedAt = time.Time{}
 		m.composer.InsertString(msg.Content)
+		m.refreshSuggestions()
 		m.fitComposer()
 		return m, nil
 	case tea.MouseWheelMsg:
@@ -639,6 +680,8 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		before := m.composer.LineCount()
 		m.composer, cmd = m.composer.Update(msg)
 		cmds = append(cmds, cmd)
+		// The suggestion panel follows the composer text.
+		m.refreshSuggestions()
 		if m.composer.LineCount() != before {
 			m.fitComposer()
 		}
@@ -680,7 +723,14 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	// escape is a message, not a command, and stays subject to the
 	// in-flight guard below.
 	if strings.HasPrefix(input, "/") && !strings.HasPrefix(input, "//") {
+		// A complete command runs as typed, with its arguments. Anything
+		// shorter runs the highlighted suggestion, so "/" + Enter does
+		// something predictable instead of reporting an unknown command.
+		if _, ok := commandByName(input); !ok && m.suggestOpen && m.suggestCursor < len(m.suggestItems) {
+			input = m.suggestItems[m.suggestCursor].name
+		}
 		m.composer.Reset()
+		m.closeSuggestions()
 		m.fitComposer()
 		return m, m.dispatchSlash(input)
 	}
@@ -760,26 +810,30 @@ func (m Model) streamingNotice() string {
 // insertNewline breaks the line in the composer without sending.
 func (m *Model) insertNewline() {
 	m.composer.InsertString("\n")
+	m.refreshSuggestions()
 	m.fitComposer()
 }
 
 // fitComposer grows or shrinks the composer with its content, within a
 // reasonable maximum, and reclaims the space for the viewport.
+// fitComposer grows or shrinks the composer with its content: three
+// rows by default, up to maxComposerHeight, then it scrolls internally.
 func (m *Model) fitComposer() {
 	if !m.ready {
 		return
 	}
-	want := m.composer.LineCount() + 1
-	if want < 1 {
-		want = 1
+	want := m.composer.LineCount()
+	if want < minComposerRows {
+		want = minComposerRows
 	}
 	if want > maxComposerHeight {
 		want = maxComposerHeight
 	}
-	if want != m.composer.Height() {
-		m.composer.SetHeight(want)
-		m.sizePanes()
+	if want == m.desiredComposer {
+		return
 	}
+	m.desiredComposer = want
+	m.resizeFrame()
 }
 
 func (m *Model) stopStream() {
@@ -789,55 +843,262 @@ func (m *Model) stopStream() {
 	}
 }
 
-func (m *Model) sizePanes() {
-	vh, ch := frameSizes(contentHeight(m.height), m.composer.Height())
-	m.viewHeight = vh
-	m.compHeight = ch
-	m.composer.SetHeight(ch)
+// sizePanes recomputes the frame. It reports whether the geometry
+// changed, so callers can preserve the reading position.
+func (m *Model) sizePanes() bool {
+	f := computeChatFrame(m.height, m.desiredComposer, m.suggestRows())
+	changed := f != m.frame
+	m.frame = f
+	m.viewHeight = m.frame.viewport
+	m.compHeight = m.frame.composer
+	m.composer.SetHeight(m.frame.composer)
 	m.viewport.SetWidth(m.width)
-	m.viewport.SetHeight(vh)
+	m.viewport.SetHeight(m.frame.viewport)
 	w := m.width - 2
 	if w < 1 {
 		w = 1
 	}
 	m.composer.SetWidth(w)
+	return changed
+}
+
+// scrollAnchor records the conversation row at the top of the viewport.
+// It is anchored to an entry and a row inside that entry, not to a global
+// line number, so re-wrapping Markdown at a new width cannot move the
+// reader somewhere else.
+type scrollAnchor struct {
+	entry    int
+	row      int
+	count    int
+	sub      int
+	text     string
+	atBottom bool
+}
+
+// wrappedHeight is the number of screen rows one content line occupies at
+// the current viewport width.
+func (m Model) wrappedHeight(line string) int {
+	w := m.viewport.Width()
+	if w < 1 {
+		return 1
+	}
+	n := (lipgloss.Width(line) + w - 1) / w
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// anchor captures the reading position.
+func (m Model) anchor() scrollAnchor {
+	if m.viewport.AtBottom() {
+		return scrollAnchor{atBottom: true}
+	}
+	offset := m.viewport.YOffset()
+	acc := 0
+	for e := range m.entries {
+		rows := m.entries[e].rows
+		for r := range rows {
+			h := m.wrappedHeight(rows[r])
+			if offset < acc+h {
+				sub := offset - acc
+				// A blank row gives a re-wrap nothing to match on, so
+				// anchor to the nearest row that carries text.
+				rr := r
+				for rr < len(rows) && strings.TrimSpace(stripANSI(rows[rr])) == "" {
+					rr++
+				}
+				if rr >= len(rows) {
+					rr = r
+					for rr > 0 && strings.TrimSpace(stripANSI(rows[rr])) == "" {
+						rr--
+					}
+				}
+				if rr != r {
+					sub = 0
+				}
+				return scrollAnchor{
+					entry: e,
+					row:   rr,
+					count: len(rows),
+					sub:   sub,
+					text:  strings.TrimSpace(stripANSI(rows[rr])),
+				}
+			}
+			acc += h
+		}
+	}
+	// The top row is in the streaming block, which has no stable
+	// position; follow the bottom instead of guessing.
+	return scrollAnchor{atBottom: true}
+}
+
+// findRow locates the row whose text matches the anchor, tolerating the
+// way a re-wrap splits or joins a line.
+func findRow(rows []string, want string) (int, bool) {
+	for i, row := range rows {
+		if strings.TrimSpace(stripANSI(row)) == want {
+			return i, true
+		}
+	}
+	for i, row := range rows {
+		got := strings.TrimSpace(stripANSI(row))
+		if got == "" {
+			continue
+		}
+		if strings.HasPrefix(got, want) || strings.HasPrefix(want, got) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// resizeFrame recomputes the frame and keeps the reader's position when
+// the geometry actually changed.
+func (m *Model) resizeFrame() {
+	anchor := m.anchor()
+	if m.sizePanes() {
+		m.renderConversation()
+		m.restoreAnchor(anchor)
+	}
+}
+
+// restoreAnchor returns to the captured reading position, clamped to the
+// content that still exists.
+func (m *Model) restoreAnchor(a scrollAnchor) {
+	if a.atBottom || a.entry < 0 || a.entry >= len(m.entries) {
+		m.viewport.GotoBottom()
+		return
+	}
+	rows := m.entries[a.entry].rows
+	if len(rows) == 0 {
+		m.viewport.GotoBottom()
+		return
+	}
+	row := a.row
+	// Markdown re-wraps differently at a new width, so a row number is
+	// only stable while the entry's row count is. Find the same text
+	// first, then fall back to the proportional position.
+	if a.text != "" {
+		if i, ok := findRow(rows, a.text); ok {
+			row = i
+		} else if a.count > 0 && len(rows) != a.count {
+			row = a.row * len(rows) / a.count
+		}
+	}
+	if row >= len(rows) {
+		row = len(rows) - 1
+	}
+	if row < 0 {
+		m.viewport.GotoBottom()
+		return
+	}
+	offset := 0
+	for e := 0; e < a.entry; e++ {
+		for _, text := range m.entries[e].rows {
+			offset += m.wrappedHeight(text)
+		}
+	}
+	for r := 0; r < row; r++ {
+		offset += m.wrappedHeight(rows[r])
+	}
+	offset += a.sub
+	m.viewport.SetYOffset(offset)
 }
 
 // contentHeight returns the number of rows available between the header
 // rule and the bottom rule. Short windows drop the rules and the notice
 // line instead of letting the frame overflow.
+// contentHeight is the number of rows an overlay panel gets between the
+// header rule and the footer rule.
 func contentHeight(height int) int {
-	if height < 7 {
-		if height < 3 {
-			return 1
-		}
-		return height - 2
+	n := height - 5
+	if n < 1 {
+		n = 1
 	}
-	return height - 5
+	return n
 }
 
 // frameSizes splits the content area between the conversation viewport and
 // the composer. The composer keeps at least one row and never starves the
 // viewport.
-func frameSizes(available, desiredComposer int) (viewportRows, composerRows int) {
-	composerRows = desiredComposer
-	if composerRows < 1 {
-		composerRows = 1
+// chatFrame is the resolved vertical geometry of the conversation view,
+// computed once per size change so rendering and height accounting can
+// never disagree.
+type chatFrame struct {
+	viewport int
+	composer int
+	suggest  int
+	blank    bool
+	border   bool
+	rule     bool
+	notice   bool
+}
+
+// chrome counts every row that is neither the viewport nor the composer
+// text: header, rule, footer, notice, separator, suggestions, borders.
+func (f chatFrame) chrome() int {
+	n := 2 // header + footer
+	if f.rule {
+		n++
 	}
-	if composerRows > maxComposerHeight {
-		composerRows = maxComposerHeight
+	if f.notice {
+		n++
 	}
-	if composerRows > available-1 {
-		composerRows = available - 1
+	if f.blank {
+		n++
 	}
-	if composerRows < 1 {
-		composerRows = 1
+	n += f.suggest
+	if f.border {
+		n += 2
 	}
-	viewportRows = available - composerRows
-	if viewportRows < 1 {
-		viewportRows = 1
+	return n
+}
+
+func (f chatFrame) total() int { return f.chrome() + f.composer + f.viewport }
+
+// computeChatFrame fits the frame to the terminal. When space runs out it
+// gives up the suggestion panel, the separator, the notice, the rules and
+// finally the border — never the header, the composer text or the footer.
+func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
+	f := chatFrame{
+		composer: desiredComposer,
+		suggest:  suggestions,
+		blank:    true,
+		border:   true,
+		rule:     true,
+		notice:   true,
 	}
-	return viewportRows, composerRows
+	if f.composer < 1 {
+		f.composer = 1
+	}
+	if f.composer > maxComposerHeight {
+		f.composer = maxComposerHeight
+	}
+	for height > 0 && f.chrome()+f.composer+1 > height {
+		switch {
+		case f.composer > 1:
+			f.composer--
+		case f.suggest > 0:
+			f.suggest = 0
+		case f.blank:
+			f.blank = false
+		case f.notice:
+			f.notice = false
+		case f.rule:
+			f.rule = false
+		case f.border:
+			f.border = false
+		default:
+			f.viewport = 1
+			return f
+		}
+	}
+	f.viewport = height - f.chrome() - f.composer
+	if f.viewport < 1 {
+		f.viewport = 1
+	}
+	return f
 }
 
 // appendEntry adds one conversation turn and re-renders it. It follows
@@ -960,25 +1221,11 @@ func (m *Model) toggleLastUser() {
 
 // toggleEntry flips one entry between preview and full text.
 func (m *Model) toggleEntry(i int) {
-	stick := m.viewport.AtBottom()
-	before := m.rowsBefore(i)
+	anchor := m.anchor()
 	m.entries[i].expanded = !m.entries[i].expanded
 	m.renderEntry(i)
 	m.renderConversation()
-	after := m.rowsBefore(i)
-	if stick {
-		m.viewport.GotoBottom()
-		return
-	}
-	// If the toggled message sits above the viewport, shift the offset by
-	// the number of rows it gained or lost so the text stays put.
-	if before < m.viewport.YOffset() {
-		offset := m.viewport.YOffset() + (after - before)
-		if offset < 0 {
-			offset = 0
-		}
-		m.viewport.SetYOffset(offset)
-	}
+	m.restoreAnchor(anchor)
 }
 
 // expandAll and collapseAll apply to every long user message.
@@ -997,15 +1244,6 @@ func (m *Model) setAllUserExpanded(expanded bool) {
 	}
 }
 
-// rowsBefore counts the rendered rows of every entry before i.
-func (m Model) rowsBefore(i int) int {
-	n := 0
-	for j := 0; j < i && j < len(m.entries); j++ {
-		n += len(m.entries[j].rows)
-	}
-	return n
-}
-
 // rewrap re-renders every entry for the current width so resizing
 // reflows the conversation instead of leaving stale wrapping.
 func (m *Model) rewrap() {
@@ -1015,6 +1253,8 @@ func (m *Model) rewrap() {
 }
 
 func (m *Model) renderConversation() {
+	atBottom := m.viewport.AtBottom()
+	offset := m.viewport.YOffset()
 	st := m.theme.styles()
 	styleRow := func(row string) string {
 		if !m.color {
@@ -1042,6 +1282,13 @@ func (m *Model) renderConversation() {
 		content = append(content, pending)
 	}
 	m.viewport.SetContent(strings.Join(content, "\n"))
+	// SetContent clamps to the bottom when the content shrank; restore the
+	// reader's position unless they were already following it.
+	if atBottom {
+		m.viewport.GotoBottom()
+	} else {
+		m.viewport.SetYOffset(offset)
+	}
 }
 
 // View implements tea.View. HAL takes over the terminal with the
@@ -1058,56 +1305,145 @@ func (m Model) View() tea.View {
 }
 
 // layoutRows builds the whole screen as exactly the terminal height, so
-// the frame never scrolls the terminal: header, rule, content region,
-// rule, status footer and a notice line.
+// the frame never scrolls the terminal.
+//
+// Chat: header, rule, conversation, one blank row, an optional command
+// suggestion panel, the bordered composer, footer, notice.
+// Overlay: header, rule, panel, rule, footer, notice.
 func (m Model) layoutRows() []string {
 	if !m.ready {
 		return []string{"Starting HAL9001…"}
 	}
-	header := m.headerRow()
-	if m.height < 7 {
-		// Very short window: the header and the footer survive, the
-		// decorative chrome does not.
-		rows := []string{header}
-		rows = append(rows, m.contentRows(contentHeight(m.height))...)
-		rows = append(rows, m.statusBar())
-		return rows
+	var rows []string
+	if m.view == viewChat {
+		rows = m.chatLayout()
+	} else {
+		rows = m.overlayLayout()
 	}
+	return m.fitToHeight(rows)
+}
+
+func (m Model) chatLayout() []string {
+	f := m.frame
 	rows := make([]string, 0, m.height)
-	rows = append(rows, header, m.rule())
-	rows = append(rows, m.contentRows(contentHeight(m.height))...)
-	rows = append(rows, m.rule(), m.statusBar(), m.noticeRow())
+	rows = append(rows, m.headerRow())
+	if f.rule {
+		rows = append(rows, m.rule())
+	}
+	rows = append(rows, splitRows(m.viewport.View(), f.viewport)...)
+	if f.blank {
+		rows = append(rows, "")
+	}
+	if f.suggest > 0 {
+		rows = append(rows, m.suggestionRows(f.suggest)...)
+	}
+	rows = append(rows, m.composerBlock(f.composer, f.border)...)
+	rows = append(rows, m.statusBar())
+	if f.notice {
+		rows = append(rows, m.noticeRow())
+	}
 	return rows
 }
 
-// contentRows renders the region between the rules: the conversation and
-// the composer in chat mode, an overlay panel otherwise.
-func (m Model) contentRows(n int) []string {
-	switch m.view {
-	case viewOnboard:
-		return m.panelRows(m.onboardRows(), n)
-	case viewPicker:
-		return m.panelRows(m.pickerRows(), n)
-	case viewTheme:
-		return m.panelRows(m.themeRows(), n)
-	case viewHelp:
-		return m.panelRows(m.helpRows(), n)
-	case viewSessions:
-		return m.panelRows(m.sessionsRows(), n)
-	case viewDiag:
-		return m.panelRows(m.diagRows(), n)
-	case viewEffort:
-		return m.panelRows(m.effortRows(), n)
+func (m Model) overlayLayout() []string {
+	h := m.height
+	rule := h >= 8
+	notice := h >= 6
+	rows := []string{m.headerRow()}
+	if rule {
+		rows = append(rows, m.rule())
 	}
-	return m.chatRows(n)
+	n := h - 2 // header + footer
+	if rule {
+		n -= 2 // both rules
+	}
+	if notice {
+		n--
+	}
+	if n < 1 {
+		n = 1
+	}
+	rows = append(rows, m.panelRows(m.activePanel(), n)...)
+	if rule {
+		rows = append(rows, m.rule())
+	}
+	rows = append(rows, m.statusBar())
+	if notice {
+		rows = append(rows, m.noticeRow())
+	}
+	return rows
 }
 
-// chatRows stacks the conversation viewport above the composer.
-func (m Model) chatRows(n int) []string {
-	vh, ch := frameSizes(n, m.compHeight)
-	rows := make([]string, 0, n)
-	rows = append(rows, splitRows(m.viewport.View(), vh)...)
-	rows = append(rows, splitRows(m.composer.View(), ch)...)
+// activePanel returns the rows of the overlay that is currently open.
+func (m Model) activePanel() []string {
+	switch m.view {
+	case viewOnboard:
+		return m.onboardRows()
+	case viewPicker:
+		return m.pickerRows()
+	case viewTheme:
+		return m.themeRows()
+	case viewHelp:
+		return m.helpRows()
+	case viewSessions:
+		return m.sessionsRows()
+	case viewDiag:
+		return m.diagRows()
+	case viewEffort:
+		return m.effortRows()
+	}
+	return nil
+}
+
+// fitToHeight guarantees the frame is exactly the terminal height. Normal
+// sizes are exact by construction; this only trims a degenerate window.
+func (m Model) fitToHeight(rows []string) []string {
+	if m.height <= 0 {
+		return rows
+	}
+	for len(rows) < m.height {
+		rows = append(rows, "")
+	}
+	if len(rows) > m.height {
+		keep := m.height - 1
+		if keep < 1 {
+			keep = 1
+		}
+		out := append([]string{}, rows[:keep]...)
+		out = append(out, rows[len(rows)-1])
+		return out
+	}
+	return rows
+}
+
+// composerBlock renders the bordered composer. The frame is one cell of
+// theme rule colour; the textarea keeps its own cursor and placeholder
+// styling inside it.
+func (m Model) composerBlock(ch int, border bool) []string {
+	inner := splitRows(m.composer.View(), ch)
+	if !border {
+		return inner
+	}
+	width := m.width
+	if width < 4 {
+		width = 4
+	}
+	edge := strings.Repeat("─", width-2)
+	top := "╭" + edge + "╮"
+	bottom := "╰" + edge + "╯"
+	side := "│"
+	if m.color {
+		st := m.theme.styles()
+		top = st.rule.Render(top)
+		bottom = st.rule.Render(bottom)
+		side = st.rule.Render("│")
+	}
+	rows := make([]string, 0, ch+2)
+	rows = append(rows, top)
+	for _, line := range inner {
+		rows = append(rows, side+m.fitWidth(line, width-2)+side)
+	}
+	rows = append(rows, bottom)
 	return rows
 }
 
@@ -1125,7 +1461,7 @@ func (m Model) panelRows(lines []string, n int) []string {
 	for i := 0; i < n; i++ {
 		idx := offset + i
 		if idx < len(lines) {
-			rows = append(rows, m.fitWidth(lines[idx]))
+			rows = append(rows, m.fitWidth(lines[idx], m.width))
 			continue
 		}
 		rows = append(rows, "")
@@ -1170,13 +1506,13 @@ func splitRows(text string, n int) []string {
 	return rows
 }
 
-// fitWidth trims a rendered line to the terminal width so a long line can
-// never push the frame out of shape.
-func (m Model) fitWidth(line string) string {
-	if m.width < 1 {
+// fitWidth trims a rendered line to width so a long line can never push
+// the frame out of shape.
+func (m Model) fitWidth(line string, width int) string {
+	if width < 1 {
 		return ""
 	}
-	return lipgloss.NewStyle().MaxWidth(m.width).Render(line)
+	return lipgloss.NewStyle().MaxWidth(width).Render(line)
 }
 
 // headerRow renders the fixed header: the eye and the name, plus the

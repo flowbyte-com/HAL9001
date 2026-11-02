@@ -35,6 +35,7 @@ func renderMarkdown(text string, width int) string {
 
 // enterOnboard opens the setup form, optionally prefilled.
 func (m *Model) enterOnboard(prefill OnboardData) {
+	m.closeSuggestions()
 	m.view = viewOnboard
 	m.obFocus = 0
 	m.obNotice = ""
@@ -223,6 +224,7 @@ func (m Model) onboardRows() []string {
 
 // enterPicker opens the model picker.
 func (m *Model) enterPicker() {
+	m.closeSuggestions()
 	models := []ModelInfo{}
 	if m.hooks.ListModels != nil {
 		models = m.hooks.ListModels()
@@ -327,6 +329,7 @@ func (m Model) pickerRows() []string {
 
 // enterTheme opens the theme picker with a live preview.
 func (m *Model) enterTheme() {
+	m.closeSuggestions()
 	current := ThemeHALClassic.Name
 	if m.hooks.Theme != nil {
 		if name := m.hooks.Theme(); name != "" {
@@ -422,6 +425,7 @@ func (m Model) themeRows() []string {
 
 // enterSessions opens the stored-conversation picker.
 func (m *Model) enterSessions() {
+	m.closeSuggestions()
 	m.sessionNames = nil
 	m.sessionCursor = 0
 	m.sessionNotice = ""
@@ -518,6 +522,8 @@ func (m Model) helpRows() []string {
 		{"Esc", "cancel stream / close"},
 		{"Ctrl+O", "expand last prompt"},
 		{"PgUp/PgDn", "scroll conversation"},
+		{"Home/End", "jump start / end"},
+		{"/", "command suggestions"},
 		{"paste", "inserted, never sent"},
 		{"//", "literal slash message"},
 	}
@@ -726,6 +732,7 @@ func fmtDuration(d time.Duration) string {
 // enterEffort opens the reasoning-effort selector. Models without effort
 // control get an explanation instead of a meaningless picker.
 func (m *Model) enterEffort() {
+	m.closeSuggestions()
 	if !m.effortSupported {
 		m.notice = "This model does not expose reasoning effort — nothing to configure."
 		return
@@ -895,6 +902,7 @@ func (m *Model) clearConversation() {
 // a new session store and resets the visible conversation. The previous
 // session file is never deleted; it stays available through /sessions.
 func (m *Model) startFreshConversation(notice string) {
+	m.closeSuggestions()
 	if m.sending {
 		m.stopStream()
 		m.sending = false

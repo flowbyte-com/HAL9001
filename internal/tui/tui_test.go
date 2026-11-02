@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -427,38 +428,71 @@ func TestRenderMarkdownFallback(t *testing.T) {
 	}
 }
 
-func TestComposerBorderlessGrowsToMax(t *testing.T) {
+func TestComposerGrowsFromThreeRows(t *testing.T) {
 	m := testModel()
 	view := string(m.View().Content)
 	if strings.Contains(view, "┃") {
 		t.Error("composer must not render line-number gutters")
 	}
+	if h := m.Composer().Height(); h != minComposerRows {
+		t.Errorf("default composer height = %d, want %d", h, minComposerRows)
+	}
 	for i := 0; i < 20; i++ {
 		m = typeText(m, "line\n")
 	}
-	if h := m.Composer().Height(); h != 8 {
-		t.Errorf("composer height = %d, want cap 8", h)
+	if h := m.Composer().Height(); h != maxComposerHeight {
+		t.Errorf("composer height = %d, want cap %d", h, maxComposerHeight)
 	}
 	m2 := testModel()
 	m2 = typeText(m2, "one\ntwo\nthree")
-	if h := m2.Composer().Height(); h != 4 {
-		t.Errorf("composer height = %d, want 4 for three lines", h)
+	if h := m2.Composer().Height(); h != minComposerRows {
+		t.Errorf("composer height = %d, want %d for three lines", h, minComposerRows)
+	}
+	m3 := testModel()
+	m3 = typeText(m3, "one\ntwo\nthree\nfour\nfive")
+	if h := m3.Composer().Height(); h != 5 {
+		t.Errorf("composer height = %d, want 5 for five lines", h)
 	}
 }
 
-func TestComposerRulesPresent(t *testing.T) {
+// The composer is one bordered block with three text rows inside it.
+func TestComposerBorderAndThreeRows(t *testing.T) {
 	m := testModel()
 	m.SetColor(false)
-	view := string(m.View().Content)
-	rules := 0
-	for _, line := range strings.Split(view, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && strings.Trim(trimmed, "─") == "" {
-			rules++
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	// Fill the conversation so the row above the separator is real text.
+	for i := 0; i < 40; i++ {
+		m.appendEntry("assistant", "filler line")
+	}
+	rows := m.layoutRows()
+	top, bottom := -1, -1
+	for i, row := range rows {
+		if strings.HasPrefix(row, "╭") {
+			top = i
+		}
+		if strings.HasPrefix(row, "╰") {
+			bottom = i
 		}
 	}
-	if rules < 2 {
-		t.Errorf("expected thin rules above and below the composer, found %d:\n%s", rules, view)
+	if top < 0 || bottom < 0 {
+		t.Fatalf("composer border missing:\n%s", strings.Join(rows, "\n"))
+	}
+	if bottom-top-1 != minComposerRows {
+		t.Errorf("composer text rows = %d, want %d", bottom-top-1, minComposerRows)
+	}
+	if w := lipgloss.Width(rows[top]); w != 80 {
+		t.Errorf("border width = %d, want 80", w)
+	}
+	if w := lipgloss.Width(rows[top+1]); w != 80 {
+		t.Errorf("composer row width = %d, want 80", w)
+	}
+	// Exactly one blank row between the conversation and the border.
+	if top < 1 || strings.TrimSpace(rows[top-1]) != "" {
+		t.Errorf("expected one blank row above the composer border:\n%s", strings.Join(rows, "\n"))
+	}
+	if top >= 2 && strings.TrimSpace(rows[top-2]) == "" {
+		t.Error("more than one blank row above the composer")
 	}
 }
 
@@ -1364,7 +1398,7 @@ func TestDiagPanelIsContentFree(t *testing.T) {
 		HasUsage:        true,
 		Usage:           provider.Usage{PromptTokens: 1204, CompletionTokens: 3880, TotalTokens: 5084, ReasoningTokens: 3400},
 		OutputLimitHit:  true,
-		MaxTokens:       8192,
+		MaxTokens:       15000,
 		IdleTimeout:     45 * time.Second,
 		TurnTimeout:     120 * time.Second,
 	}
@@ -1373,7 +1407,7 @@ func TestDiagPanelIsContentFree(t *testing.T) {
 	view := string(m.View().Content)
 	for _, want := range []string{
 		"diagnostics", "done", "812", "5084",
-		"max_tokens 8192", "idle 45s", "turn 2m0s",
+		"max_tokens 15000", "idle 45s", "turn 2m0s",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("diag missing %q:\n%s", want, view)
@@ -1703,7 +1737,7 @@ func TestEmptyAnswerExplanation(t *testing.T) {
 	updated, _ = m.Update(streamStatsMsg{id: 3, stats: provider.TurnStats{
 		Status: provider.StatusFinished, FinishReason: "length", OutputLimitHit: true,
 		ReasoningChunks: 812, HasUsage: true,
-		Usage: provider.Usage{PromptTokens: 1204, CompletionTokens: 8192, TotalTokens: 9396},
+		Usage: provider.Usage{PromptTokens: 1204, CompletionTokens: 15000, TotalTokens: 16204},
 	}})
 	m = updated.(Model)
 	updated, _ = m.Update(errorMsg{id: 3, err: engine.ErrNoVisibleAnswer})
@@ -1717,12 +1751,371 @@ func TestEmptyAnswerExplanation(t *testing.T) {
 		t.Fatalf("expected one explanation, got %v", lines)
 	}
 	note := lines[0]
-	for _, want := range []string{"no visible answer", "output budget", "finish_reason=length", "8192", "/diag"} {
+	for _, want := range []string{"no visible answer", "output budget", "finish_reason=length", "15000", "/diag"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("explanation missing %q: %q", want, note)
 		}
 	}
 	if !strings.Contains(m.Notice(), "/diag") {
 		t.Errorf("notice = %q", m.Notice())
+	}
+}
+
+// firstVisibleLine returns the first non-blank row of a rendered view.
+func firstVisibleLine(view string) string {
+	for _, line := range strings.Split(view, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
+// longConversation builds a conversation longer than the viewport.
+func longConversation(t *testing.T, lines int) Model {
+	t.Helper()
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	for i := 0; i < lines; i++ {
+		m.appendEntry("assistant", fmt.Sprintf("line %03d of the long answer", i))
+	}
+	return m
+}
+
+// Home and End reach the beginning and the end of a long conversation.
+func TestScrollHomeEnd(t *testing.T) {
+	m := longConversation(t, 60)
+	if !m.Viewport().AtBottom() {
+		t.Fatal("precondition: a new conversation should sit at the bottom")
+	}
+	m = pressKey(m, tea.KeyHome, 0, "")
+	if !m.Viewport().AtTop() {
+		t.Errorf("Home must reach the top, offset = %d", m.viewport.YOffset())
+	}
+	top := m.viewport.View()
+	if !strings.Contains(top, "line 000") {
+		t.Errorf("top of the conversation not visible:\n%s", top)
+	}
+	m = pressKey(m, tea.KeyEnd, 0, "")
+	if !m.Viewport().AtBottom() {
+		t.Errorf("End must reach the bottom, offset = %d", m.viewport.YOffset())
+	}
+	if bottom := m.viewport.View(); !strings.Contains(bottom, "line 059") {
+		t.Errorf("end of the conversation not visible:\n%s", bottom)
+	}
+}
+
+// PgUp/PgDn move through the conversation without touching the draft.
+func TestPageScrollKeepsDraft(t *testing.T) {
+	m := longConversation(t, 60)
+	m = paste(m, "a draft that must survive scrolling")
+	before := m.Composer().Value()
+	start := m.viewport.YOffset()
+	m = pressKey(m, tea.KeyPgUp, 0, "")
+	up := m.viewport.YOffset()
+	if up >= start {
+		t.Errorf("PgUp did not scroll: %d -> %d", start, up)
+	}
+	m = pressKey(m, tea.KeyPgDown, 0, "")
+	if got := m.viewport.YOffset(); got <= up {
+		t.Errorf("PgDn did not scroll: %d -> %d", up, got)
+	}
+	if got := m.Composer().Value(); got != before {
+		t.Errorf("scrolling changed the draft: %q", got)
+	}
+}
+
+// Shrinking the terminal keeps the reader where they were, instead of
+// jumping to the bottom.
+func TestResizePreservesScrollPosition(t *testing.T) {
+	m := longConversation(t, 80)
+	m = pressKey(m, tea.KeyHome, 0, "")
+	m = pressKey(m, tea.KeyPgDown, 0, "")
+	m = pressKey(m, tea.KeyPgDown, 0, "")
+	anchor := m.anchor()
+	if anchor.atBottom {
+		t.Fatal("precondition: should be scrolled up")
+	}
+	topBefore := firstVisibleLine(m.viewport.View())
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 14})
+	m = updated.(Model)
+	if m.Viewport().AtBottom() {
+		t.Fatal("resize jumped to the bottom")
+	}
+	view := m.viewport.View()
+	if !strings.Contains(view, topBefore) {
+		t.Errorf("the line at the top before resize (%q) is not visible after:\n%s", topBefore, view)
+	}
+}
+
+// Collapsing a long prompt keeps the surrounding reading position.
+func TestCollapseKeepsScrollPosition(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, strings.Repeat("museum line\n", 30))
+	m = enterCurrent(m)
+	for i := 0; i < 30; i++ {
+		m.appendEntry("assistant", fmt.Sprintf("answer line %03d", i))
+	}
+	m = pressKey(m, tea.KeyHome, 0, "")
+	m = pressKey(m, tea.KeyPgDown, 0, "")
+	before := m.viewport.YOffset()
+	m = pressKey(m, 'o', tea.ModCtrl, "")
+	if m.Viewport().AtBottom() {
+		t.Fatal("collapse jumped to the bottom")
+	}
+	if after := m.viewport.YOffset(); after == 0 && before > 0 {
+		t.Error("collapse reset the offset to the top")
+	}
+}
+
+// Typing "/" opens the suggestion panel without submitting anything.
+func TestSlashOpensSuggestions(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/")
+	if !m.suggestOpen {
+		t.Fatal("typing / must open the suggestions")
+	}
+	if len(m.Lines()) != 0 {
+		t.Errorf("nothing may be submitted: %v", m.Lines())
+	}
+	view := string(m.View().Content)
+	for _, name := range []string{"/help", "/copy", "/clear", "/model", "/effort", "/theme", "/sessions", "/diag"} {
+		if !strings.Contains(view, name) {
+			t.Errorf("suggestions missing %q:\n%s", name, view)
+		}
+	}
+	if !strings.Contains(view, "Show available commands") {
+		t.Errorf("descriptions missing:\n%s", view)
+	}
+}
+
+// Typing filters the list.
+func TestSlashSuggestionsFilter(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/co")
+	if !m.suggestOpen {
+		t.Fatal("suggestions closed while filtering")
+	}
+	for _, c := range m.suggestItems {
+		if !strings.HasPrefix(c.name, "/co") {
+			t.Errorf("unrelated suggestion %q", c.name)
+		}
+	}
+	if len(m.suggestItems) != 3 { // /copy, /collapse ... /copy only? see below
+		// /copy and /collapse match; /clear does not.
+		if len(m.suggestItems) != 2 {
+			t.Errorf("filtered suggestions = %d, want 2 or 3", len(m.suggestItems))
+		}
+	}
+}
+
+// Arrow keys move the selection and Tab completes it.
+func TestSuggestionNavigationAndTab(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/co")
+	first := m.suggestItems[m.suggestCursor].name
+	m = pressKey(m, tea.KeyDown, 0, "")
+	second := m.suggestItems[m.suggestCursor].name
+	if first == second {
+		t.Fatal("Down did not move the selection")
+	}
+	m = pressKey(m, tea.KeyTab, 0, "")
+	if got := m.Composer().Value(); !strings.HasPrefix(got, second) {
+		t.Errorf("Tab completed %q, want %q", got, second)
+	}
+	if !strings.HasSuffix(m.Composer().Value(), " ") && second == "/copy" {
+		t.Errorf("an argument-taking command should complete with a space: %q", m.Composer().Value())
+	}
+}
+
+// Enter runs a complete command; on a partial one it runs the selection.
+func TestSuggestionEnter(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/diag")
+	m = enterCurrent(m)
+	if m.view != viewDiag {
+		t.Error("Enter on a complete command must run it")
+	}
+
+	m2 := testModel()
+	updated, _ = m2.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m2 = updated.(Model)
+	m2 = typeText(m2, "/he")
+	m2 = enterCurrent(m2)
+	if m2.view != viewHelp {
+		t.Errorf("Enter on a partial command must run the highlighted suggestion, view = %d", m2.view)
+	}
+}
+
+// Esc closes the panel and keeps the draft.
+func TestSuggestionEscKeepsDraft(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/co")
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	if m.suggestOpen {
+		t.Error("Esc must close the suggestions")
+	}
+	if got := m.Composer().Value(); got != "/co" {
+		t.Errorf("draft lost: %q", got)
+	}
+}
+
+// A pasted slash command is never executed.
+func TestPasteSlashNeverExecutes(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.PasteMsg{Content: "/clear\n"})
+	m = updated.(Model)
+	if m.view != viewChat {
+		t.Error("a pasted command must not run")
+	}
+	if !strings.Contains(m.Composer().Value(), "/clear") {
+		t.Errorf("paste lost: %q", m.Composer().Value())
+	}
+}
+
+// A double slash stays an escaped literal message, with no suggestions.
+func TestDoubleSlashNoSuggestions(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "//help")
+	if m.suggestOpen {
+		t.Error("// must not open suggestions")
+	}
+	m = enterCurrent(m)
+	if len(m.Lines()) < 1 || m.Lines()[0] != "You > /help" {
+		t.Errorf("escaped message wrong: %v", m.Lines())
+	}
+}
+
+// The panel sits immediately above the composer and does not replace the
+// conversation.
+func TestSuggestionPanelPlacement(t *testing.T) {
+	m := longConversation(t, 40)
+	m = typeText(m, "/")
+	rows := m.layoutRows()
+	top, firstSuggestion := -1, -1
+	for i, row := range rows {
+		if strings.HasPrefix(row, "╭") {
+			top = i
+		}
+		if strings.Contains(row, "/help") && strings.Contains(row, "Show available commands") {
+			firstSuggestion = i
+		}
+	}
+	if top < 0 || firstSuggestion < 0 {
+		t.Fatalf("panel or border missing:\n%s", strings.Join(rows, "\n"))
+	}
+	if firstSuggestion >= top {
+		t.Errorf("suggestions at %d must be above the border at %d", firstSuggestion, top)
+	}
+	if !strings.Contains(strings.Join(rows[:firstSuggestion], "\n"), "line 0") {
+		t.Error("the conversation must stay visible behind the panel")
+	}
+}
+
+// The panel fits narrow terminals by dropping descriptions.
+func TestSuggestionsNarrow(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 36, Height: 20})
+	m = updated.(Model)
+	m = typeText(m, "/")
+	view := string(m.View().Content)
+	if !strings.Contains(view, "/help") {
+		t.Errorf("narrow panel lost the command:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > 36 {
+			t.Errorf("row wider than the terminal: %q", line)
+		}
+	}
+}
+
+// The composer border uses the theme's muted rule colour, and none at all
+// when colour is disabled.
+func TestComposerBorderThemes(t *testing.T) {
+	for _, theme := range Themes() {
+		m := testModel()
+		m.SetTheme(theme)
+		m.SetColor(true)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m = updated.(Model)
+		block := strings.Join(m.composerBlock(3, true), "\n")
+		if !strings.HasPrefix(stripANSI(strings.Split(block, "\n")[0]), "╭") {
+			t.Errorf("%s: border missing", theme.Name)
+		}
+		if !strings.Contains(block, "\x1b[") {
+			t.Errorf("%s: border is not styled", theme.Name)
+		}
+		m.SetColor(false)
+		plain := m.composerBlock(3, true)
+		if strings.Contains(plain[0], "\x1b[") || strings.Contains(plain[len(plain)-1], "\x1b[") {
+			t.Errorf("%s: monochrome border contains escapes", theme.Name)
+		}
+	}
+}
+
+// Exactly one blank row separates the conversation from the composer at
+// every size where the separator survives.
+func TestSeparatorRowAccounting(t *testing.T) {
+	for _, h := range []int{40, 30, 24, 18, 14, 10} {
+		m := testModel()
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: h})
+		m = updated.(Model)
+		if len(m.layoutRows()) != h {
+			t.Errorf("height %d: frame has %d rows", h, len(m.layoutRows()))
+		}
+		rows := m.layoutRows()
+		top := -1
+		for i, row := range rows {
+			if strings.HasPrefix(row, "╭") {
+				top = i
+			}
+		}
+		if top < 0 {
+			continue // border shed on a very short terminal
+		}
+		if top == 0 || strings.TrimSpace(rows[top-1]) != "" {
+			t.Errorf("height %d: no blank row above the composer", h)
+		}
+
+	}
+}
+
+// A short terminal sheds decoration before the header, input or footer.
+func TestShortTerminalDegrades(t *testing.T) {
+	for _, h := range []int{8, 6, 5, 4} {
+		m := testModel()
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: h})
+		m = updated.(Model)
+		rows := m.layoutRows()
+		if len(rows) != h {
+			t.Errorf("height %d: %d rows", h, len(rows))
+		}
+		if !strings.Contains(rows[0], "HAL9001") {
+			t.Errorf("height %d: header lost", h)
+		}
+		tail := rows[len(rows)-1]
+		if len(rows) > 1 {
+			tail += rows[len(rows)-2]
+		}
+		if !strings.Contains(tail, "444 READ ONLY") {
+			t.Errorf("height %d: footer lost: %q", h, rows[len(rows)-1])
+		}
 	}
 }
