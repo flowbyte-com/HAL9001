@@ -218,3 +218,144 @@ func TestHistoryAccumulatesAcrossTurns(t *testing.T) {
 		t.Errorf("history wrong: %+v", got)
 	}
 }
+
+// progressStreamer sends reasoning, then content, then stats, imitating a
+// MiniMax-style reasoning model.
+type progressStreamer struct {
+	reasoning     []string
+	chunks        []string
+	content       string
+	reasoningText string
+	stats         provider.TurnStats
+}
+
+func (s *progressStreamer) Name() string { return "progress" }
+func (s *progressStreamer) Chat(context.Context, []provider.Message, provider.Model) (provider.Response, error) {
+	return provider.Response{Content: s.content}, nil
+}
+func (s *progressStreamer) ChatStream(_ context.Context, _ []provider.Message, _ provider.Model, emit func(provider.Delta) error) (provider.Response, error) {
+	for _, r := range s.reasoning {
+		if err := emit(provider.Delta{Reasoning: r}); err != nil {
+			return provider.Response{}, err
+		}
+		s.reasoningText += r
+	}
+	var content string
+	for _, chunk := range s.chunks {
+		content += chunk
+		if err := emit(provider.Delta{Text: chunk}); err != nil {
+			return provider.Response{}, err
+		}
+	}
+	return provider.Response{Content: content, Reasoning: s.reasoningText, Stats: s.stats}, nil
+}
+
+func TestProgressEventsReportReasoningWithoutText(t *testing.T) {
+	st, err := session.Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamer := &progressStreamer{
+		reasoning: []string{"private thought"},
+		chunks:    []string{"Public ", "answer"},
+		stats:     provider.TurnStats{Status: provider.StatusDone, Events: 3, ReasoningChunks: 1, VisibleChunks: 2},
+	}
+	eng := New(st, streamer, provider.Model{ID: "m"})
+	var events []Event
+	reply, err := eng.RespondStreamEvents(context.Background(), "hi", func(ev Event) {
+		events = append(events, ev)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "Public answer" {
+		t.Errorf("reply = %q", reply)
+	}
+	var reasoningSignals, texts, stats int
+	for _, ev := range events {
+		if ev.Reasoning {
+			reasoningSignals++
+			if ev.Text != "" {
+				t.Error("a reasoning event must not carry text")
+			}
+		}
+		if ev.Text != "" {
+			texts++
+			if strings.Contains(ev.Text, "private thought") {
+				t.Errorf("reasoning text leaked into the answer: %q", ev.Text)
+			}
+		}
+		if ev.Stats != nil {
+			stats++
+		}
+	}
+	if reasoningSignals != 1 {
+		t.Errorf("reasoning signals = %d, want 1", reasoningSignals)
+	}
+	if texts != 2 {
+		t.Errorf("text events = %d, want 2", texts)
+	}
+	if stats != 1 {
+		t.Errorf("stats events = %d, want 1", stats)
+	}
+	history, _ := st.History()
+	if len(history) != 2 || history[1].Content != "Public answer" {
+		t.Errorf("stored history = %+v", history)
+	}
+	for _, msg := range history {
+		if strings.Contains(msg.Content, "private thought") {
+			t.Error("reasoning text must never be stored")
+		}
+	}
+}
+
+// A reply that is entirely reasoning must not be reported as an empty
+// answer: the operator is told what happened, without the reasoning text.
+func TestReasoningOnlyTurnIsExplained(t *testing.T) {
+	st, err := session.Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := New(st, &progressStreamer{reasoning: []string{"thinking"}, content: ""}, provider.Model{ID: "m"})
+	reply, err := eng.RespondStream(context.Background(), "hi", func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "reasoning") {
+		t.Errorf("reply = %q, want an explanation", reply)
+	}
+	if strings.Contains(reply, "thinking") {
+		t.Errorf("reasoning text leaked: %q", reply)
+	}
+}
+
+// Long prompts reach the provider in full: collapsing is a display
+// concern only.
+func TestLongPromptReachesProviderUnchanged(t *testing.T) {
+	st, err := session.Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("museum thought experiment line\n", 60)
+	var got []provider.Message
+	spy := &spyProvider{fn: func(messages []provider.Message) {
+		got = append([]provider.Message(nil), messages...)
+	}}
+	eng := New(st, spy, provider.Model{ID: "m"})
+	if _, err := eng.RespondStream(context.Background(), long, nil); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, m := range got {
+		if m.Content == long {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the full prompt must reach the provider")
+	}
+	history, _ := st.History()
+	if len(history) != 2 || history[0].Content != long {
+		t.Error("the full prompt must be stored in the session")
+	}
+}

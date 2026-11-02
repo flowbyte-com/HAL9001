@@ -69,11 +69,36 @@ func (e *Engine) Respond(ctx context.Context, input string) (string, error) {
 	return e.RespondStream(ctx, input, nil)
 }
 
-// RespondStream answers with live deltas forwarded to emit (nil disables
-// them). Cancellation aborts the provider call and stores nothing from
-// the assistant side: an interrupted stream never becomes a complete
-// answer in the session.
+// Event is one streaming update from a turn.
+//
+// Text is user-facing content. Reasoning reports that the provider sent a
+// reasoning event without exposing any of it: the private reasoning text
+// never leaves the provider package. Stats is set on the final event.
+type Event struct {
+	Text      string
+	Reasoning bool
+	Stats     *provider.TurnStats
+}
+
+// RespondStream answers with live text deltas forwarded to emit (nil
+// disables streaming and uses the non-streaming path).
 func (e *Engine) RespondStream(ctx context.Context, input string, emit func(string)) (string, error) {
+	if emit == nil {
+		return e.RespondStreamEvents(ctx, input, nil)
+	}
+	return e.RespondStreamEvents(ctx, input, func(ev Event) {
+		if ev.Text != "" {
+			emit(ev.Text)
+		}
+	})
+}
+
+// RespondStreamEvents answers with live events: text for the answer,
+// reasoning presence for progress, and content-free stats at the end.
+// Cancellation aborts the provider call and stores nothing from the
+// assistant side: an interrupted stream never becomes a complete answer
+// in the session.
+func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit func(Event)) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("engine: empty input")
 	}
@@ -91,16 +116,31 @@ func (e *Engine) RespondStream(ctx context.Context, input string, emit func(stri
 	var resp provider.Response
 	if streamer, ok := e.provider.(provider.Streamer); ok && emit != nil {
 		resp, err = streamer.ChatStream(ctx, messages, e.model, func(d provider.Delta) error {
-			if d.Text != "" {
-				emit(d.Text)
+			ev := Event{Text: d.Text, Reasoning: d.Reasoning != ""}
+			if ev.Text == "" && !ev.Reasoning {
+				return nil
 			}
+			emit(ev)
 			return nil
 		})
 	} else {
 		resp, err = e.provider.Chat(ctx, messages, e.model)
 	}
 	if err != nil {
+		// A failed turn still reports its content-free diagnostics: the
+		// elapsed time and the event counts are how a stall is explained.
+		if emit != nil && !resp.Stats.StartedAt.IsZero() {
+			stats := resp.Stats
+			emit(Event{Stats: &stats})
+		}
 		return "", err
+	}
+	if emit != nil {
+		stats := resp.Stats
+		if stats.Status == "" {
+			stats.Status = provider.StatusFinished
+		}
+		emit(Event{Stats: &stats})
 	}
 	reply := strings.TrimSpace(resp.Content)
 	for _, call := range resp.ToolCalls {
@@ -123,7 +163,13 @@ func (e *Engine) RespondStream(ctx context.Context, input string, emit func(stri
 		}
 	}
 	if reply == "" {
-		reply = "(no response)"
+		if resp.Reasoning != "" {
+			// The provider spent its turn thinking and returned no
+			// answer. Say so plainly; never surface the reasoning text.
+			reply = "(the model produced reasoning but no answer)"
+		} else {
+			reply = "(no response)"
+		}
 	}
 	if _, err := e.sessions.Append(session.RoleAssistant, reply); err != nil {
 		return "", err
