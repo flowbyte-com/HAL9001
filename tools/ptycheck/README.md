@@ -58,7 +58,9 @@ something fails.
   session stays selected, and `/sessions` recovers the previous one.
 - The footer and `/usage` report provider token usage; each finished
   answer carries a metadata line and the composer starts at one row.
-- The mouse is never captured, so native selection keeps working.
+- The wheel scrolls symmetrically with `--mouse`; without it no mouse
+  reporting (`?1002h`) is requested and native selection is untouched.
+- `Ctrl+U` clears the draft, `Ctrl+Z` restores it.
 
 ## Files
 

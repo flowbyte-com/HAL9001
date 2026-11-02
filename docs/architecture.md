@@ -67,7 +67,7 @@ terminal never scrolls.
 
 Layout: a one-line `● HAL9001` header, a rule, the scrollable Markdown
 conversation, exactly one blank row, an optional command suggestion
-panel, a bordered composer with three text rows by default (growing to
+panel, a bordered composer with one text row by default (growing to
 eight), a one-line status footer (`444 READ ONLY · /help` left, model and
 effort right) and a notice line. A `chatFrame` resolves that geometry
 once per size change; on short terminals it gives up the suggestion
@@ -75,11 +75,15 @@ panel, the separator, the notice, the rules and finally the border —
 never the header, the composer text or the footer. Overlays replace the
 conversation region with their panel.
 
-Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`). Page keys are
-matched by key code rather than by their string form, so a terminal that
-reports them with modifier bits (Fn+PageUp as `shift+pgup`) still pages.
-The viewport is not mouse-captured, so native selection and right-click
-paste keep working. The reading position is anchored to an entry and a
+Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`) with an
+opt-in wheel: `View.MouseMode` stays off unless `--mouse` or
+`HAL9001_MOUSE=1` is given, so native selection survives by default.
+Wheel events are routed by pointer position to the viewport (which owns
+no keys of its own), the composer (a long draft scrolls in place) or the
+open panel, and manual scrolling follows the same bottom-follow rules as
+the keyboard. Page keys are matched by key code rather than by their
+string form, so a terminal that reports Fn+PageUp as `shift+pgup` still
+pages. The reading position is anchored to an entry and a
 row inside it, so resizing or re-wrapping Markdown restores the same
 content rather than a stale line number.
 
@@ -104,11 +108,12 @@ dispatcher uses, so the two can never drift apart.
 
 Views: chat, onboarding, model picker, theme picker (five presets with
 live preview, persisted), help, and stored sessions. A slash dispatcher
-handles `/help`, `/copy`, `/copy code`, `/theme`, `/model`, `/new` and
-`/sessions` locally — commands never reach the model, and `//` escapes
+handles `/help`, `/copy`, `/usage`, `/rename`, `/theme`, `/model`,
+`/effort`, `/new`, `/clear`, `/sessions`, `/diag`, `/expand`, `/collapse`
+and the `/quit` family locally — commands never reach the model, and `//` escapes
 to a literal slash message. `/copy` writes the last response (or its
-latest fenced block) via OSC 52; the mouse is deliberately never
-captured so native selection keeps working. Pasted text (bracketed or
+latest fenced block) via OSC 52; the mouse is never captured unless the operator enables
+it, so native selection and right-click paste keep working by default. Pasted text (bracketed or
 keystroke) is inserted with newlines preserved and never submitted.
 Scrolling is sticky: streams follow only when already at the bottom.
 
@@ -139,6 +144,10 @@ table (the MiniMax M-series), and only for one of the five documented
 levels. The application resolves a level from the per-model record, or
 `medium` for a capable model with none recorded. `/effort` changes it and
 rebuilds the engine, so the next request carries the new value.
+
+`Ctrl+U` clears the composer into a one-slot undo buffer and `Ctrl+Z`
+restores it into an empty composer; the buffer is dropped on submit and
+on every session change so drafts never leak across conversations.
 
 A turn that completes without visible answer text is not stored as an
 assistant message: `ErrNoVisibleAnswer` is returned, the interface shows a

@@ -68,6 +68,9 @@ footer stay at the bottom.
 | `Ctrl+O` | Expand or collapse the last long prompt |
 | `PgUp` / `PgDn` | Scroll the conversation by a page |
 | `Home` / `End` | Jump to the start / end of the conversation |
+| `Ctrl+U` | Clear the entire draft (Ctrl+Z restores it) |
+| `Ctrl+Z` | Restore the last cleared draft |
+| mouse wheel | Scroll history (only with `--mouse`) |
 
 `Enter` and `Ctrl+M` are the same byte on a terminal, so the model
 picker moved to `Ctrl+K`; `/model` works everywhere. Most terminals
@@ -87,7 +90,11 @@ keep the draft. A leading `//` sends a literal slash-prefixed message.
 
 The composer is a single bordered one-line input that grows as you write,
 up to eight rows, and shrinks back when you delete. A blank row separates
-it from the conversation. Pasting never submits. Pasting never submits: multiline pastes keep
+it from the conversation. Pasting never submits. `Ctrl+U` clears the whole
+draft (even hundreds of pasted lines) without submitting anything and
+returns the composer to one row; `Ctrl+Z` puts it back, but only into an
+empty composer and never across sessions. Clearing never touches the
+conversation — that is what `/clear` is for. Pasting never submits: multiline pastes keep
 their line breaks, indentation and code fences in the composer, where
 you can edit them before sending. Switching models keeps the
 conversation history and the unsent draft: the session store is
@@ -115,10 +122,15 @@ exact escape sequence, so they work even when the terminal reports
 Fn+PageUp as `shift+pgup`. New output only follows the bottom when you
 were already there; scrolling up during a reply keeps your place.
 Resizing the terminal and collapsing or expanding a long prompt preserve
-the line you were reading. The mouse wheel is deliberately not captured —
-that would break native selection and right-click paste — so use the
-keyboard to scroll; the terminal's own Alt-screen behaviour applies to
-the wheel.
+the line you were reading. The mouse wheel scrolls too, but only when
+mouse reporting is enabled with `--mouse` or `HAL9001_MOUSE=1`: reporting
+makes the terminal send wheel events instead of selecting text, so it
+stays off by default. Native selection and right-click paste keep working
+— including middle-click paste of the PRIMARY selection on Linux, which
+is separate from the regular clipboard that `/copy` writes through
+OSC 52. Drag selection cannot be auto-copied without mouse tracking, and
+mouse tracking would break native selection, so HAL does not try: `/copy`
+remains the reliable path to the clipboard.
 
 **Bottom-anchored history.** A new or short conversation sits just above
 the composer, with the unused space above it, the way a chat application

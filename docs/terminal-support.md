@@ -82,21 +82,20 @@ submission and never fails silently.
   response.
 - No external utility (`wl-copy`, `xclip`, `xsel`) is required or
   invoked.
-- The mouse is never captured: no `CSI ?1000h` / `CSI ?1006h` is ever
-  sent. Native text selection, right-click paste and the terminal's own
-  context menu keep working.
-- OSC 52 is write-only. HAL cannot read the clipboard, and does not try.
+- The mouse is never captured unless the operator asks for it with
+  `--mouse` or `HAL9001_MOUSE=1`, in which case HAL requests cell-motion
+  reporting (`CSI ?1002h` with SGR `CSI ?1006h`) and the wheel scrolls the
+  conversation. With reporting on, the terminal sends mouse events instead
+  of selecting text, so native drag selection needs Shift+drag and
+  right-click behaviour varies.
+- OSC 52 is strictly write-only. HAL cannot read what the terminal has
+  selected and does not try.
 - Terminals differ in whether they accept OSC 52 and whether they ask
   for confirmation. A refusal is reported as a plain notice; nothing
   crashes and no partial copy is claimed.
 
 ## Deliberately not used
 
-- **Mouse reporting.** Capturing the mouse would break native selection
-  and right-click menus in most emulators. The wheel therefore scrolls
-  the terminal's own buffer (which is empty in the alternate screen),
-  not the conversation. Keyboard scrolling — `PgUp`, `PgDn`, `Home`,
-  `End` — is the supported path, and it is what the pty checks exercise.
 - **True-colour assumption.** The five palettes are authored in
   true colour; lipgloss and glamour downsample them to 256 or 16 colours
   when the terminal reports a smaller palette, so the themes stay
@@ -108,7 +107,7 @@ submission and never fails silently.
   foreground colours, Markdown and chrome still follow the theme.
 - **External clipboard tools.**
 
-## Scrolling
+## Scrolling and selection
 
 The conversation viewport is independent of the header and the composer.
 `PgUp` and `PgDn` scroll by one screen, `Home` and `End` jump to the
@@ -119,8 +118,15 @@ does not move them; if they are at the bottom, new output follows.
 Resizing, and collapsing or expanding a long prompt, restore the row the
 reader was looking at rather than resetting to the top or the bottom.
 
-The mouse wheel is not captured (see above), so it does not scroll the
-conversation.
+Mouse reporting is off unless `--mouse` or `HAL9001_MOUSE=1` is given, in
+which case HAL requests cell-motion reporting (`CSI ?1002h` with SGR
+`CSI ?1006h`) and the wheel scrolls the history — or a long draft, or the
+open panel, depending on pointer position. With reporting on, the
+terminal sends mouse events instead of selecting text, so native drag
+selection needs Shift+drag. Drag selection can never be auto-copied into
+the regular clipboard: OSC 52 is write-only, and the viewport keeps no
+selection model. Native selection, PRIMARY middle-click paste on Linux,
+right-click paste and `/copy` cover every real clipboard need.
 
 ## Known limitations
 

@@ -203,6 +203,40 @@ def rename_checks():
     check("rename: browser lists the title", "Museum Test" in items, items)
 
 
+def mouse_checks():
+    """Wheel scrolling is opt-in. With reporting off the terminal never
+    receives mouse-event requests; with --mouse (or HAL9001_MOUSE=1) the
+    wheel pages the conversation."""
+    write_scroll_fixture()
+    raw = run([(2.0, b"")], timeout=5.0, fresh=False, session="scrollfixture")
+    off = raw.decode("utf-8", "replace")
+    check("mouse: reporting stays off by default",
+          "\x1b[?1002h" not in off and "\x1b[?1006h" not in off, off[:200])
+
+    os.environ["HAL9001_MOUSE"] = "1"
+    try:
+        before = run_fixture_text("scrollfixture")
+        # SGR wheel events (column 40, row 10, 1-based). Five ups move
+        # away from the bottom; five downs return to exactly the same
+        # screen, which a lossy emulator cannot blur.
+        moved = run([(2.5, b"\x1b[<64;40;10M" * 5)], timeout=7.0,
+                     fresh=False, session="scrollfixture")
+        moved_text = render(moved).text()
+        check("mouse: wheel-up scrolls with --mouse",
+              first_text(moved_text) != first_text(before), moved_text[:400])
+        back = run([(2.5, b"\x1b[<64;40;10M" * 5), (0.5, b"\x1b[<65;40;10M" * 5)],
+                   timeout=8.0, fresh=False, session="scrollfixture")
+        back_text = render(back).text()
+        check("mouse: wheel-down scrolls back symmetrically",
+              first_text(back_text) == first_text(before), back_text[:400])
+    finally:
+        os.environ.pop("HAL9001_MOUSE", None)
+
+
+def run_fixture_text(session):
+    return run_fixture(session)
+
+
 def exit_checks():
     for name in ("/q", "/quit", "/exit"):
         raw = run([(2.0, (name + "\r").encode())], timeout=5.0,
@@ -372,6 +406,7 @@ def main():
     session_checks()
     token_checks()
     rename_checks()
+    mouse_checks()
 
     # Common terminal sizes keep the frame the right size.
     for cols, rows in [(120, 40), (160, 50)]:
