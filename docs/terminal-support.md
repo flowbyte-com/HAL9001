@@ -82,13 +82,13 @@ submission and never fails silently.
   response.
 - No external utility (`wl-copy`, `xclip`, `xsel`) is required or
   invoked.
-- The mouse is never captured unless the operator asks for it with
-  `--mouse` or `HAL9001_MOUSE=1`, in which case HAL requests cell-motion
-  reporting (`CSI ?1002h` with SGR `CSI ?1006h`) and takes over the
-  pointer: the wheel scrolls, and a left drag selects and copies text.
-  With reporting on, the terminal sends mouse events instead of selecting
-  text, so the terminal's own selection needs Shift+drag and right-click
-  behaviour varies.
+- The mouse is captured by default: HAL requests cell-motion reporting
+  (`CSI ?1002h` with SGR `CSI ?1006h`) and takes over the pointer — the
+  wheel scrolls, and a left drag selects and copies text. `--no-mouse`
+  (or `HAL9001_MOUSE=0`) turns it off, and the terminal keeps its own
+  selection. With reporting on, the terminal sends mouse events instead
+  of selecting text, so the terminal's own selection needs Shift+drag
+  and right-click behaviour varies.
 - A released selection is written with the same OSC 52 sequence as
   `/copy`, to `/dev/tty`.
 - OSC 52 is strictly write-only. HAL cannot read what the terminal has
@@ -121,12 +121,13 @@ does not move them; if they are at the bottom, new output follows.
 Resizing, and collapsing or expanding a long prompt, restore the row the
 reader was looking at rather than resetting to the top or the bottom.
 
-Mouse reporting is off unless `--mouse` or `HAL9001_MOUSE=1` is given, in
-which case HAL requests cell-motion reporting (`CSI ?1002h` with SGR
-`CSI ?1006h`) and the wheel scrolls the history — or a long draft, or the
-open panel, depending on pointer position. With reporting on, the
-terminal sends mouse events instead of selecting text, so the terminal's
-own selection needs Shift+drag.
+Mouse reporting is on by default. HAL requests cell-motion reporting
+(`CSI ?1002h` with SGR `CSI ?1006h`) and the wheel scrolls the history —
+or a long draft, or the open panel, depending on pointer position. With
+reporting on, the terminal sends mouse events instead of selecting text,
+so the terminal's own selection needs Shift+drag. `--no-mouse` (or
+`HAL9001_MOUSE=0`) turns reporting off and gives the terminal its own
+selection back.
 
 With reporting on HAL also owns the selection, the way Pi does. A left
 press starts it, the drag extends it, the release copies it through
@@ -142,10 +143,10 @@ Linux, right-click paste and `/copy` cover every real clipboard need.
 
 Terminal differences to check by hand:
 
-- GNOME Terminal: with `--mouse`, a plain left drag selects and copies
-  inside HAL; the terminal's own selection needs Shift+drag, and the
-  context menu may need Shift as well. Without `--mouse`, everything is
-  the terminal's own, as before.
+- GNOME Terminal: a plain left drag selects and copies inside HAL; the
+  terminal's own selection needs Shift+drag, and the context menu may
+  need Shift as well. With `--no-mouse`, everything is the terminal's
+  own, as before.
 - Terminals that do not implement SGR mouse reporting (`CSI ?1006h`) get
   no pointer events at all, and HAL falls back to keyboard scrolling.
 
@@ -155,8 +156,9 @@ Terminal differences to check by hand:
   mouse copies from the alternate buffer, so the selection does not
   survive the exit of HAL and may differ from what was on the shell
   screen before. Terminals that support "copy on select" still work.
-  With `--mouse` HAL does its own selection and copies it through
-  OSC 52, which does survive the exit.
+  By default HAL does its own selection and copies it through OSC 52,
+  which does survive the exit; `--no-mouse` hands the selection back to
+  the terminal.
 - **Modifier-aware keys.** `Shift+Enter` needs the Kitty keyboard
   protocol (kitty, Ghostty, WezTerm, foot, recent Konsole). GNOME
   Terminal, xterm and most VTE terminals do not implement it, so `Ctrl+J`
@@ -167,10 +169,10 @@ Terminal differences to check by hand:
 - **IME input.** Composed input is handled by the terminal; HAL does not
   add its own input method.
 - **Verified in GNOME Terminal.** The mouse behaviour was confirmed by
-  hand in GNOME Terminal: with `--mouse`, a plain left drag highlights
-  conversation text and the release copies it, and the wheel scrolls the
-  history. Without `--mouse` the terminal's own selection, right-click
-  paste and middle-click paste are untouched. The key handling is still
+  hand in GNOME Terminal: a plain left drag highlights conversation text
+  and the release copies it, and the wheel scrolls the history. With
+  `--no-mouse` the terminal's own selection, right-click paste and
+  middle-click paste are untouched. The key handling is still
   inferred from the byte sequences the terminal is documented to send
   (CR for Enter, LF for `Ctrl+J`, ESC CR for `Alt+Enter`, no Kitty
   protocol); the pty tests exercise exactly those byte sequences.

@@ -41,6 +41,7 @@ you may save anyway if it fails.
 hal9001                                    # chat (Enter sends, Ctrl+J adds a line)
 hal9001 --session work                     # resume or start a named session
 hal9001 --list-sessions                    # list stored conversations
+hal9001 --no-mouse                         # leave the pointer to the terminal
 hal9001 --provider openai-compatible \
   --endpoint https://api.minimax.io/v1 \
   --model MiniMax-M3.1-Flash               # flags win over the file
@@ -70,8 +71,8 @@ footer stay at the bottom.
 | `Home` / `End` | Jump to the start / end of the conversation |
 | `Ctrl+U` | Clear the entire draft (Ctrl+Z restores it) |
 | `Ctrl+Z` | Restore the last cleared draft |
-| mouse wheel | Scroll history, or the draft (only with `--mouse`) |
-| left drag | Select conversation text and copy it (only with `--mouse`) |
+| mouse wheel | Scroll history, or the draft |
+| left drag | Select conversation text and copy it |
 
 `Enter` and `Ctrl+M` are the same byte on a terminal, so the model
 picker moved to `Ctrl+K`; `/model` works everywhere. Most terminals
@@ -127,9 +128,16 @@ were already there; scrolling up during a reply keeps your place.
 Resizing the terminal and collapsing or expanding a long prompt preserve
 the line you were reading.
 
-**Mouse.** Mouse reporting is off by default. With `--mouse` (or
-`HAL9001_MOUSE=1`) HAL asks the terminal for mouse events and takes over
-the pointer itself, the way Pi does:
+**Mouse.** HAL asks the terminal for mouse events and takes over the
+pointer itself, the way Pi does. This is the default; `--no-mouse` (or
+`HAL9001_MOUSE=0`) turns it off and leaves the terminal's own selection
+in charge. `--mouse` is still accepted as an explicit way to ask for it.
+
+The setting is resolved in one order: an explicit flag, then the
+environment, then the default (on). `HAL9001_MOUSE` accepts `1`/`true`/
+`yes`/`on` and `0`/`false`/`no`/`off`; anything else is ignored, so a
+typo cannot quietly change how the terminal behaves. Asking for both
+`--mouse` and `--no-mouse` is refused instead of silently choosing one.
 
 - The wheel scrolls the conversation, or a long draft under the pointer,
   or an open panel.
@@ -147,11 +155,11 @@ the pointer itself, the way Pi does:
 
 With reporting on, the terminal sends mouse events instead of selecting
 text, so the terminal's own selection needs Shift+drag in most emulators
-and right-click behaviour varies. That is why reporting stays off by
-default: without it the native selection, right-click paste and
-middle-click paste of the PRIMARY selection on Linux all keep working,
-and they are separate from the regular clipboard that `/copy` and a
-selection write through OSC 52.
+and right-click behaviour varies. With `--no-mouse` the native
+selection, right-click paste and middle-click paste of the PRIMARY
+selection on Linux all keep working instead; either way they are
+separate from the regular clipboard that `/copy` and a selection write
+through OSC 52.
 
 **Bottom-anchored history.** A new or short conversation sits just above
 the composer, with the unused space above it, the way a chat application
@@ -253,8 +261,8 @@ legacy_base/          preserved DeepClaw/PicoClaw reference (separate module)
   MPM credentials.
 - No PicoClaw or lobster branding anywhere in the new application.
 - Copying is a UI feature, not a tool: OSC 52 writes to the terminal,
-  never to the model. Native terminal selection keeps working because
-  HAL never captures the mouse.
+  never to the model. The clipboard is never reachable from the model,
+  and the terminal's mouse modes are restored when HAL exits.
 - The frame always fits the terminal, so HAL never scrolls the terminal
   and never leaves the cursor hidden or the terminal in raw mode.
 

@@ -58,8 +58,10 @@ something fails.
   session stays selected, and `/sessions` recovers the previous one.
 - The footer and `/usage` report provider token usage; each finished
   answer carries a metadata line and the composer starts at one row.
-- The wheel scrolls symmetrically with `--mouse`; without it no mouse
-  reporting (`?1002h`) is requested and native selection is untouched.
+- The wheel scrolls symmetrically; with `--no-mouse` no mouse reporting
+  (`?1002h`) is requested and native selection is untouched.
+- The mouse modes are reset when HAL exits, so the terminal is left as
+  it was found.
 - A left drag over the conversation copies the selected text through
   OSC 52: the payload is the reply's own text, without labels, colours
   or escape sequences.

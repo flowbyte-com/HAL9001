@@ -76,8 +76,9 @@ never the header, the composer text or the footer. Overlays replace the
 conversation region with their panel.
 
 Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`) with an
-opt-in wheel: `View.MouseMode` stays off unless `--mouse` or
-`HAL9001_MOUSE=1` is given, so native selection survives by default.
+wheel: `View.MouseMode` is on unless `--no-mouse` or
+`HAL9001_MOUSE=0` turns it off, so the pointer works out of the box and
+the terminal keeps its own selection only when asked.
 Wheel events are routed by pointer position to the viewport (which owns
 no keys of its own), the composer (a long draft scrolls in place) or the
 open panel, and manual scrolling follows the same bottom-follow rules as
