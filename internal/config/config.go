@@ -35,6 +35,9 @@ const (
 	// enables it, 0/false/no/off disables it. Unset leaves the default,
 	// which is enabled. A value that is neither is refused.
 	EnvMouse = "HAL9001_MOUSE"
+	// EnvWorkspace overrides the one directory HAL may propose files in.
+	// The default is ~/HAL.
+	EnvWorkspace = "HAL9001_WORKSPACE"
 )
 
 // ModelRecord is one configured model. The record is intentionally small
@@ -228,10 +231,14 @@ type Config struct {
 	// Mouse requests terminal mouse reporting, so the wheel scrolls the
 	// conversation and a drag selects text. On by default; --no-mouse
 	// turns it off and leaves the terminal's own selection in charge.
-	Mouse    bool
-	ShowHelp bool
-	List     bool
-	Models   []ModelRecord
+	Mouse bool
+	// WorkspaceDir is the only directory a model-proposed write may
+	// reach. It is not a permission: every write is approved one at a
+	// time in the interface.
+	WorkspaceDir string
+	ShowHelp     bool
+	List         bool
+	Models       []ModelRecord
 	// MaxTokens caps one response. Zero means the provider default is
 	// replaced by the built-in sensible cap.
 	MaxTokens int
@@ -241,6 +248,15 @@ type Config struct {
 	// TurnTimeoutSeconds bounds one whole turn. Zero means the default.
 	TurnTimeoutSeconds int
 	configured         bool
+}
+
+// DefaultWorkspaceDir returns the directory proposed writes may reach.
+func DefaultWorkspaceDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(".", "HAL")
+	}
+	return filepath.Join(home, "HAL")
 }
 
 // DefaultStoreDir returns the conversation storage directory.
@@ -280,6 +296,7 @@ func LoadErr(args []string) (Config, error) {
 		// resolved from the stored metadata at startup.
 		Session:            "",
 		StoreDir:           DefaultStoreDir(),
+		WorkspaceDir:       firstNonEmpty(os.Getenv(EnvWorkspace), DefaultWorkspaceDir()),
 		Models:             append([]ModelRecord(nil), stored.Models...),
 		MaxTokens:          firstNonZero(envInt(EnvMaxTokens), stored.MaxTokens),
 		StreamIdleSeconds:  firstNonZero(envInt(EnvStreamIdleTimeout), stored.StreamIdleSeconds),
@@ -290,6 +307,7 @@ func LoadErr(args []string) (Config, error) {
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model identifier")
 	fs.StringVar(&cfg.Session, "session", cfg.Session, "conversation session name")
 	fs.StringVar(&cfg.StoreDir, "store", cfg.StoreDir, "conversation storage directory")
+	fs.StringVar(&cfg.WorkspaceDir, "workspace", cfg.WorkspaceDir, "directory HAL may propose files in")
 	fs.BoolVar(&cfg.NoColor, "no-color", os.Getenv("NO_COLOR") != "", "disable colors")
 	// The mouse flags are read after parsing, because the flag package
 	// cannot tell "not given" from "given as false".

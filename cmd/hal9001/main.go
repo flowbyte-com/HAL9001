@@ -25,6 +25,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/tui"
 	"github.com/flowbyte-com/HAL9001/internal/usage"
+	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
 
 func main() {
@@ -67,6 +68,23 @@ func run(args []string) error {
 	if store, err := usage.Open(filepath.Join(config.ConfigDir(), "usage.json")); err == nil {
 		app.usage = store
 	}
+	// The one directory a proposed write may reach. Opening it writes
+	// nothing: the store only resolves the path, and the directory is
+	// created when an approved write needs it.
+	ws, err := workspace.Open(cfg.WorkspaceDir)
+	if err != nil {
+		return err
+	}
+	// The audit trail is trusted bookkeeping under HAL's own data
+	// directory; a failure to open it leaves the workspace working
+	// without a trail rather than blocking the conversation.
+	if audit, err := workspace.OpenAudit(filepath.Join(config.ConfigDir(), "audit.jsonl")); err == nil {
+		ws.WithAudit(audit)
+	}
+	// Defence in depth: even a misconfigured workspace can never reach
+	// HAL's own configuration and session data.
+	ws.Protect(config.ConfigDir())
+	app.workspace = ws
 	return app.run()
 }
 
@@ -110,6 +128,9 @@ type app struct {
 	sessionTitle string
 	sessionSeq   int
 	usage        *usage.Store
+	// workspace is the single write capability shared by the engine
+	// (which prepares proposals) and the interface (which approves them).
+	workspace *workspace.Store
 }
 
 // defaultSessionName is the conversation used when nothing has been
@@ -222,6 +243,7 @@ func (a *app) run() error {
 	m.SetEffort(a.currentEffort())
 	m.SetUsage(a.currentUsage())
 	m.SetMouse(a.cfg.Mouse)
+	m.SetWorkspace(a.workspace)
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
 	m.SetTitle(a.session)
 	if history, err := a.store.History(); err == nil {
@@ -340,7 +362,8 @@ func (a *app) rebuildEngine() {
 		p = impl
 	}
 	a.eng = engine.New(a.store, p, a.modelFor()).
-		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir))
+		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir)).
+		WithWorkspace(a.workspace)
 }
 
 func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
