@@ -10,11 +10,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
-	"github.com/flowbyte-com/HAL9001/internal/capability"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
+	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
 
 // ErrNoProvider reports that no model provider is configured. The
@@ -34,11 +35,25 @@ type Engine struct {
 	provider     provider.Provider
 	model        provider.Model
 	systemPrompt string
+	// workspace prepares write proposals. Nil means the turn offers no
+	// write capability at all.
+	workspace *workspace.Store
+	// toolUnsupported records a provider that refused function
+	// definitions, so the conversation continues without them.
+	toolUnsupported bool
 }
 
 // New binds a session store to a provider and model.
 func New(sessions *session.Store, p provider.Provider, model provider.Model) *Engine {
 	return &Engine{sessions: sessions, provider: p, model: model}
+}
+
+// WithWorkspace enables the single write proposal: a model may ask to save
+// one file, and only the interface can approve it. Without a workspace the
+// engine offers no tools and every model-requested write is refused.
+func (e *Engine) WithWorkspace(w *workspace.Store) *Engine {
+	e.workspace = w
+	return e
 }
 
 // WithSystemPrompt sets the system instruction prepended to every request.
@@ -84,6 +99,10 @@ type Event struct {
 	Text      string
 	Reasoning bool
 	Stats     *provider.TurnStats
+	// Proposal is one prepared workspace write, awaiting the operator's
+	// decision. It carries no authority: the interface approves or
+	// rejects it, and only then may the filesystem be touched.
+	Proposal *workspace.Proposal
 }
 
 // RespondStream answers with live text deltas forwarded to emit (nil
@@ -104,6 +123,10 @@ func (e *Engine) RespondStream(ctx context.Context, input string, emit func(stri
 // Cancellation aborts the provider call and stores nothing from the
 // assistant side: an interrupted stream never becomes a complete answer
 // in the session.
+//
+// When a workspace is configured, the turn also offers the single write
+// proposal. A prepared proposal is emitted as an event and the interface
+// decides what happens to it; the engine never writes anything itself.
 func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit func(Event)) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("engine: empty input")
@@ -119,18 +142,15 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 		return "", err
 	}
 	messages := e.requestMessages(history)
-	var resp provider.Response
-	if streamer, ok := e.provider.(provider.Streamer); ok && emit != nil {
-		resp, err = streamer.ChatStream(ctx, messages, e.model, func(d provider.Delta) error {
-			ev := Event{Text: d.Text, Reasoning: d.Reasoning != ""}
-			if ev.Text == "" && !ev.Reasoning {
-				return nil
-			}
-			emit(ev)
-			return nil
-		})
-	} else {
-		resp, err = e.provider.Chat(ctx, messages, e.model)
+	turn := userTurns(history)
+	tools := e.offeredTools()
+	resp, err := e.chat(ctx, messages, tools, emit)
+	if err != nil && len(tools) > 0 && isToolRejection(err) {
+		// A provider that cannot take function definitions must not lose
+		// the conversation: retry the same turn without them and stop
+		// offering tools for this engine.
+		e.toolUnsupported = true
+		resp, err = e.chat(ctx, messages, nil, emit)
 	}
 	if err != nil {
 		// A failed turn still reports its content-free diagnostics: the
@@ -149,23 +169,12 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 		emit(Event{Stats: &stats})
 	}
 	reply := strings.TrimSpace(resp.Content)
-	for _, call := range resp.ToolCalls {
-		if err := capability.Check(call.Name); err != nil {
-			denied := fmt.Sprintf("Requested operation %q refused: %s", call.Name, capability.Refusal())
-			if reply == "" {
-				reply = denied
-			} else {
-				reply += "\n\n" + denied
-			}
-			continue
-		}
-		// Allowed capabilities have no executors in this milestone: the
-		// foundation establishes the boundary, not the integrations.
-		pending := fmt.Sprintf("Operation %q is allowed but not yet implemented in this foundation.", call.Name)
+	notes, proposal := e.handleToolCalls(resp.ToolCalls, e.sessionName(), turn)
+	if notes != "" {
 		if reply == "" {
-			reply = pending
+			reply = notes
 		} else {
-			reply += "\n\n" + pending
+			reply += "\n\n" + notes
 		}
 	}
 	if reply == "" {
@@ -185,5 +194,59 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 	if _, err := e.sessions.Append(session.RoleAssistant, reply); err != nil {
 		return "", err
 	}
+	if proposal != nil && emit != nil {
+		// The last event of the turn: one prepared write for the operator
+		// to review. It carries no authority, only a request.
+		emit(Event{Proposal: proposal})
+	}
 	return reply, nil
+}
+
+// chat runs one provider turn, offering tools when there are any.
+//
+// The streaming path is preferred; a provider that cannot stream with
+// functions falls back to the ordinary stream, and a provider that cannot
+// stream at all uses the blocking call.
+func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []provider.Tool, emit func(Event)) (provider.Response, error) {
+	deltaFn := func(d provider.Delta) error {
+		ev := Event{Text: d.Text, Reasoning: d.Reasoning != ""}
+		if ev.Text == "" && !ev.Reasoning {
+			return nil
+		}
+		if emit != nil {
+			emit(ev)
+		}
+		return nil
+	}
+	if len(tools) > 0 {
+		if streamer, ok := e.provider.(provider.ToolStreamer); ok {
+			return streamer.ChatStreamTools(ctx, messages, e.model, tools, deltaFn)
+		}
+	}
+	if streamer, ok := e.provider.(provider.Streamer); ok && emit != nil {
+		return streamer.ChatStream(ctx, messages, e.model, deltaFn)
+	}
+	return e.provider.Chat(ctx, messages, e.model)
+}
+
+// userTurns counts the user messages in the history: the turn number the
+// review and the audit refer to, stable across restarts.
+func userTurns(history []session.Message) int {
+	n := 0
+	for _, m := range history {
+		if m.Role == session.RoleUser {
+			n++
+		}
+	}
+	return n
+}
+
+// sessionName is the stored conversation's identifier, derived from the
+// store's own path. It never leaves the application.
+func (e *Engine) sessionName() string {
+	if e.sessions == nil {
+		return ""
+	}
+	base := filepath.Base(e.sessions.Path())
+	return strings.TrimSuffix(base, ".jsonl")
 }
