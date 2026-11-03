@@ -24,6 +24,10 @@ from termsim import render
 
 FAILURES = []
 
+# userPreviewRows is the most rows a collapsed prompt may show. It
+# mirrors the interface's own limit.
+userPreviewRows = 4
+
 
 def check(name, ok, detail=""):
     print(("[ok  ] " if ok else "[FAIL] ") + name + ("" if ok else "  " + detail))
@@ -52,6 +56,15 @@ def write_scroll_fixture(theme=None):
 def first_text(text, skip=2):
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     return lines[skip] if len(lines) > skip else ""
+
+
+def composer_line(text):
+    """The text inside the composer's border."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line.startswith("╭"):
+            return lines[i + 1] if i + 1 < len(lines) else ""
+    return ""
 
 
 THEMES = [
@@ -111,10 +124,12 @@ def layout_checks():
     write_long_prompt_fixture()
     text = run_fixture("longprompt")
     shown = text.count("museum thought experiment line")
-    check("layout: a long prompt collapses to at most four preview lines",
-          1 <= shown <= 4, str(shown))
-    check("layout: the collapse reports the hidden lines",
-          "Ctrl+O to expand" in text, text)
+    # A stored prompt is shown in full: the collapse that belonged to a
+    # finished turn is not stored.
+    check("layout: a reopened long prompt is shown in full",
+          shown > userPreviewRows, str(shown))
+    check("layout: a reopened long prompt is not abbreviated",
+          "Ctrl+O to expand" not in text, text)
 
 
 def session_checks():
@@ -329,6 +344,19 @@ def run_fixture_text(session):
     return run_fixture(session)
 
 
+def run_until(script, timeout=12.0, fresh=True, session=None):
+    """Run the interface and return the screen as it was left.
+
+    The bytes that restore the terminal after the program exits are
+    dropped, so the screen shows the conversation and not the shell.
+    """
+    raw = run(script, timeout=timeout, fresh=fresh, session=session)
+    end = raw.find(b"\x1b[?1049l")
+    if end >= 0:
+        raw = raw[:end]
+    return render(raw).text()
+
+
 def marked_spans(text):
     """The runs of text the terminal was told to draw in reverse video.
 
@@ -426,6 +454,87 @@ def selection_checks():
           "paragraph" in copied or "Section" in copied, repr(copied))
 
 
+def autoscroll_checks():
+    """A drag that reaches the edge of the conversation scrolls the
+    history on its own, and the selection grows into the text that
+    comes into view."""
+    write_scroll_fixture()
+
+    # The conversation starts at row 3 (the header and the rule are
+    # above it) and is sixteen rows tall. The drag ends in its top row,
+    # so the history scrolls up while the pointer rests there.
+    before = run_fixture_text("scrollfixture")
+    visible = set(re.findall(r"## Section (\d+)", before))
+    raw = run([(2.5, b"\x1b[<0;9;16M"), (0.4, b"\x1b[<32;9;3M"),
+               (1.2, b""), (0.3, b"\x1b[<0;9;3m")],
+              timeout=10.0, fresh=False, session="scrollfixture")
+    text = raw.decode("utf-8", "replace")
+    found = re.search(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07", text)
+    check("mouse: a drag at the edge copies the selection", found is not None,
+          text[-300:])
+    if found:
+        copied = base64.b64decode(found.group(1)).decode("utf-8", "replace")
+        # The history scrolled up while the pointer rested at the edge,
+        # so the selection reaches sections that were never on screen.
+        reached = set(re.findall(r"## Section (\d+)", copied))
+        check("mouse: the edge drag reaches text that was off screen",
+              bool(reached - visible),
+              "reached %s, visible %s" % (sorted(reached), sorted(visible)))
+        check("mouse: the edge drag copies no interface labels",
+              "HAL >" not in copied and "You >" not in copied, repr(copied))
+    moved = render(raw).text()
+    check("mouse: the edge drag scrolls the conversation",
+          first_text(moved) != first_text(before), moved[:400])
+
+    # The other edge: the pointer rests in the last row of the
+    # conversation and the history scrolls down. The wheel moves the
+    # view away from the bottom first.
+    raw = run([(2.5, b"\x1b[<64;40;10M" * 6), (0.4, b"\x1b[<0;9;5M"),
+               (0.4, b"\x1b[<32;9;18M"), (1.2, b""), (0.3, b"\x1b[<0;9;18m")],
+              timeout=11.0, fresh=False, session="scrollfixture")
+    text = raw.decode("utf-8", "replace")
+    found = re.search(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07", text)
+    check("mouse: a drag at the bottom edge copies the selection",
+          found is not None, text[-300:])
+    if found:
+        copied = base64.b64decode(found.group(1)).decode("utf-8", "replace")
+        visible = set(re.findall(r"## Section (\d+)", render(raw).text()))
+        reached = set(re.findall(r"## Section (\d+)", copied))
+        check("mouse: the bottom edge drag reaches text that was off screen",
+              bool(reached - visible),
+              "reached %s, visible %s" % (sorted(reached), sorted(visible)))
+
+
+def collapse_checks():
+    """A long prompt is abbreviated while HAL answers, and opens again
+    when the answer is there."""
+    prompt = "\n".join("museum thought experiment line %d" % i
+                       for i in range(1, 31))
+    body = (prompt + "\nplease hold the line").encode()
+    paste = b"\x1b[200~" + body + b"\x1b[201~"
+
+    # The provider holds the line for this prompt, so the state while
+    # HAL works can be watched.
+    during = run_until([(2.0, paste), (0.5, b"\r")],
+                       timeout=3.5, fresh=True, session="collapsecheck")
+    check("collapse: a long prompt is abbreviated while HAL answers",
+          "Ctrl+O to expand" in during, during)
+    # The middle of the prompt is not on screen while it is abbreviated.
+    check("collapse: the abbreviated prompt hides its middle",
+          "museum thought experiment line 22" not in during, during)
+    check("collapse: the turn is still running",
+          "Esc cancels" in during, during)
+
+    after = run_until([(2.0, paste), (0.5, b"\r")],
+                      timeout=7.0, fresh=True, session="collapsecheck")
+    check("collapse: the prompt opens when the answer is there",
+          "museum thought experiment line 22" in after, after)
+    check("collapse: the answer stays in view",
+          "I read your message" in after, after)
+    check("collapse: the turn is over",
+          "Esc cancels" not in after, after)
+
+
 def composer_mouse_checks():
     """The wheel over the composer scrolls the draft instead of the
     conversation, and the caret stays where it was."""
@@ -442,10 +551,11 @@ def composer_mouse_checks():
           "Section" in moved_text, moved_text[:400])
     check("mouse: the wheel over the composer keeps the draft",
           "draft line" in moved_text, moved_text[:400])
+    # The draft itself is untouched: the wheel moves the composer's
+    # window, not its text.
     check("mouse: the composer window does not move the caret",
-          before_text.count("draft line") == moved_text.count("draft line"),
-          "%d vs %d" % (before_text.count("draft line"),
-                        moved_text.count("draft line")))
+          composer_line(before_text) == composer_line(moved_text),
+          "%r vs %r" % (composer_line(before_text), composer_line(moved_text)))
 
 
 def exit_checks():
@@ -550,8 +660,10 @@ def scroll_checks():
     before = capture([(2.0, b"\x1b[5~\x1b[5~")])
     after = capture([(2.0, b"\x1b[5~\x1b[5~"), (0.5, ("resize", 60, 14)), (1.5, b"")],
                     final=(60, 14))
+    # The narrower terminal wraps the same paragraph differently, so the
+    # reading position is compared by the text it starts with.
     check("scroll: shrinking keeps the reading position",
-          first_text(before) == first_text(after),
+          first_text(before)[:30] == first_text(after)[:30],
           f"{first_text(before)!r} -> {first_text(after)!r}")
 
 
@@ -621,6 +733,8 @@ def main():
     flag_checks()
     env_checks()
     selection_checks()
+    autoscroll_checks()
+    collapse_checks()
     composer_mouse_checks()
 
     # Common terminal sizes keep the frame the right size.

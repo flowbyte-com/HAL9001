@@ -50,8 +50,11 @@ something fails.
   modifier bits too (`shift+pgup`, as a laptop Fn key reports them).
 - All five themes set their own terminal background (OSC 11) and a
   distinct foreground palette.
-- A short conversation sits just above the composer; a long prompt
-  collapses to at most four preview lines.
+- A short conversation sits just above the composer; a reopened long
+  prompt is shown in full, because the abbreviation that belonged to a
+  finished turn is not stored.
+- A long prompt is abbreviated while HAL answers and opens again when
+  the answer is there, and the answer stays in view.
 - `/q`, `/quit` and `/exit` leave the alternate screen and restore the
   terminal colours and cursor.
 - The active conversation survives `/clear` and a relaunch, an empty new
@@ -65,6 +68,9 @@ something fails.
 - A left drag over the conversation copies the selected text through
   OSC 52: the payload is the reply's own text, without labels, colours
   or escape sequences. The text is marked while the drag is running.
+- A drag that reaches the top or the bottom of the conversation scrolls
+  the history on its own, and the copy reaches the text that was never
+  on screen.
 - `--mouse` with `--no-mouse` is refused, and a malformed
   `HAL9001_MOUSE` is refused with a message that names the variable —
   unless a flag has already decided.

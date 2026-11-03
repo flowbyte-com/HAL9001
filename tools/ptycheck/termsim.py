@@ -17,14 +17,42 @@ class Screen:
         self.y = 0
         self.alt = False
         self.modes = []
+        # The scrolling region (DECSTBM). The renderer uses it to move a
+        # block of lines without repainting them.
+        self.top = 0
+        self.bottom = rows - 1
 
     def clear(self):
         self.buf = [[" "] * self.cols for _ in range(self.rows)]
 
+    def scroll_up(self, n=1):
+        """Scroll the scrolling region up by n lines."""
+        for _ in range(n):
+            self.buf.pop(self.top)
+            self.buf.insert(self.bottom, [" "] * self.cols)
+
+    def scroll_down(self, n=1):
+        """Scroll the scrolling region down by n lines."""
+        for _ in range(n):
+            self.buf.pop(self.bottom)
+            self.buf.insert(self.top, [" "] * self.cols)
+
+    def newline(self):
+        """Move down one line, scrolling the region when it is at its
+        bottom."""
+        if self.y == self.bottom:
+            self.scroll_up()
+            return
+        self.y += 1
+        if self.y >= self.rows:
+            self.buf.pop(0)
+            self.buf.append([" "] * self.cols)
+            self.y = self.rows - 1
+
     def put(self, ch):
         if self.x >= self.cols:
             self.x = 0
-            self.y += 1
+            self.newline()
         if self.y >= self.rows:
             self.buf.pop(0)
             self.buf.append([" "] * self.cols)
@@ -60,11 +88,7 @@ class Screen:
             if c == "\r":
                 self.x = 0
             elif c == "\n":
-                self.y += 1
-                if self.y >= self.rows:
-                    self.buf.pop(0)
-                    self.buf.append([" "] * self.cols)
-                    self.y = self.rows - 1
+                self.newline()
             elif c == "\b":
                 self.x = max(0, self.x - 1)
             elif c == "\t":
@@ -121,6 +145,19 @@ class Screen:
         elif cmd == "X":
             for x in range(self.x, min(self.cols, self.x + p(0))):
                 self.buf[self.y][x] = " "
+        elif cmd == "P":
+            # Delete characters: the rest of the line moves left.
+            row = self.buf[self.y]
+            n = min(p(0), self.cols - self.x)
+            del row[self.x:self.x + n]
+            row.extend([" "] * n)
+        elif cmd == "@":
+            # Insert characters: the rest of the line moves right.
+            row = self.buf[self.y]
+            n = min(p(0), self.cols - self.x)
+            for _ in range(n):
+                row.insert(self.x, " ")
+            del row[self.cols:]
         elif cmd == "h" and params.startswith("?"):
             for v in params.lstrip("?").split(";"):
                 if v == "1049":
@@ -139,12 +176,30 @@ class Screen:
                     self.modes.remove("bracketed-paste")
         elif cmd == "L":
             for _ in range(p(0)):
+                self.buf.pop(self.bottom)
                 self.buf.insert(self.y, [" "] * self.cols)
-                self.buf.pop()
         elif cmd == "M":
             for _ in range(p(0)):
                 self.buf.pop(self.y)
-                self.buf.append([" "] * self.cols)
+                self.buf.insert(self.bottom, [" "] * self.cols)
+        elif cmd == "r":
+            # The scrolling region. Without arguments it goes back to
+            # the whole screen.
+            if not ps:
+                self.top, self.bottom = 0, self.rows - 1
+            else:
+                top = max(0, p(0) - 1)
+                bottom = min(self.rows - 1, p(1, self.rows) - 1)
+                if bottom <= top:
+                    top, bottom = 0, self.rows - 1
+                self.top, self.bottom = top, bottom
+        elif cmd == "S":
+            # Scroll the region up: the lines at the top go away, the
+            # bottom is filled with blanks.
+            self.scroll_up(p(0))
+        elif cmd == "T":
+            # Scroll the region down.
+            self.scroll_down(p(0))
 
     def text(self):
         return "\n".join("".join(row).rstrip() for row in self.buf)

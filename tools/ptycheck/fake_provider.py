@@ -26,11 +26,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        for chunk in ["I read ", "your message: ", last[:40], "."]:
+        # A prompt that asks the provider to hold the line is answered
+        # slowly, so the interface can be watched while it is working.
+        hold = "hold the line" in last
+        for i, chunk in enumerate(["I read ", "your message: ", last[:40], "."]):
+            time.sleep(1.2 if hold and i == 0 else (0.4 if hold else 0.05))
             payload = {"choices": [{"delta": {"content": chunk}, "index": 0}]}
             self.wfile.write(("data: " + json.dumps(payload) + "\n\n").encode())
             self.wfile.flush()
-            time.sleep(0.05)
         self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
         self.wfile.write(("data: " + json.dumps({
             "choices": [],

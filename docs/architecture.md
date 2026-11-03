@@ -95,6 +95,15 @@ selection lives in conversation coordinates, not screen coordinates, so
 scrolling the history does not move it; it is dropped when the
 conversation changes or the terminal is resized.
 
+A drag that reaches the top or the bottom of the conversation scrolls
+the history by itself, one row per tick, so a selection can reach text
+that was never on screen. The scroll is driven by the event loop: a tick
+moves the conversation and asks for the next tick, so nothing runs in
+the background and the chain ends with the selection. The pointer's
+position at the edge decides the direction, the selection follows the
+content under the pointer, and the wheel takes over from the auto-scroll
+while a drag is running.
+
 Copying needs a map from screen cells back to text, and the screen shows
 wrapped, styled, padded lines. `internal/tui/cells.go` scans a rendered
 row into grapheme clusters and records the cell boundaries and the
@@ -155,8 +164,13 @@ input parser the application itself uses. See
 `docs/terminal-support.md` for the tested/unsupported matrix.
 
 Conversation entries keep the original text and a cached rendered form.
-Long user prompts render as a four-line preview with an expand hint;
-the collapse never touches the stored text or the provider request.
+Long user prompts render as a four-line preview with an expand hint
+while HAL writes the answer, and open again when the answer is there;
+the collapse never touches the stored text or the provider request. The
+entry keeps three presentation states — shown, collapsed by hand, and
+collapsed for the running turn — so the automatic expansion that follows
+an answer never overrides a choice the operator made, and the temporary
+state is never stored with the conversation.
 
 ## Streaming
 

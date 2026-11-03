@@ -104,11 +104,15 @@ model-independent. When the draft is taller than five rows the wheel
 scrolls it and the caret stays where it was; typing brings the caret
 back into view.
 
-**Long prompts.** A prompt that fills more than a few lines is collapsed
-to a four-line preview after you send it, so HAL's answer stays in view.
-`Ctrl+O` toggles the most recent prompt; `/expand` and `/collapse` apply
-to all of them. Collapsing is display only — the full text is what gets
-stored and what the model receives.
+**Long prompts.** A prompt that fills more than a few lines is
+abbreviated to a four-line preview while HAL writes its answer, so the
+answer has room to be read. When the answer is there, the prompt opens
+again — the abbreviation was a way to make room, not a way to shorten the
+message. A prompt you collapse yourself with `Ctrl+O` stays collapsed;
+`/expand` and `/collapse` apply to all of them. A cancelled or failed
+turn opens the prompt too, and reopening a conversation shows the stored
+prompts in full: the abbreviation is never stored. Collapsing is display
+only — the full text is what gets stored and what the model receives.
 
 **Reasoning effort.** MiniMax-M3.1-Flash applies `max` effort when the
 parameter is omitted, which is why HAL sends `reasoning_effort` explicitly
@@ -147,10 +151,17 @@ choosing one.
 - Left-dragging selects text in the conversation. The selection is
   highlighted while it is dragged, and releasing the pointer copies it to
   the clipboard through OSC 52 — the same mechanism `/copy` uses.
+- A drag that reaches the top or the bottom of the conversation scrolls
+  the history on its own, one row at a time, and the selection grows into
+  the text that comes into view. The scroll stops as soon as the pointer
+  leaves the edge, the button is released, the selection is cancelled
+  with `Esc`, or the conversation changes. The wheel takes over from it
+  while you drag, and the composer is never touched.
 - The copied text is the reply's own text: no colours, no borders, no
   `You > ` / `HAL > ` labels, and no artificial line breaks. A wrapped
   paragraph comes back as the one line it was written as, and a word the
-  renderer had to break comes back whole.
+  renderer had to break comes back whole. The interface's own lines —
+  the `Ctrl+O to expand` hint, the answer's metadata — are never copied.
 - An ordinary click copies nothing.
 - The selection survives scrolling, so a selection can be made across a
   long reply; it is dropped when the conversation changes or the terminal

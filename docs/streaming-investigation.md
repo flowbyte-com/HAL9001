@@ -29,6 +29,11 @@ unchanged, and the engine sends it to the provider unchanged
 (`TestLongPromptReachesProviderUnchanged`). Streaming still follows the
 reply when the reader was already at the bottom.
 
+*Later refinement.* The abbreviation is now temporary: it lasts while
+HAL writes the answer and the prompt opens again when the answer is
+there. A prompt the operator collapsed by hand stays collapsed, and a
+stored prompt is shown in full when the conversation is reopened.
+
 ## B. Silent streaming and the usage spike
 
 ### Root causes established from the code
