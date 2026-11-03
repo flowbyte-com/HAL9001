@@ -827,13 +827,25 @@ func (m Model) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) diagRows() []string {
 	st := m.theme.styles()
 	rows := []string{"Last turn — diagnostics (Esc back)", ""}
+	// The composer's own state comes first: a draft that is in the buffer
+	// but not on screen is the one thing worth checking before anything
+	// else. Counts only — never the text itself.
+	composer := func(label, value string) {
+		rows = append(rows, "  "+padTo(st.active.Render(label), 16)+value)
+	}
+	composer("draft", fmt.Sprintf("%d bytes · %d rows", len(m.composer.Value()), m.draftRows()))
+	composer("composer", fmt.Sprintf("%d of %d rows shown · offset %d",
+		m.ComposerRows(), m.draftRows(), m.draftOffset))
+	composer("textarea", fmt.Sprintf("%d×%d · scrolled %d",
+		m.Composer().Width(), m.Composer().Height(), m.Composer().ScrollYOffset()))
 	s := m.lastStats
 	if s == nil {
-		rows = append(rows, "  No completed turn yet.")
+		rows = append(rows, "", "  No completed turn yet.")
 		rows = append(rows, "", "  Diagnostics carry counts and durations only:")
 		rows = append(rows, "  no prompt text, no reasoning text, no credentials.")
 		return rows
 	}
+	rows = append(rows, "")
 	row := func(label, value string) {
 		rows = append(rows, "  "+padTo(st.active.Render(label), 16)+value)
 	}

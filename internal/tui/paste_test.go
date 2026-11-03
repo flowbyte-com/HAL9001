@@ -377,3 +377,55 @@ func TestNoticeExpiryIsScheduled(t *testing.T) {
 		t.Errorf("the expiry names notice %d, current is %d", seq, m.noticeSeq)
 	}
 }
+
+// TestComposerWindowIgnoresAClampedView checks the safety net: a
+// textarea whose view is shorter than the draft (a widget that clamps its
+// own height, the way the old 99-row limit did) cannot make the composer
+// blank — the draft's own rows are shown instead.
+func TestComposerWindowIgnoresAClampedView(t *testing.T) {
+	m := testModel()
+	m = pasteText(m, numberedLines(120))
+	m.composer.SetHeight(1)
+	rows := windowText(m)
+	if blankRows(rows) {
+		t.Fatalf("blank window: %q", rows)
+	}
+	if !strings.Contains(rows[len(rows)-1], "line 120") {
+		t.Errorf("the window does not show the end of the draft: %q", rows)
+	}
+}
+
+// TestComposerCaretFollowsAResize checks that the window stays around the
+// caret and keeps showing text when the terminal changes size.
+func TestComposerCaretFollowsAResize(t *testing.T) {
+	m := testModel()
+	m = pasteText(m, numberedLines(120))
+	for _, size := range [][2]int{{60, 20}, {170, 38}, {40, 12}, {120, 40}} {
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m = updated.(Model)
+		cur := m.cursorDraftRow()
+		if cur < m.draftOffset || cur >= m.draftOffset+m.ComposerRows() {
+			t.Errorf("%dx%d: caret row %d is outside the window %d..%d",
+				size[0], size[1], cur, m.draftOffset, m.draftOffset+m.ComposerRows())
+		}
+		if blankRows(windowText(m)) {
+			t.Errorf("%dx%d: blank window", size[0], size[1])
+		}
+	}
+}
+
+// TestDiagReportsTheComposerWithoutItsText checks that the diagnostics
+// panel says where the composer's window is, and never prints the draft.
+func TestDiagReportsTheComposerWithoutItsText(t *testing.T) {
+	m := testModel()
+	m = pasteText(m, "secret draft text\nsecond line")
+	panel := strings.Join(m.diagRows(), "\n")
+	if strings.Contains(panel, "secret") {
+		t.Errorf("the diagnostics panel printed the draft:\n%s", panel)
+	}
+	for _, want := range []string{"draft", "composer", "textarea"} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("the diagnostics panel has no %q row:\n%s", want, panel)
+		}
+	}
+}

@@ -714,6 +714,10 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The rows are wrapped again, so a selection would point at
 		// different text than it did before.
 		m.clearSelection()
+		// The draft wraps differently at the new width: its height and
+		// the window around the caret are recomputed, so the caret is
+		// never left outside the composer after a resize.
+		m.fitComposer()
 		return m, nil
 	case tea.KeyboardEnhancementsMsg:
 		m.keyDisambiguation = msg.SupportsKeyDisambiguation()

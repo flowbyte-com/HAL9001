@@ -178,10 +178,14 @@ func (m *Model) scrollDraft(delta int) {
 //
 // The textarea renders the whole draft; HAL shows the slice the operator
 // scrolled to, so the wheel can move the window without the textarea
-// pulling it back to the cursor. The window never runs past the rows the
-// textarea actually drew: a view shorter than the draft (a widget that
-// clamps its own height, a stale frame) shows its last rows instead of
-// blank ones.
+// pulling it back to the cursor.
+//
+// Two safeguards keep the window honest. The textarea may have scrolled
+// its own view (it does when its height is smaller than its content, for
+// example between a width change and the next frame), so the window is
+// aligned with that offset instead of applying both offsets; and a window
+// that would show nothing while the draft has text falls back to the
+// draft's own rows. A blank composer over a full draft is never correct.
 func (m Model) composerWindow(visible int) []string {
 	if visible < 1 {
 		visible = 1
@@ -193,7 +197,13 @@ func (m Model) composerWindow(visible int) []string {
 		return splitRows(m.composer.View(), visible)
 	}
 	rows := strings.Split(m.composer.View(), "\n")
-	offset := m.draftOffset
+	if len(rows) < total {
+		// The textarea's view is shorter than the draft: it is clamping
+		// its own height, or its content is a frame behind. Its rows
+		// cannot describe the draft, so draw the draft itself.
+		return m.draftWindow(visible)
+	}
+	offset := m.draftOffset - m.composer.ScrollYOffset()
 	if maxOffset := len(rows) - visible; offset > maxOffset {
 		offset = maxOffset
 	}
@@ -208,5 +218,56 @@ func (m Model) composerWindow(visible int) []string {
 		}
 		out = append(out, "")
 	}
+	if strings.TrimSpace(m.composer.Value()) != "" && blankRows(out) {
+		return m.draftWindow(visible)
+	}
 	return out
+}
+
+// draftWindow renders the draft's own rows, without the textarea.
+//
+// It is the fallback for a textarea view that has gone blank: the rows
+// come from the same wrap that drives the height and the cursor, so the
+// operator sees the text they wrote even when the widget's rendering
+// cannot be trusted.
+func (m Model) draftWindow(visible int) []string {
+	lines := m.draftLines()
+	offset := m.draftOffset
+	if maxOffset := len(lines) - visible; offset > maxOffset {
+		offset = maxOffset
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]string, 0, visible)
+	for i := 0; i < visible; i++ {
+		if offset+i < len(lines) {
+			out = append(out, lines[offset+i])
+			continue
+		}
+		out = append(out, "")
+	}
+	return out
+}
+
+// draftLines is the whole draft as wrapped display rows.
+func (m Model) draftLines() []string {
+	width := m.draftWidth()
+	lines := make([]string, 0, 16)
+	for _, line := range strings.Split(m.composer.Value(), "\n") {
+		for _, wrapped := range wrapRunes([]rune(line), width) {
+			lines = append(lines, string(wrapped))
+		}
+	}
+	return lines
+}
+
+// blankRows reports whether every row is empty.
+func blankRows(rows []string) bool {
+	for _, row := range rows {
+		if strings.TrimSpace(stripANSI(row)) != "" {
+			return false
+		}
+	}
+	return true
 }
