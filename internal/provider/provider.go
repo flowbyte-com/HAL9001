@@ -30,6 +30,16 @@ type ToolCall struct {
 	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
+// Tool is one function offered to the model. HAL offers exactly one: a
+// proposal to save a file, which carries no authority at all. A call is
+// reviewed and approved by the operator before anything happens.
+type Tool struct {
+	Name        string
+	Description string
+	// Parameters is the JSON schema of the arguments.
+	Parameters string
+}
+
 // Response is one provider turn. Reasoning carries provider thinking
 // metadata when the API returns it (for example a reasoning_content
 // field). It is never displayed as the answer and never stored as

@@ -28,6 +28,17 @@ type Streamer interface {
 	ChatStream(ctx context.Context, messages []Message, model Model, emit func(Delta) error) (Response, error)
 }
 
+// ToolStreamer is optionally implemented by providers that can offer
+// structured functions and report the calls a model makes.
+//
+// Tool calls are proposals, never authority: the adapter only reports what
+// the model asked for, and the engine decides whether it may even be
+// prepared. A provider that does not implement this interface simply has
+// no tool-call capability, and the conversation continues without one.
+type ToolStreamer interface {
+	ChatStreamTools(ctx context.Context, messages []Message, model Model, tools []Tool, emit func(Delta) error) (Response, error)
+}
+
 // OpenAICompatible talks to any OpenAI-style /chat/completions endpoint
 // (custom base URL, bearer key, model id). It sends no reasoning or
 // thinking parameters: adapters must only use parameters the API
@@ -74,6 +85,29 @@ type openAIMessage struct {
 	Content string `json:"content"`
 }
 
+// openAITool is the wire form of one offered function.
+type openAITool struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Parameters  json.RawMessage `json:"parameters,omitempty"`
+	} `json:"function"`
+}
+
+// openAIToolCall is one call as the provider reports it. Streaming
+// providers send it in pieces: Index identifies the call, and Name and
+// Arguments arrive split across chunks.
+type openAIToolCall struct {
+	Index    *int   `json:"index,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function"`
+}
+
 type openAIRequest struct {
 	Model     string          `json:"model"`
 	Messages  []openAIMessage `json:"messages"`
@@ -86,6 +120,10 @@ type openAIRequest struct {
 	// stream. Providers that do not understand the field ignore it;
 	// without it most providers never send usage at all.
 	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	// Tools offers functions to the model. Only the engine's single
+	// proposal operation is ever offered, and a call carries no
+	// authority: it is reviewed before anything happens.
+	Tools []openAITool `json:"tools,omitempty"`
 }
 
 type streamOptions struct {
@@ -94,12 +132,14 @@ type streamOptions struct {
 
 type openAIChoice struct {
 	Delta *struct {
-		Content          *string `json:"content"`
-		ReasoningContent *string `json:"reasoning_content"`
+		Content          *string          `json:"content"`
+		ReasoningContent *string          `json:"reasoning_content"`
+		ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
 	} `json:"delta,omitempty"`
 	Message *struct {
-		Content          *string `json:"content"`
-		ReasoningContent *string `json:"reasoning_content"`
+		Content          *string          `json:"content"`
+		ReasoningContent *string          `json:"reasoning_content"`
+		ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
 	} `json:"message,omitempty"`
 	FinishReason *string `json:"finish_reason,omitempty"`
 }
@@ -127,6 +167,11 @@ type openAIResponse struct {
 }
 
 func (o *OpenAICompatible) requestBody(messages []Message, model Model, stream bool) ([]byte, error) {
+	return o.requestBodyTools(messages, model, stream, nil)
+}
+
+// requestBodyTools builds one request, optionally offering functions.
+func (o *OpenAICompatible) requestBodyTools(messages []Message, model Model, stream bool, tools []Tool) ([]byte, error) {
 	out := openAIRequest{Model: model.ID, Stream: stream}
 	for _, m := range messages {
 		out.Messages = append(out.Messages, openAIMessage{Role: m.Role, Content: m.Content})
@@ -146,7 +191,72 @@ func (o *OpenAICompatible) requestBody(messages []Message, model Model, stream b
 	if stream {
 		out.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
+	for _, tool := range tools {
+		wire := openAITool{Type: "function"}
+		wire.Function.Name = tool.Name
+		wire.Function.Description = tool.Description
+		if tool.Parameters != "" {
+			wire.Function.Parameters = json.RawMessage(tool.Parameters)
+		}
+		out.Tools = append(out.Tools, wire)
+	}
 	return json.Marshal(out)
+}
+
+// toolCallsFrom converts the provider's calls into the engine's form.
+func toolCallsFrom(calls []openAIToolCall) []ToolCall {
+	out := make([]ToolCall, 0, len(calls))
+	for _, c := range calls {
+		if strings.TrimSpace(c.Function.Name) == "" {
+			continue
+		}
+		call := ToolCall{ID: c.ID, Name: c.Function.Name}
+		if raw := strings.TrimSpace(c.Function.Arguments); raw != "" {
+			var args map[string]any
+			if err := json.Unmarshal([]byte(raw), &args); err != nil {
+				// An unparseable call is still reported: the engine
+				// refuses it rather than pretending it never happened.
+				call.Arguments = map[string]any{"_invalid": raw}
+			} else {
+				call.Arguments = args
+			}
+		}
+		out = append(out, call)
+	}
+	return out
+}
+
+// toolCallSet accumulates streamed tool calls by index.
+type toolCallSet struct {
+	calls []openAIToolCall
+}
+
+func (s *toolCallSet) add(deltas []openAIToolCall) {
+	for _, d := range deltas {
+		idx := len(s.calls)
+		if d.Index != nil {
+			idx = *d.Index
+		}
+		if idx < 0 {
+			continue
+		}
+		for len(s.calls) <= idx {
+			s.calls = append(s.calls, openAIToolCall{})
+		}
+		call := &s.calls[idx]
+		if d.ID != "" {
+			call.ID = d.ID
+		}
+		if d.Type != "" {
+			call.Type = d.Type
+		}
+		call.Function.Name += d.Function.Name
+		call.Function.Arguments += d.Function.Arguments
+	}
+}
+
+func (s *toolCallSet) list() []openAIToolCall {
+	return s.calls
 }
 
 func (o *OpenAICompatible) post(ctx context.Context, body []byte, stream bool) (*http.Response, error) {
@@ -233,6 +343,7 @@ func (o *OpenAICompatible) Chat(ctx context.Context, messages []Message, model M
 		if parsed.Choices[0].Message.ReasoningContent != nil {
 			out.Reasoning = *parsed.Choices[0].Message.ReasoningContent
 		}
+		out.ToolCalls = toolCallsFrom(parsed.Choices[0].Message.ToolCalls)
 	}
 	if parsed.Choices[0].FinishReason != nil {
 		out.FinishReason = *parsed.Choices[0].FinishReason
@@ -313,7 +424,18 @@ func (o *OpenAICompatible) Models(ctx context.Context) ([]string, error) {
 // (TurnTimeout). Every bound closes the HTTP request, so an abandoned
 // turn stops consuming tokens instead of silently running on.
 func (o *OpenAICompatible) ChatStream(ctx context.Context, messages []Message, model Model, emit func(Delta) error) (Response, error) {
-	body, err := o.requestBody(messages, model, true)
+	return o.chatStream(ctx, messages, model, nil, emit)
+}
+
+// ChatStreamTools implements ToolStreamer: the same streamed turn, with
+// function definitions offered to the model. Any call the model makes is
+// reported in Response.ToolCalls; nothing is executed here.
+func (o *OpenAICompatible) ChatStreamTools(ctx context.Context, messages []Message, model Model, tools []Tool, emit func(Delta) error) (Response, error) {
+	return o.chatStream(ctx, messages, model, tools, emit)
+}
+
+func (o *OpenAICompatible) chatStream(ctx context.Context, messages []Message, model Model, tools []Tool, emit func(Delta) error) (Response, error) {
+	body, err := o.requestBodyTools(messages, model, true, tools)
 	if err != nil {
 		return Response{}, err
 	}
@@ -342,6 +464,7 @@ func (o *OpenAICompatible) ChatStream(ctx context.Context, messages []Message, m
 	stream := &watchedBody{body: resp.Body, watch: watch}
 
 	var out Response
+	var calls toolCallSet
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	finished := false
@@ -403,6 +526,9 @@ func (o *OpenAICompatible) ChatStream(ctx context.Context, messages []Message, m
 		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta == nil {
 			continue
 		}
+		if tc := chunk.Choices[0].Delta.ToolCalls; len(tc) > 0 {
+			calls.add(tc)
+		}
 		delta := Delta{}
 		if c := chunk.Choices[0].Delta.Content; c != nil && *c != "" {
 			delta.Text = *c
@@ -432,7 +558,7 @@ func (o *OpenAICompatible) ChatStream(ctx context.Context, messages []Message, m
 			// out the full idle window for a provider that never closes.
 			watch.grace()
 		}
-		if delta.Text != "" || delta.Reasoning != "" {
+		if emit != nil && (delta.Text != "" || delta.Reasoning != "") {
 			if err := emit(delta); err != nil {
 				stats.Status = StatusCancelled
 				stats.Duration = time.Since(stats.StartedAt)
@@ -441,6 +567,7 @@ func (o *OpenAICompatible) ChatStream(ctx context.Context, messages []Message, m
 			}
 		}
 	}
+	out.ToolCalls = toolCallsFrom(calls.list())
 	stats.Duration = time.Since(stats.StartedAt)
 	if err := scanner.Err(); err != nil {
 		// A provider that keeps the socket open after finish_reason is
