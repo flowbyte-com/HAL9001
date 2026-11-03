@@ -138,6 +138,52 @@ viewport on a long paste, and the window HAL sliced out of the scrolled
 view could land past the end — a blank composer over a buffer that held
 the whole draft.
 
+## 666: one approved write
+
+`internal/workspace` is the only code that may write a file because a model
+asked for it. It owns a root (`~/HAL` by default), a proposal, and an audit
+trail, and nothing else in the application touches the filesystem for a
+model-requested write.
+
+The transaction is Prepare → Review → Approve/Reject → Execute once →
+444:
+
+- **Prepare** validates the destination (a plain relative path, no `..`, no
+  absolute path, no drive letter, no NUL, portable component names), proves
+  containment with `filepath.Rel`, refuses symbolic links on every existing
+  component, bounds the size (1 MiB) and requires UTF-8 text. It copies the
+  bytes, hashes them, and records whether a regular file would be replaced.
+  It never creates, modifies or removes anything.
+- **Review** is a Bubble Tea overlay (`viewApprove`). It renders the exact
+  path, create-versus-overwrite, the size, the digest, the turn, the whole
+  contents (scrollable) and the two decisions. The footer reads
+  `666 REQUESTED`; the interface cannot start a new turn from it.
+- **Approve** is `Ctrl+Y` in that view, and only there. The command runs the
+  write off the event loop after `666 WRITING` is on screen.
+- **Execute once** re-validates everything, recomputes the digest, creates
+  missing parent directories one component at a time (refusing links), and
+  then writes: a create uses `O_CREATE|O_EXCL`, so a file that appeared
+  after the review is never replaced; a replace writes a temporary file
+  beside the destination and renames it, and only after `os.SameFile`
+  proves the destination is still the file that was reviewed. A rename
+  replaces the directory entry, so a link swapped in cannot redirect the
+  write. A replayed proposal fails by construction: the created file exists,
+  and the replaced one is no longer the reviewed inode.
+- **Reject** (`Ctrl+N`, `Esc`), a session change, another pending request and
+  quitting without deciding all consume the request. The audit records why.
+
+The model reaches this only through the one tool the engine offers
+(`write_file`), and only when a workspace is configured. The provider adapter
+reports tool calls; the engine validates the arguments and prepares the
+proposal; the interface decides. A provider that refuses function definitions
+is retried once without them and the conversation continues, so tool support
+is never a prerequisite for talking to HAL.
+
+The audit trail (`~/.hal9001/audit.jsonl`, mode 0600) records the timestamp,
+session, operation, workspace-relative path, digest, size, decision and
+outcome — never the document — and is pruned to six days by rewriting the
+file atomically. A failure to write the trail never changes a decision.
+
 Status notices live in one row under the footer that is always part of
 the frame, so a notice appearing or expiring never shifts anything. A new
 notice replaces the old one, and every notice is put on a one-shot timer;

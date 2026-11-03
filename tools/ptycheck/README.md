@@ -66,6 +66,12 @@ something fails.
   terminal colours and cursor.
 - The active conversation survives `/clear` and a relaunch, an empty new
   session stays selected, and `/sessions` recovers the previous one.
+- A `[[save PATH]]` prompt makes the stub propose a write: the review shows
+  the destination, create-versus-overwrite, size, digest and contents, and
+  `666 REQUESTED`; nothing is written before approval. `Ctrl+Y` saves exactly
+  the reviewed bytes and returns to 444; `Ctrl+N` and `Esc` reject; typed
+  text never decides it; paths outside the workspace are refused; overwrites
+  are shown as such; and a second write needs its own approval.
 - The footer row is contextual: the permission line on an empty composer,
   `Enter send · Ctrl+J newline · Ctrl+U clear · /help` while there is a
   draft, and `Ctrl+Z restore · /help` after `Ctrl+U` — on every theme and

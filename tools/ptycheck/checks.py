@@ -19,6 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pty_drive
+from fake_provider import SAVE_BODY
 from pty_drive import HOME, run
 from termsim import render
 
@@ -758,6 +759,143 @@ def footer_hint_checks():
         pty_drive.CONFIG = original
 
 
+def approval_checks():
+    """666: one operator-approved write, and nothing else.
+
+    The fake provider proposes a write when the prompt contains
+    ``[[save PATH]]``. The workspace is a temporary directory, so these
+    checks never touch the operator's own ~/HAL.
+    """
+    # Outside HAL9001_HOME on purpose: the application data directory is
+    # protected, and the checks must exercise a normal workspace.
+    workspace_dir = os.path.join(os.path.dirname(HOME.rstrip("/")), "halworkspace")
+
+    def reset_workspace():
+        if os.path.isdir(workspace_dir):
+            import shutil
+            shutil.rmtree(workspace_dir)
+        os.makedirs(workspace_dir, exist_ok=True)
+
+    def saved(rel):
+        path = os.path.join(workspace_dir, rel)
+        try:
+            with open(path, "rb") as fh:
+                return fh.read()
+        except OSError:
+            return None
+
+    def run_save(extra, rel="notes/letter.md", timeout=9.0):
+        script = [(1.5, ("Please [[save %s]] this.\r" % rel).encode())]
+        script.extend(extra)
+        return run(script, timeout=timeout, fresh=True, session="writecheck")
+
+    previous = os.environ.get("HAL9001_WORKSPACE")
+    os.environ["HAL9001_WORKSPACE"] = workspace_dir
+    try:
+        # Default: 444, and a request only opens the review.
+        reset_workspace()
+        text = render(run_save([(2.5, b"")])).text()
+        check("write: the review shows the destination",
+              "notes/letter.md" in text, text)
+        check("write: the review says it creates the file", "create" in text, text)
+        check("write: the review shows the contents",
+              "Dear hosting provider" in text, text)
+        check("write: the review names 666",
+              "666 REQUESTED" in text, text)
+        check("write: nothing is written before approval",
+              saved("notes/letter.md") is None, repr(saved("notes/letter.md")))
+        check("write: the footer leaves 444 while pending",
+              "444 READ ONLY" not in text, text)
+
+        # Approve: exactly the reviewed bytes, then back to 444. The
+        # capture happens while the completion notice is still on screen.
+        reset_workspace()
+        raw = run_save([(2.5, b"\x19"), (1.5, b"")], timeout=6.0)
+        text = render(raw).text()
+        body = saved("notes/letter.md")
+        check("write: approval saves the exact contents",
+              body is not None and body.decode() == SAVE_BODY, repr(body))
+        check("write: approval reports the destination",
+              "Saved" in text and "notes/letter.md" in text, text)
+        check("write: the interface returns to 444",
+              "444 READ ONLY" in text, text)
+        check("write: 666 is not left behind", "666" not in text, text)
+
+        # Reject with the chord.
+        reset_workspace()
+        text = render(run_save([(2.5, b"\x0e"), (0.8, b"")], timeout=4.2)).text()
+        check("write: rejection writes nothing",
+              saved("notes/letter.md") is None, repr(saved("notes/letter.md")))
+        check("write: rejection is reported", "rejected" in text, text)
+        check("write: rejection returns to 444",
+              "444 READ ONLY" in text and "666" not in text, text)
+
+        # Esc rejects too: the default is refusal.
+        reset_workspace()
+        text = render(run_save([(2.5, b"\x1b"), (0.8, b"")], timeout=4.2)).text()
+        check("write: Esc rejects the request",
+              saved("notes/letter.md") is None, repr(saved("notes/letter.md")))
+        check("write: Esc returns to 444",
+              "444 READ ONLY" in text and "666" not in text, text)
+
+        # Typed text, including "yes", never decides the review.
+        reset_workspace()
+        text = render(run_save([(2.5, b"yes\r"), (1.0, b"")], timeout=4.4)).text()
+        check("write: typed yes does not approve",
+              saved("notes/letter.md") is None, repr(saved("notes/letter.md")))
+        check("write: the review stays open after typed text",
+              "666 REQUESTED" in text, text)
+
+        # A destination outside the workspace is refused in conversation.
+        reset_workspace()
+        text = render(run_save([(1.5, b"")], rel="../escape.md", timeout=8.0)).text()
+        check("write: a path outside the workspace is refused",
+              "can't save that" in text, text)
+        check("write: no review opens for a refused path",
+              "666 REQUESTED" not in text, text)
+        check("write: the refused path wrote nothing",
+              not os.path.exists(os.path.join(workspace_dir, "..", "escape.md")),
+              workspace_dir)
+
+        # Overwrite: shown as one, and only replaced when approved.
+        reset_workspace()
+        os.makedirs(os.path.join(workspace_dir, "notes"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "notes", "letter.md"), "w") as fh:
+            fh.write("old letter")
+        text = render(run_save([(2.5, b"")])).text()
+        check("write: an existing file is shown as an overwrite",
+              "OVERWRITE" in text, text)
+        check("write: reviewing an overwrite keeps the old file",
+              (saved("notes/letter.md") or b"").decode() == "old letter",
+              repr(saved("notes/letter.md")))
+        text = render(run_save([(2.5, b"\x19"), (1.5, b"")], timeout=6.0)).text()
+        check("write: approving the overwrite replaces the file",
+              (saved("notes/letter.md") or b"").decode() == SAVE_BODY,
+              repr(saved("notes/letter.md")))
+        check("write: the overwrite reports a replacement",
+              "Replaced" in text, text)
+
+        # A second write needs its own approval.
+        reset_workspace()
+        text = render(run([(1.5, b"Please [[save one.md]] this.\r"), (2.2, b"\x19"),
+                           (1.0, b"Please [[save two.md]] this.\r"), (2.2, b"")],
+                          timeout=12.0, fresh=True, session="writecheck")).text()
+        check("write: the first approval saved its file",
+              saved("one.md") is not None, repr(saved("one.md")))
+        check("write: a second write waits for its own approval",
+              saved("two.md") is None, repr(saved("two.md")))
+        check("write: the second review is pending", "666 REQUESTED" in text, text)
+
+    finally:
+        if previous is None:
+            os.environ.pop("HAL9001_WORKSPACE", None)
+        else:
+            os.environ["HAL9001_WORKSPACE"] = previous
+        if os.path.isdir(workspace_dir):
+            import shutil
+            shutil.rmtree(workspace_dir)
+
+
 def composer_mouse_checks():
     """The wheel over the composer scrolls the draft instead of the
     conversation, and the caret stays where it was."""
@@ -961,6 +1099,7 @@ def main():
     paste_checks()
     draft_notice_checks()
     footer_hint_checks()
+    approval_checks()
     composer_mouse_checks()
 
     # Common terminal sizes keep the frame the right size.

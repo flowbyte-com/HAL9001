@@ -7,8 +7,14 @@ through prompts that other agents implement.
 HAL itself never implements.
 
 Its operating principle is **444: read-only authority, permanently enforced.**
-There are no coding profiles, execution modes, or switches that can turn HAL
-into an implementation agent.
+HAL may converse, reason and prepare documents, but it cannot run commands,
+edit arbitrary files or act on its own. There are no coding profiles, execution
+modes or switches that turn HAL into an implementation agent.
+
+The one exception is deliberately narrow: **666**, a single-use authorisation
+for one operator-approved file write inside a dedicated workspace. It is not a
+mode, a session or a token the model can hold. See
+[One approved write](#one-approved-write-666).
 
 ## Status
 
@@ -42,6 +48,7 @@ hal9001                                    # chat (Enter sends, Ctrl+J adds a li
 hal9001 --session work                     # resume or start a named session
 hal9001 --list-sessions                    # list stored conversations
 hal9001 --no-mouse                         # leave the pointer to the terminal
+hal9001 --workspace ~/HAL                  # where an approved write may land
 hal9001 --provider openai-compatible \
   --endpoint https://api.minimax.io/v1 \
   --model MiniMax-M3.1-Flash               # flags win over the file
@@ -71,6 +78,8 @@ footer stay at the bottom.
 | `Home` / `End` | Jump to the start / end of the conversation |
 | `Ctrl+U` | Clear the entire draft (Ctrl+Z restores it) |
 | `Ctrl+Z` | Restore the last cleared draft |
+| `Ctrl+Y` | Approve the write request on screen (approval view only) |
+| `Ctrl+N` | Reject the write request on screen (approval view only) |
 | mouse wheel | Scroll history, or the draft |
 | left drag | Select conversation text and copy it |
 
@@ -217,6 +226,31 @@ Nothing is ever deleted: earlier conversations, including ones from
 before titles existed, stay on disk and keep working.
 
 HAL remembers which conversation was active,
+
+**One approved write (666).** HAL's authority stays 444. When a model asks to
+save a file, it can only *propose*: HAL prepares the operation — one
+workspace-relative path and the exact bytes — and shows it for review. Nothing
+touches the filesystem until the operator approves that one operation.
+
+- The workspace is `~/HAL` by default (`--workspace` or `HAL9001_WORKSPACE`
+  changes it). Proposed writes can never reach `~/.hal9001/`, a system
+  directory or anything outside the workspace.
+- The review shows the destination, whether it creates or **overwrites** a
+  file, the size, the SHA-256 digest, the conversation turn and the full
+  contents; `↑`/`↓`/`PgUp`/`PgDn`/`Home`/`End` scroll it.
+- `Ctrl+Y` approves, `Ctrl+N` or `Esc` rejects. Only those chords in the
+  review can decide it: typed text, a paste or a model message never can.
+- Approval writes once, reports the destination, and returns to 444. A second
+  write needs a second approval. A create never replaces a file that appeared
+  in the meantime, and a replace fails if the destination changed after the
+  review.
+- The status line reads `444 READ ONLY`, `666 REQUESTED` while a request is
+  waiting, and `666 WRITING` for the one operation in progress.
+- Decisions are recorded in `~/.hal9001/audit.jsonl` — time, session, path,
+  digest, decision and outcome, never the document — and records older than
+  six days are pruned.
+- Saving a file never gives HAL the ability to execute it: there is no shell,
+  no interpreter, no external program and no general filesystem editing.
 
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;
