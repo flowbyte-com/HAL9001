@@ -289,6 +289,18 @@ type Model struct {
 	// selMoved records that the pointer actually travelled. An ordinary
 	// click must never copy anything.
 	selMoved bool
+	// selPointer is the last position of the pointer during a drag, in
+	// screen coordinates. The auto-scroll needs it to know when the
+	// pointer rests at the edge of the conversation.
+	selPointerX     int
+	selPointerY     int
+	selPointerValid bool
+	// selScrollDir is the direction of the auto-scroll: -1 up, 0 idle,
+	// 1 down.
+	selScrollDir int
+	// selScrollGen identifies the running auto-scroll chain. A tick of
+	// an older chain is ignored.
+	selScrollGen int
 	// conv maps the conversation's display cells to the text behind
 	// them. It is rebuilt with the conversation.
 	conv convMap
@@ -660,6 +672,13 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.newSession()
 			return m, nil
 		case "esc":
+			if m.selecting {
+				// A drag in progress is cancelled: the selection and
+				// its auto-scroll go away.
+				m.clearSelection()
+				m.notice = "Selection cleared."
+				return m, nil
+			}
 			if m.sending {
 				m.stopStream()
 				m.sending = false
@@ -722,6 +741,8 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.mouseDrag(msg)
 	case tea.MouseReleaseMsg:
 		return m.mouseRelease(msg)
+	case selectionScrollMsg:
+		return m.selectionScrollTick(msg)
 	case streamThinkingMsg:
 		if !m.currentTurn(msg.id) {
 			return m, nil
@@ -1013,6 +1034,14 @@ func (m Model) updateWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	if msg.Y >= 0 && msg.Y < 2+m.frame.viewport {
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
+		if m.selecting {
+			// The wheel takes over from the auto-scroll: only one of
+			// them moves the conversation. The selection follows the
+			// content, so it still covers what the pointer is over.
+			m.stopSelectionScroll()
+			m.selPointerX, m.selPointerY, m.selPointerValid = msg.X, msg.Y, true
+			m.extendSelectionToPointer()
+		}
 		return m, cmd
 	}
 	// The wheel moves the composer window. It must not reach the
