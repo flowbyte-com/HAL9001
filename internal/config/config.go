@@ -33,7 +33,7 @@ const (
 	EnvTurnTimeout = "HAL9001_TURN_TIMEOUT"
 	// EnvMouse turns terminal mouse reporting on or off: 1/true/yes/on
 	// enables it, 0/false/no/off disables it. Unset leaves the default,
-	// which is enabled.
+	// which is enabled. A value that is neither is refused.
 	EnvMouse = "HAL9001_MOUSE"
 )
 
@@ -333,6 +333,10 @@ func envInt(name string) int {
 // Precedence: an explicit flag wins, then the environment, then the
 // default, which is enabled. Asking for both --mouse and --no-mouse is
 // a contradiction and is refused rather than resolved silently.
+//
+// A malformed environment value is only an error when the environment
+// is what decides. A flag that says what to do wins, and a malformed
+// value that no longer decides anything is irrelevant.
 func resolveMouse(fs *flag.FlagSet, mouseFlag, noMouseFlag bool) (bool, error) {
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
@@ -345,24 +349,37 @@ func resolveMouse(fs *flag.FlagSet, mouseFlag, noMouseFlag bool) (bool, error) {
 	case given["no-mouse"]:
 		return !noMouseFlag, nil
 	}
-	if v, ok := envMouse(EnvMouse); ok {
-		return v, nil
+	value, set, err := envMouse(EnvMouse)
+	if err != nil {
+		return false, err
+	}
+	if set {
+		return value, nil
 	}
 	return true, nil
 }
 
-// envMouse reads a mouse setting from the environment. It reports
-// whether the variable was set: 1/true/yes/on enables mouse reporting,
-// 0/false/no/off disables it, and anything else is ignored so a typo
-// cannot quietly change the terminal's behaviour.
-func envMouse(name string) (bool, bool) {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "1", "true", "yes", "on":
-		return true, true
-	case "0", "false", "no", "off":
-		return false, true
+// envMouse reads the mouse setting from the environment.
+//
+// It reports whether the variable was set: 1/true/yes/on enables mouse
+// reporting, 0/false/no/off disables it. A value that is neither is an
+// error, so a typo cannot quietly change how the terminal behaves. Only
+// the one variable is read and reported: nothing else about the
+// environment is touched.
+func envMouse(name string) (bool, bool, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return false, false, nil
 	}
-	return false, false
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "on":
+		return true, true, nil
+	case "0", "false", "no", "off":
+		return false, true, nil
+	}
+	return false, false, fmt.Errorf(
+		"%s=%q is not a valid mouse setting: use 1 or 0 (also true/false, yes/no, on/off)",
+		name, raw)
 }
 
 // firstNonZero returns the first positive value.

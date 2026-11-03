@@ -274,15 +274,18 @@ func TestMouseDefaultsOnWithOverrides(t *testing.T) {
 			t.Errorf("HAL9001_MOUSE=%q must disable mouse mode", v)
 		}
 	}
-	// A malformed value is ignored rather than quietly changing the
-	// terminal's behaviour.
+	// A malformed value is refused: a typo must not quietly change
+	// the terminal's behaviour.
 	t.Setenv("HAL9001_MOUSE", "maybe")
-	cfg, err = LoadErr(nil)
-	if err != nil {
-		t.Fatal(err)
+	_, err = LoadErr(nil)
+	if err == nil {
+		t.Fatal("a malformed HAL9001_MOUSE must be an error")
 	}
-	if !cfg.Mouse {
-		t.Error("a malformed HAL9001_MOUSE must leave the default alone")
+	if !strings.Contains(err.Error(), "HAL9001_MOUSE") {
+		t.Errorf("the error must name the variable: %v", err)
+	}
+	if !strings.Contains(err.Error(), "maybe") {
+		t.Errorf("the error must show the value: %v", err)
 	}
 	t.Setenv("HAL9001_MOUSE", "")
 	cfg, err = LoadErr([]string{"--mouse"})
@@ -347,6 +350,57 @@ func TestMouseFlagBeatsEnvironment(t *testing.T) {
 	}
 	if cfg.Mouse {
 		t.Error("HAL9001_MOUSE=0 must win over the default")
+	}
+}
+
+// TestMouseFlagBeatsMalformedEnvironment checks that a valid flag is not
+// blocked by a malformed environment value: the flag decides, so the
+// malformed value is irrelevant.
+func TestMouseFlagBeatsMalformedEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL9001_HOME", dir)
+	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "none.json"))
+	t.Setenv("HAL9001_MOUSE", "maybe")
+
+	cfg, err := LoadErr([]string{"--mouse"})
+	if err != nil {
+		t.Fatalf("a valid flag must not be blocked: %v", err)
+	}
+	if !cfg.Mouse {
+		t.Error("--mouse must enable mouse mode")
+	}
+	cfg, err = LoadErr([]string{"--no-mouse"})
+	if err != nil {
+		t.Fatalf("a valid flag must not be blocked: %v", err)
+	}
+	if cfg.Mouse {
+		t.Error("--no-mouse must disable mouse mode")
+	}
+}
+
+// TestMouseErrorHoldsNoSecrets checks that the diagnostic for a
+// malformed value names the one variable that is wrong and nothing else
+// from the environment.
+func TestMouseErrorHoldsNoSecrets(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL9001_HOME", dir)
+	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "none.json"))
+	t.Setenv("HAL9001_API_KEY", "super-secret-key")
+	t.Setenv("HAL9001_MOUSE", "maybe")
+
+	_, err := LoadErr(nil)
+	if err == nil {
+		t.Fatal("a malformed HAL9001_MOUSE must be an error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "super-secret-key") {
+		t.Errorf("the error leaks the API key: %v", err)
+	}
+	if strings.Contains(msg, "HAL9001_API_KEY") {
+		t.Errorf("the error names an unrelated variable: %v", err)
+	}
+	if !strings.Contains(msg, "HAL9001_MOUSE") {
+		t.Errorf("the error must name the variable: %v", err)
 	}
 }
 
