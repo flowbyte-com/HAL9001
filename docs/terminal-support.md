@@ -166,8 +166,11 @@ Terminal differences to check by hand:
   conversation area shrinks to one row.
 - **IME input.** Composed input is handled by the terminal; HAL does not
   add its own input method.
-- **Not verified here.** GNOME Terminal itself was not available in the
-  verification environment, so its behaviour is inferred from the byte
-  sequences it is documented to send (CR for Enter, LF for `Ctrl+J`,
-  ESC CR for `Alt+Enter`, no Kitty protocol). The pty tests exercise
-  exactly those byte sequences.
+- **Verified in GNOME Terminal.** The mouse behaviour was confirmed by
+  hand in GNOME Terminal: with `--mouse`, a plain left drag highlights
+  conversation text and the release copies it, and the wheel scrolls the
+  history. Without `--mouse` the terminal's own selection, right-click
+  paste and middle-click paste are untouched. The key handling is still
+  inferred from the byte sequences the terminal is documented to send
+  (CR for Enter, LF for `Ctrl+J`, ESC CR for `Alt+Enter`, no Kitty
+  protocol); the pty tests exercise exactly those byte sequences.
