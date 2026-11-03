@@ -329,18 +329,64 @@ def run_fixture_text(session):
     return run_fixture(session)
 
 
-def has_reverse_video(text):
-    """True when the stream turns the reverse-video attribute on.
+def marked_spans(text):
+    """The runs of text the terminal was told to draw in reverse video.
 
-    The terminal renderer merges the attributes of a run of cells into a
-    single escape sequence, so the attribute is looked for as a
-    parameter rather than as a sequence of its own.
+    The stream is walked the way a terminal reads it: a cursor move sets
+    the position, a newline moves to the next row, and every other
+    character takes a cell. The renderer merges the attributes of a run
+    of cells into one escape sequence, so a marked run is a run of
+    cells with the reverse-video attribute.
+
+    Each span is (row, column, text), with the row and the column as
+    the terminal counts them: both start at one.
     """
-    for match in re.finditer(r"\x1b\[([0-9;]*)m", text):
-        for param in match.group(1).split(";"):
-            if param == "7":
-                return True
-    return False
+    spans = []
+    row, col = 1, 1
+    reverse = False
+    marked = {}
+    csi = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z])")
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\x1b":
+            m = csi.match(text, i)
+            if not m:
+                i += 1
+                continue
+            params, final = m.group(1), m.group(2)
+            i = m.end()
+            if final == "m":
+                for p in params.split(";"):
+                    if p == "7":
+                        reverse = True
+                    elif p in ("27", "0", ""):
+                        reverse = False
+            elif final in "Hf":
+                parts = [p for p in params.split(";") if p]
+                row = int(parts[0]) if parts else 1
+                col = int(parts[1]) if len(parts) > 1 else 1
+            elif final == "J":
+                marked = {}
+                row, col = 1, 1
+            continue
+        if ch == "\r":
+            col = 1
+            i += 1
+            continue
+        if ch == "\n":
+            row += 1
+            col = 1
+            i += 1
+            continue
+        if reverse:
+            marked.setdefault(row, []).append((col, ch))
+        col += 1
+        i += 1
+    for r in sorted(marked):
+        cells = marked[r]
+        spans.append((r, cells[0][0], "".join(c for _, c in cells).rstrip()))
+    return spans
 
 
 def selection_checks():
@@ -348,14 +394,21 @@ def selection_checks():
     it through OSC 52. The copied text must be the reply's own text: no
     interface labels, no colours."""
     write_scroll_fixture()
-    # SGR press, drag and release on one screen row.
-    dragging = run([(2.5, b"\x1b[<0;8;12M"), (0.6, b"\x1b[<32;44;12M")],
+    # SGR press and drag over three rows of the stored reply: row 12
+    # holds the "## Section 15" heading, rows 13 to 16 the paragraph
+    # below it.
+    dragging = run([(2.5, b"\x1b[<0;9;12M"), (0.8, b"\x1b[<32;40;15M")],
                    timeout=9.0, fresh=False, session="scrollfixture")
+    spans = marked_spans(dragging.decode("utf-8", "replace"))
+    conv = [s for s in spans if 12 <= s[0] <= 16]
     check("mouse: the selection is highlighted while it is dragged",
-          has_reverse_video(dragging.decode("utf-8", "replace")),
-          dragging.decode("utf-8", "replace")[-200:])
-    raw = run([(2.5, b"\x1b[<0;8;12M"), (0.5, b"\x1b[<32;44;12M"),
-               (0.5, b"\x1b[<0;44;12m")], timeout=9.0,
+          bool(conv), str(spans[:6]))
+    check("mouse: the mark never starts in the margin",
+          all(s[1] > 1 for s in conv), str(spans[:6]))
+    check("mouse: the mark covers the whole styled line",
+          any("Section 15" in s[2] for s in conv), str(spans[:6]))
+    raw = run([(2.5, b"\x1b[<0;9;12M"), (0.5, b"\x1b[<32;40;15M"),
+               (0.5, b"\x1b[<0;40;15m")], timeout=9.0,
               fresh=False, session="scrollfixture")
     text = raw.decode("utf-8", "replace")
     found = re.search(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07", text)
