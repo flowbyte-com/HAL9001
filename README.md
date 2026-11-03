@@ -135,9 +135,12 @@ in charge. `--mouse` is still accepted as an explicit way to ask for it.
 
 The setting is resolved in one order: an explicit flag, then the
 environment, then the default (on). `HAL9001_MOUSE` accepts `1`/`true`/
-`yes`/`on` and `0`/`false`/`no`/`off`; anything else is ignored, so a
-typo cannot quietly change how the terminal behaves. Asking for both
-`--mouse` and `--no-mouse` is refused instead of silently choosing one.
+`yes`/`on` and `0`/`false`/`no`/`off`; a value that is neither is
+refused with a message that names the variable, so a typo cannot quietly
+change how the terminal behaves. A flag decides on its own, so a
+malformed value that no longer decides anything is left alone. Asking
+for both `--mouse` and `--no-mouse` is refused instead of silently
+choosing one.
 
 - The wheel scrolls the conversation, or a long draft under the pointer,
   or an open panel.

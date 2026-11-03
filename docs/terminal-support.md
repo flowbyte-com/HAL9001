@@ -127,7 +127,9 @@ or a long draft, or the open panel, depending on pointer position. With
 reporting on, the terminal sends mouse events instead of selecting text,
 so the terminal's own selection needs Shift+drag. `--no-mouse` (or
 `HAL9001_MOUSE=0`) turns reporting off and gives the terminal its own
-selection back.
+selection back. `HAL9001_MOUSE` accepts `1`/`true`/`yes`/`on` and
+`0`/`false`/`no`/`off`; a value that is neither is refused with a
+message naming the variable, unless a flag has already decided.
 
 With reporting on HAL also owns the selection, the way Pi does. A left
 press starts it, the drag extends it, the release copies it through
@@ -135,6 +137,14 @@ OSC 52. The selection is drawn in reverse video while it is dragged. HAL
 maps the cells the pointer crossed back to the text it rendered, so the
 copy is the reply's own text: no colours, no borders, no `You > ` or
 `HAL > ` labels, and no line break where the renderer wrapped a line.
+
+The mark covers the text alone. The label in front of a row, the indent
+and the Markdown renderer's margin are interface, and the padding behind
+the text is not part of it, so none of them is painted — a selection
+never leaves a block in the margin. The mark is applied to each styled
+run of the row on its own, because the row resets its attributes between
+those runs and one mark around the whole row would be cancelled by the
+first reset.
 
 What the terminal cannot do is read a selection the *terminal* made, so
 the native selection and the regular clipboard stay separate things:
