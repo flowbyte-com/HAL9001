@@ -178,7 +178,10 @@ func (m *Model) scrollDraft(delta int) {
 //
 // The textarea renders the whole draft; HAL shows the slice the operator
 // scrolled to, so the wheel can move the window without the textarea
-// pulling it back to the cursor.
+// pulling it back to the cursor. The window never runs past the rows the
+// textarea actually drew: a view shorter than the draft (a widget that
+// clamps its own height, a stale frame) shows its last rows instead of
+// blank ones.
 func (m Model) composerWindow(visible int) []string {
 	if visible < 1 {
 		visible = 1
@@ -189,13 +192,21 @@ func (m Model) composerWindow(visible int) []string {
 		// fill the rest.
 		return splitRows(m.composer.View(), visible)
 	}
-	rows := splitRows(m.composer.View(), total)
+	rows := strings.Split(m.composer.View(), "\n")
 	offset := m.draftOffset
-	if offset > total-visible {
-		offset = total - visible
+	if maxOffset := len(rows) - visible; offset > maxOffset {
+		offset = maxOffset
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	return rows[offset : offset+visible]
+	out := make([]string, 0, visible)
+	for i := 0; i < visible; i++ {
+		if offset+i < len(rows) {
+			out = append(out, rows[offset+i])
+			continue
+		}
+		out = append(out, "")
+	}
+	return out
 }

@@ -13,6 +13,10 @@ class Screen:
         self.cols = cols
         self.rows = rows
         self.buf = [[" "] * cols for _ in range(rows)]
+        # rev marks the cells drawn in reverse video. The interface draws
+        # its caret that way, so it is how a check can find the cursor.
+        self.rev = [[False] * cols for _ in range(rows)]
+        self.reverse = False
         self.x = 0
         self.y = 0
         self.alt = False
@@ -24,18 +28,26 @@ class Screen:
 
     def clear(self):
         self.buf = [[" "] * self.cols for _ in range(self.rows)]
+        self.rev = [[False] * self.cols for _ in range(self.rows)]
+
+    def blank(self):
+        return [" "] * self.cols, [False] * self.cols
 
     def scroll_up(self, n=1):
         """Scroll the scrolling region up by n lines."""
         for _ in range(n):
             self.buf.pop(self.top)
             self.buf.insert(self.bottom, [" "] * self.cols)
+            self.rev.pop(self.top)
+            self.rev.insert(self.bottom, [False] * self.cols)
 
     def scroll_down(self, n=1):
         """Scroll the scrolling region down by n lines."""
         for _ in range(n):
             self.buf.pop(self.bottom)
             self.buf.insert(self.top, [" "] * self.cols)
+            self.rev.pop(self.bottom)
+            self.rev.insert(self.top, [False] * self.cols)
 
     def newline(self):
         """Move down one line, scrolling the region when it is at its
@@ -47,6 +59,8 @@ class Screen:
         if self.y >= self.rows:
             self.buf.pop(0)
             self.buf.append([" "] * self.cols)
+            self.rev.pop(0)
+            self.rev.append([False] * self.cols)
             self.y = self.rows - 1
 
     def put(self, ch):
@@ -56,8 +70,11 @@ class Screen:
         if self.y >= self.rows:
             self.buf.pop(0)
             self.buf.append([" "] * self.cols)
+            self.rev.pop(0)
+            self.rev.append([False] * self.cols)
             self.y = self.rows - 1
         self.buf[self.y][self.x] = ch
+        self.rev[self.y][self.x] = self.reverse
         self.x += 1
 
     def feed(self, data):
@@ -103,6 +120,18 @@ class Screen:
         def p(idx, default=1):
             return ps[idx] if idx < len(ps) else default
 
+        if cmd == "m":
+            # Only the attributes the checks rely on: reverse video marks
+            # the caret.
+            if not params:
+                self.reverse = False
+                return
+            for part in params.split(";"):
+                if part == "7":
+                    self.reverse = True
+                elif part in ("27", "0", ""):
+                    self.reverse = False
+            return
         if cmd in "Hf":
             self.y = min(self.rows - 1, max(0, p(0) - 1))
             self.x = min(self.cols - 1, max(0, p(1) - 1))
@@ -125,39 +154,53 @@ class Screen:
             elif mode == 0:
                 for x in range(self.x, self.cols):
                     self.buf[self.y][x] = " "
+                    self.rev[self.y][x] = False
                 for y in range(self.y + 1, self.rows):
                     self.buf[y] = [" "] * self.cols
+                    self.rev[y] = [False] * self.cols
             elif mode == 1:
                 for x in range(0, self.x + 1):
                     self.buf[self.y][x] = " "
+                    self.rev[self.y][x] = False
                 for y in range(0, self.y):
                     self.buf[y] = [" "] * self.cols
+                    self.rev[y] = [False] * self.cols
         elif cmd == "K":
             mode = p(0, 0)
             if mode == 0:
                 for x in range(self.x, self.cols):
                     self.buf[self.y][x] = " "
+                    self.rev[self.y][x] = False
             elif mode == 1:
                 for x in range(0, self.x + 1):
                     self.buf[self.y][x] = " "
+                    self.rev[self.y][x] = False
             else:
                 self.buf[self.y] = [" "] * self.cols
+                self.rev[self.y] = [False] * self.cols
         elif cmd == "X":
             for x in range(self.x, min(self.cols, self.x + p(0))):
                 self.buf[self.y][x] = " "
+                self.rev[self.y][x] = False
         elif cmd == "P":
             # Delete characters: the rest of the line moves left.
             row = self.buf[self.y]
             n = min(p(0), self.cols - self.x)
             del row[self.x:self.x + n]
             row.extend([" "] * n)
+            marks = self.rev[self.y]
+            del marks[self.x:self.x + n]
+            marks.extend([False] * n)
         elif cmd == "@":
             # Insert characters: the rest of the line moves right.
             row = self.buf[self.y]
+            marks = self.rev[self.y]
             n = min(p(0), self.cols - self.x)
             for _ in range(n):
                 row.insert(self.x, " ")
+                marks.insert(self.x, False)
             del row[self.cols:]
+            del marks[self.cols:]
         elif cmd == "h" and params.startswith("?"):
             for v in params.lstrip("?").split(";"):
                 if v == "1049":

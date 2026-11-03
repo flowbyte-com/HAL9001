@@ -92,17 +92,25 @@ keep the draft. A leading `//` sends a literal slash-prefixed message.
 
 The composer is a single bordered one-line input that grows as you write,
 up to five rows, and shrinks back when you delete. A blank row separates
-it from the conversation. Pasting never submits. `Ctrl+U` clears the whole
-draft (even hundreds of pasted lines) without submitting anything and
-returns the composer to one row; `Ctrl+Z` puts it back, but only into an
-empty composer and never across sessions. Clearing never touches the
-conversation — that is what `/clear` is for. Pasting never submits: multiline pastes keep
+it from the conversation. Pasting never submits: multiline pastes keep
 their line breaks, indentation and code fences in the composer, where
-you can edit them before sending. Switching models keeps the
-conversation history and the unsent draft: the session store is
-model-independent. When the draft is taller than five rows the wheel
-scrolls it and the caret stays where it was; typing brings the caret
-back into view.
+you can edit them before sending. The composer shows a five-row window
+on the draft — never a cut-down copy: a paste of any size is kept whole,
+`Enter` sends all of it, and the window follows the caret. `Ctrl+U`
+clears the whole draft (even hundreds of pasted lines) without submitting
+anything and returns the composer to one row, and says so
+(`Draft cleared · Ctrl+Z to restore`); `Ctrl+Z` puts it back, but only
+into an empty composer and never across sessions, and says `Draft
+restored`. Clearing never touches the conversation — that is what
+`/clear` is for. Switching models keeps the conversation history and the
+unsent draft: the session store is model-independent. When the draft is
+taller than five rows the wheel scrolls it and the caret stays where it
+was; typing brings the caret back into view.
+
+Status notices under the footer — a draft cleared, a selection copied, a
+conversation renamed — replace each other and disappear after a few
+seconds. The row they use is always part of the frame, so a notice
+appearing or expiring never moves the conversation or the composer.
 
 **Long prompts.** A prompt that fills more than a few lines is
 abbreviated to a four-line preview while HAL writes its answer, so the

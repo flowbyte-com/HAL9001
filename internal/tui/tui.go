@@ -59,6 +59,23 @@ var newlineKeys = map[string]bool{
 // separate reads would otherwise turn the CR into an accidental send.
 const escapeGrace = 60 * time.Millisecond
 
+// noticeLifetime is how long a status notice stays under the footer. The
+// row itself is always part of the frame, so a notice appearing or
+// expiring never shifts the conversation or the composer. It is a
+// variable so the tests can shorten it; the interface never changes it.
+var noticeLifetime = 5 * time.Second
+
+// noticeExpireMsg clears the notice it belongs to. seq names the notice:
+// a message about a notice that has already been replaced is ignored.
+type noticeExpireMsg struct{ seq int }
+
+// noticeExpiryCmd schedules the removal of one notice.
+func noticeExpiryCmd(seq int) tea.Cmd {
+	return tea.Tick(noticeLifetime, func(time.Time) tea.Msg {
+		return noticeExpireMsg{seq: seq}
+	})
+}
+
 // ColorEnabled reports whether styled output is appropriate. NO_COLOR and
 // dumb terminals get plain text: the eye motif and labels never depend on
 // ANSI escapes to be legible.
@@ -275,14 +292,18 @@ type Model struct {
 	height   int
 	ready    bool
 	sending  bool
-	notice   string
-	color    bool
-	theme    Theme
-	view     View
-	sender   func(tea.Msg)
-	cancel   context.CancelFunc
-	model    string
-	title    string
+	// notice is the transient status line under the footer. noticeSeq
+	// identifies it, so the expiry of a notice that has already been
+	// replaced is ignored.
+	notice    string
+	noticeSeq int
+	color     bool
+	theme     Theme
+	view      View
+	sender    func(tea.Msg)
+	cancel    context.CancelFunc
+	model     string
+	title     string
 	// frame is the resolved vertical geometry. It is recomputed on every
 	// resize so the frame always fits the terminal exactly.
 	frame chatFrame
@@ -409,6 +430,13 @@ func NewWithHooks(engine Engine, hooks Hooks) Model {
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.SetHeight(minComposerRows)
+	// HAL shows its own five-row window on the draft, so the textarea has
+	// to render the whole draft from its first row. Its default maximum
+	// height (99 rows) made it scroll its own viewport once a draft grew
+	// past that, and the window HAL sliced out of the scrolled view could
+	// land past the end: the composer went blank while the text was still
+	// in the buffer. With no maximum the textarea never scrolls by itself.
+	ta.MaxHeight = 0
 	// Ctrl+K opens the model picker at the application level, so the
 	// composer's own delete-after-cursor binding moves out of the way.
 	ta.KeyMap.DeleteAfterCursor = key.NewBinding(key.WithKeys("ctrl+shift+k"))
@@ -421,7 +449,7 @@ func NewWithHooks(engine Engine, hooks Hooks) Model {
 	vp.SoftWrap = true
 	vp.KeyMap = viewport.KeyMap{}
 
-	return Model{
+	m := Model{
 		engine:          engine,
 		hooks:           hooks,
 		composer:        ta,
@@ -431,6 +459,8 @@ func NewWithHooks(engine Engine, hooks Hooks) Model {
 		now:             time.Now,
 		desiredComposer: minComposerRows,
 	}
+	m.setTheme(ThemeHALClassic)
+	return m
 }
 
 // clock returns the current time through the replaceable clock.
@@ -442,7 +472,14 @@ func (m Model) clock() time.Time {
 }
 
 // SetTheme applies a preset; used by the picker and tests.
-func (m *Model) SetTheme(t Theme) { m.theme = t }
+func (m *Model) SetTheme(t Theme) { m.setTheme(t) }
+
+// setTheme applies a preset to the whole interface, including the
+// composer's textarea, whose own defaults carry a fixed dark palette.
+func (m *Model) setTheme(t Theme) {
+	m.theme = t
+	m.composer.SetStyles(t.composerStyles())
+}
 
 // Theme returns the active preset, for tests.
 func (m Model) Theme() Theme { return m.theme }
@@ -608,7 +645,39 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 }
 
 // Update implements tea.Model.
+//
+// Every notice the interface shows is transient: a new one replaces the
+// old one, and the one on screen disappears after noticeLifetime. The
+// wrapper watches the notice, so a status line can never outlive its
+// moment or quietly overwrite a newer message. The expiry is a one-shot
+// tick whose generation is compared, so a replaced notice can never be
+// cleared by the timer of the notice it replaced.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if exp, ok := msg.(noticeExpireMsg); ok {
+		if exp.seq == m.noticeSeq {
+			m.notice = ""
+		}
+		return m, nil
+	}
+	before := m.notice
+	next, cmd := m.update(msg)
+	out, ok := next.(Model)
+	if !ok {
+		return next, cmd
+	}
+	if out.notice != before {
+		out.noticeSeq++
+		// While a turn is in flight the notice is the live status of
+		// that turn: it is refreshed every second and cleared when the
+		// turn ends, so it does not expire on its own.
+		if out.notice != "" && !out.sending {
+			cmd = tea.Batch(cmd, noticeExpiryCmd(out.noticeSeq))
+		}
+	}
+	return out, cmd
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case viewOnboard:
 		return m.updateOnboard(msg)
@@ -1109,7 +1178,7 @@ func (m *Model) clearDraft() {
 	m.composer.Reset()
 	m.refreshSuggestions()
 	m.fitComposer()
-	m.notice = "Draft cleared — Ctrl+Z restores it."
+	m.notice = "Draft cleared · Ctrl+Z to restore"
 }
 
 // restoreDraft puts the last cleared draft back, but only into an empty
@@ -1129,7 +1198,7 @@ func (m *Model) restoreDraft() {
 	m.undoValid = false
 	m.refreshSuggestions()
 	m.fitComposer()
-	m.notice = "Draft restored."
+	m.notice = "Draft restored"
 }
 
 // clearUndo drops the undo buffer so a draft can never leak into another

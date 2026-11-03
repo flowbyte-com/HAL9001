@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2/ansi"
 	glamourstyles "charm.land/glamour/v2/styles"
 	lipgloss "charm.land/lipgloss/v2"
@@ -55,6 +57,35 @@ type styles struct {
 	footer lipgloss.Style
 	active lipgloss.Style
 	notice lipgloss.Style
+}
+
+// composerStyles maps the palette onto the composer's textarea.
+//
+// The textarea's own defaults carry a fixed palette: the line the caret
+// is on is painted with a black background, which swallows the text on a
+// light theme, and the body colour ignores the theme altogether. The
+// composer is where the operator writes, so it follows the same palette
+// as the rest of the interface.
+func (t Theme) composerStyles() textarea.Styles {
+	s := textarea.DefaultStyles(t.dark())
+	body := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Text))
+	cursorLine := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(t.Text)).
+		Background(lipgloss.Color(t.Background))
+	placeholder := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Muted))
+	endOfBuffer := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Background))
+	for _, state := range []*textarea.StyleState{&s.Focused, &s.Blurred} {
+		state.Text = body
+		state.CursorLine = cursorLine
+		state.Placeholder = placeholder
+		state.EndOfBuffer = endOfBuffer
+	}
+	s.Cursor = textarea.CursorStyle{
+		Color: lipgloss.Color(t.Accent),
+		Shape: tea.CursorBlock,
+		Blink: true,
+	}
+	return s
 }
 
 func (t Theme) styles() styles {

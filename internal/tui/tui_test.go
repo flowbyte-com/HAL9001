@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -42,13 +43,27 @@ func pressKey(m Model, code rune, mod tea.KeyMod, text string) Model {
 	return updated.(Model)
 }
 
+// TestMain shortens the notice lifetime: the expiry is a real timer, and
+// a test that waits for it only makes the suite slow. The tests that
+// check the expiry deliver the message themselves.
+func TestMain(m *testing.M) {
+	noticeLifetime = 0
+	os.Exit(m.Run())
+}
+
 // drain runs the command returned by an Update (executing the headless
 // send path) and feeds the resulting message back through the model.
+// A notice expiry is a timer, not a state transition: the tests that
+// exercise it deliver the message on purpose.
 func drain(m Model, cmd tea.Cmd) Model {
 	if cmd == nil {
 		return m
 	}
-	updated, _ := m.Update(cmd())
+	msg := cmd()
+	if _, ok := msg.(noticeExpireMsg); ok {
+		return m
+	}
+	updated, _ := m.Update(msg)
 	return updated.(Model)
 }
 
@@ -2118,6 +2133,26 @@ func TestComposerBorderThemes(t *testing.T) {
 		plain := m.composerBlock(3, true)
 		if strings.Contains(plain[0], "\x1b[") || strings.Contains(plain[len(plain)-1], "\x1b[") {
 			t.Errorf("%s: monochrome border contains escapes", theme.Name)
+		}
+	}
+}
+
+// The composer's own text follows the palette. The textarea's defaults
+// paint the cursor line with a black background, which swallows the text
+// on a light theme; the composer must stay readable on every preset.
+func TestComposerTextFollowsTheTheme(t *testing.T) {
+	for _, theme := range Themes() {
+		m := testModel()
+		m.SetTheme(theme)
+		st := m.Composer().Styles()
+		if got, want := st.Focused.Text.GetForeground(), lipgloss.Color(theme.Text); got != want {
+			t.Errorf("%s: composer text colour = %v, want %v", theme.Name, got, want)
+		}
+		if got, want := st.Focused.CursorLine.GetBackground(), lipgloss.Color(theme.Background); got != want {
+			t.Errorf("%s: cursor line background = %v, want %v", theme.Name, got, want)
+		}
+		if got, want := st.Focused.Placeholder.GetForeground(), lipgloss.Color(theme.Muted); got != want {
+			t.Errorf("%s: placeholder colour = %v, want %v", theme.Name, got, want)
 		}
 	}
 }

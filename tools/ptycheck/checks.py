@@ -67,6 +67,35 @@ def composer_line(text):
     return ""
 
 
+def composer_rows(text):
+    """Every row inside the composer's border, top to bottom."""
+    lines = text.split("\n")
+    start = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
+    if start < 0:
+        return []
+    rows = []
+    for line in lines[start + 1:]:
+        if line.startswith("╰"):
+            break
+        rows.append(line.strip("│").strip())
+    return rows
+
+
+def reverse_cells(screen):
+    """The cells drawn in reverse video, as (row, column) pairs."""
+    out = []
+    for y, marks in enumerate(screen.rev):
+        for x, on in enumerate(marks):
+            if on:
+                out.append((y, x))
+    return out
+
+
+def bracket_paste(text):
+    """The bytes a terminal sends for a bracketed paste."""
+    return b"\x1b[200~" + text.encode() + b"\x1b[201~"
+
+
 THEMES = [
     ("HAL Classic", "#121316"),
     ("Midnight", "#101c2d"),
@@ -163,8 +192,9 @@ def session_checks():
     first = run_keys([(2.0, b"first question\r"), (3.0, b"/q\r")], timeout=10.0)
     check("session: first conversation is active", "HAL9001" in first, first)
 
-    # 2. Clear and quit.
-    cleared = run_keys([(2.0, b"/clear\r"), (1.5, b"")], timeout=8.0)
+    # 2. Clear and quit. The confirmation is transient, so the screen is
+    # captured while it is still there.
+    cleared = run_keys([(2.0, b"/clear\r"), (1.0, b"")], timeout=3.6)
     check("session: /clear starts a fresh conversation",
           "Conversation cleared" in cleared, cleared)
     check("session: /clear does not show the old conversation",
@@ -204,7 +234,7 @@ def rename_checks():
     # Seed the conversation: renaming requires an existing session file.
     run([(2.0, b"seed message\r"), (2.0, b"")], timeout=8.0,
         fresh=False, session="scrollfixture")
-    raw = run([(2.0, b"/rename Museum Test\r"), (1.0, b"")], timeout=8.0,
+    raw = run([(2.0, b"/rename Museum Test\r"), (1.0, b"")], timeout=3.6,
               fresh=False, session="scrollfixture")
     text = render(raw).text()
     check("rename: confirmation shown", "renamed" in text.lower(), text)
@@ -535,6 +565,143 @@ def collapse_checks():
           "Esc cancels" not in after, after)
 
 
+def paste_checks():
+    """A multiline paste lands in the composer whole and is readable.
+
+    The composer shows a five-row window on the draft. The window is an
+    abbreviation, never a truncation: the buffer keeps every line, and
+    Enter submits all of it.
+    """
+    def paste_and_wait(body, wait=1.0):
+        raw = run([(1.5, bracket_paste(body)), (wait, b"")],
+                  timeout=1.5 + wait + 0.5, fresh=True, session="pastecheck")
+        return raw
+
+    for n in (2, 5, 20, 100):
+        body = "\n".join("line %03d of the draft" % i for i in range(1, n + 1))
+        raw = paste_and_wait(body)
+        text = render(raw).text()
+        rows = composer_rows(text)
+        want = min(n, 5)
+        check("paste: %d lines fill %d composer row(s)" % (n, want),
+              len(rows) == want, "%d row(s): %r" % (len(rows), rows))
+        check("paste: %d lines show the end of the draft" % n,
+              bool(rows) and rows[-1] == "line %03d of the draft" % n,
+              repr(rows))
+        # The caret is a reverse-video cell in the composer: it has to be
+        # on the composer's last row, after the text.
+        s = render(raw)
+        cells = reverse_cells(s)
+        lines = s.text().split("\n")
+        bottom = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
+        check("paste: %d lines keep the cursor in the composer" % n,
+              bottom > 0 and any(row == bottom - 1 and col > 1 for row, col in cells),
+              str(cells[:6]))
+
+    # The regression for the invisible composer: a draft taller than the
+    # textarea's old internal limit (99 rows) used to render blank.
+    body = "\n".join("line %03d of the draft" % i for i in range(1, 151))
+    raw = paste_and_wait(body)
+    text = render(raw).text()
+    rows = composer_rows(text)
+    check("paste: a 150-line paste is not invisible",
+          len(rows) == 5 and all(rows), repr(rows))
+    check("paste: the 150-line paste shows its last line",
+          bool(rows) and rows[-1] == "line 150 of the draft", repr(rows))
+
+    # Unicode and Markdown survive the paste.
+    body = "## Heading\n\n- ✓ héllo wörld 日本語\n- **bold** and `code`"
+    text = render(paste_and_wait(body)).text()
+    joined = "\n".join(composer_rows(text))
+    check("paste: unicode is visible", "héllo wörld 日本語" in joined, joined)
+    check("paste: Markdown is visible", "**bold**" in joined, joined)
+
+    # A single long line wraps, and the window shows its last rows.
+    body = " ".join(["word"] * 120)
+    text = render(paste_and_wait(body)).text()
+    rows = composer_rows(text)
+    check("paste: a long line wraps into the five-row window",
+          len(rows) == 5 and all("word" in r for r in rows), repr(rows))
+
+    # Trailing line breaks are part of the draft.
+    body = "alpha\nbravo\n\n"
+    text = render(paste_and_wait(body)).text()
+    rows = composer_rows(text)
+    check("paste: trailing newlines are kept",
+          len(rows) == 4 and rows[0] == "alpha" and rows[1] == "bravo",
+          repr(rows))
+
+    # The whole draft is submitted, not the five visible rows: the
+    # session file is the canonical record.
+    body = "\n".join("line %03d of the draft" % i for i in range(1, 121))
+    run([(1.5, bracket_paste(body)), (0.5, b"\r")], timeout=8.0,
+        fresh=True, session="pastsubmit")
+    path = os.path.join(HOME, "sessions", "pastsubmit.jsonl")
+    stored = ""
+    try:
+        with open(path) as fh:
+            for line in fh:
+                msg = json.loads(line)
+                if msg.get("role") == "user":
+                    stored = msg.get("content", "")
+                    break
+    except (OSError, ValueError):
+        stored = ""
+    check("paste: Enter submits the complete draft", stored == body,
+          "%d bytes stored, want %d" % (len(stored), len(body)))
+
+
+def draft_notice_checks():
+    """Ctrl+U and Ctrl+Z report what happened, and the report is
+    transient."""
+    body = "\n".join("line %03d of the draft" % i for i in range(1, 151))
+    raw = run([(1.5, bracket_paste(body)), (0.5, b"\x15")], timeout=4.0,
+              fresh=True, session="pastecheck")
+    text = render(raw).text()
+    rows = composer_rows(text)
+    check("draft: Ctrl+U collapses the composer",
+          len(rows) == 1 and "Message HAL" in rows[0], repr(rows))
+    check("draft: Ctrl+U says what it did",
+          "Draft cleared · Ctrl+Z to restore" in text, text)
+
+    raw = run([(1.5, bracket_paste(body)), (0.5, b"\x15"), (0.5, b"\x1a")],
+              timeout=5.0, fresh=True, session="pastecheck")
+    text = render(raw).text()
+    rows = composer_rows(text)
+    check("draft: Ctrl+Z restores the whole draft",
+          len(rows) == 5 and rows[-1] == "line 150 of the draft", repr(rows))
+    check("draft: Ctrl+Z says what it did", "Draft restored" in text, text)
+    check("draft: the restore replaces the clear notice",
+          "Draft cleared" not in text, text)
+
+    # A notice is replaced, and it expires on its own.
+    early = render(run([(1.5, b"hi"), (0.5, b"\x15"), (1.0, b"")],
+                       timeout=3.5, fresh=True, session="pastecheck")).text()
+    check("draft: the notice is still there a second later",
+          "Draft cleared · Ctrl+Z to restore" in early, early)
+    late = render(run([(1.5, b"hi"), (0.5, b"\x15"), (6.5, b"")],
+                      timeout=9.0, fresh=True, session="pastecheck")).text()
+    check("draft: the notice disappears after its interval",
+          "Draft cleared" not in late, late)
+
+    # The composer window scrolls on its own: the wheel over it shows
+    # earlier rows without moving the conversation.
+    body = "\n".join("line %03d of the draft" % i for i in range(1, 21))
+    before = render(run([(1.5, bracket_paste(body)), (0.6, b"")],
+                        timeout=3.0, fresh=True, session="pastecheck")).text()
+    scrolled = render(run([(1.5, bracket_paste(body)),
+                           (0.5, b"\x1b[<64;20;21M"), (0.5, b"\x1b[<64;20;21M")],
+                          timeout=3.5, fresh=True, session="pastecheck")).text()
+    first_before = composer_rows(before)[0] if composer_rows(before) else ""
+    first_scrolled = composer_rows(scrolled)[0] if composer_rows(scrolled) else ""
+    check("draft: the wheel scrolls the composer window",
+          first_before != first_scrolled,
+          "%r -> %r" % (first_before, first_scrolled))
+    check("draft: the wheel in the composer leaves the conversation alone",
+          "Section" not in scrolled and "HAL9001" in scrolled,
+          scrolled[:400])
+
+
 def composer_mouse_checks():
     """The wheel over the composer scrolls the draft instead of the
     conversation, and the caret stays where it was."""
@@ -735,6 +902,8 @@ def main():
     selection_checks()
     autoscroll_checks()
     collapse_checks()
+    paste_checks()
+    draft_notice_checks()
     composer_mouse_checks()
 
     # Common terminal sizes keep the frame the right size.

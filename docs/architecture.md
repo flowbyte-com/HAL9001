@@ -125,6 +125,22 @@ rows HAL counts are the rows the textarea draws. The wheel moves the
 window and never reaches the textarea; typing pulls the window back to
 the caret.
 
+That window is only an abbreviation. The textarea is configured without
+its own maximum height, so it renders every row of the draft from the
+first one and never scrolls internally; HAL's five-row window is the only
+scroll. The textarea's default maximum (99 rows) made it scroll its own
+viewport on a long paste, and the window HAL sliced out of the scrolled
+view could land past the end — a blank composer over a buffer that held
+the whole draft.
+
+Status notices live in one row under the footer that is always part of
+the frame, so a notice appearing or expiring never shifts anything. A new
+notice replaces the old one, and every notice is put on a one-shot timer;
+the timer carries the notice's generation, so the expiry of a notice that
+has already been replaced is ignored. A notice set while a turn is in
+flight is the turn's live status, refreshed every second and cleared when
+the turn ends, so it does not expire on its own.
+
 Short conversations are bottom-aligned in the presentation layer: the
 viewport pads its rendered rows above the content, leaving the viewport
 offsets untouched. Collapsed prompts take at most a third of the
@@ -134,8 +150,10 @@ Themes are one semantic palette (background, text, accent, muted) applied
 to every surface: the view sets the terminal background and foreground
 (restored on exit), Lip Gloss styles the chrome, and glamour receives a
 StyleConfig derived from the same palette so Markdown follows the theme
-too. Selecting a theme re-renders cached entries; the picker previews by
-swapping the active theme and restoring it on `Esc`.
+too. The composer's textarea receives the palette as well — its own
+defaults paint the cursor line with a black band, which would swallow the
+text on a light theme. Selecting a theme re-renders cached entries; the
+picker previews by swapping the active theme and restoring it on `Esc`.
 
 Every command lives in one table with optional aliases; dispatch,
 autocomplete and the help panel read it. `/q`, `/quit` and `/exit` are

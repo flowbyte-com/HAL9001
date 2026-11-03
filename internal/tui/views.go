@@ -413,7 +413,7 @@ func (m *Model) applyThemePreview() {
 		return
 	}
 	anchor := m.anchor()
-	m.theme = m.themePreview
+	m.setTheme(m.themePreview)
 	m.rewrap()
 	m.renderConversation()
 	m.restoreAnchor(anchor)
@@ -432,7 +432,7 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			// Dismiss the preview: the previously active theme returns.
-			m.theme = m.themeOriginal
+			m.setTheme(m.themeOriginal)
 			m.rewrap()
 			m.renderConversation()
 			m.clearSelection()
@@ -463,7 +463,7 @@ func (m Model) updateTheme(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			}
-			m.theme = Themes()[m.themeCursor]
+			m.setTheme(Themes()[m.themeCursor])
 			m.rewrap()
 			m.renderConversation()
 			m.clearSelection()

@@ -41,6 +41,13 @@ something fails.
   still sends, `Ctrl+K` opens the model picker, `/help` opens on Enter
   and `Esc` closes it.
 - A bracketed paste stays in the composer and never submits.
+- A paste of 2, 5, 20, 100 or 150 lines is visible in the five-row
+  composer window, with the caret on its last row; Unicode, Markdown, a
+  long wrapped line and trailing newlines survive; and `Enter` stores the
+  complete draft, not the visible rows.
+- `Ctrl+U` collapses the composer and says `Draft cleared · Ctrl+Z to
+  restore`; `Ctrl+Z` restores the whole draft and says `Draft restored`.
+  A notice replaces the previous one and disappears after its interval.
 - Typing `/` opens the command panel, typing filters it, `Tab`
   completes, `Esc` dismisses it and keeps the draft.
 - The composer is bordered with three text rows and exactly one blank
@@ -75,8 +82,7 @@ something fails.
   `HAL9001_MOUSE` is refused with a message that names the variable —
   unless a flag has already decided.
 - The wheel over the composer scrolls the draft and leaves the caret
-  where it was.
-- `Ctrl+U` clears the draft, `Ctrl+Z` restores it.
+  where it was; the conversation does not move.
 
 ## Files
 
