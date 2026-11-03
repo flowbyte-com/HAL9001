@@ -21,7 +21,7 @@ func TestUserRowExcludesLabel(t *testing.T) {
 	if len(m.conv.rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(m.conv.rows))
 	}
-	text := m.conv.extract(cellPos{row: 0, cell: 0}, cellPos{row: 0, cell: len(m.conv.rows[0].cells)})
+	text := m.conv.extract(cellPos{row: 0, cell: 0}, cellPos{row: 0, cell: m.conv.rows[0].width})
 	if text != "hello world" {
 		t.Errorf("selection = %q, want %q", text, "hello world")
 	}
@@ -41,7 +41,7 @@ func TestAssistantWrappedLineJoins(t *testing.T) {
 	}
 	// The first row of an assistant turn is the empty "HAL > " line, so
 	// the text starts on the second row.
-	got := m.conv.extract(cellPos{row: 1, cell: 8}, cellPos{row: len(m.conv.rows) - 1, cell: len(m.conv.rows[len(m.conv.rows)-1].cells)})
+	got := m.conv.extract(cellPos{row: 1, cell: 8}, cellPos{row: len(m.conv.rows) - 1, cell: m.conv.rows[len(m.conv.rows)-1].width})
 	if got != text {
 		t.Errorf("selection = %q\nwant       %q", got, text)
 	}
@@ -71,7 +71,7 @@ func TestSelectionAcrossMessages(t *testing.T) {
 	m.appendEntry("assistant", "second")
 	m.renderConversation()
 	last := m.conv.rows[len(m.conv.rows)-1]
-	got := m.conv.extract(cellPos{row: 0, cell: entryPrefixCells}, cellPos{row: len(m.conv.rows) - 1, cell: len(last.cells)})
+	got := m.conv.extract(cellPos{row: 0, cell: entryPrefixCells}, cellPos{row: len(m.conv.rows) - 1, cell: last.width})
 	if !strings.HasPrefix(got, "first\n") || !strings.HasSuffix(got, "second") {
 		t.Errorf("selection = %q, want it to start with %q and end with %q", got, "first\n", "second")
 	}
@@ -89,7 +89,7 @@ func TestLongWordIsNotSplit(t *testing.T) {
 		t.Skip("the word fits on one row at this width")
 	}
 	last := m.conv.rows[len(m.conv.rows)-1]
-	got := m.conv.extract(cellPos{row: 1, cell: 8}, cellPos{row: len(m.conv.rows) - 1, cell: len(last.cells)})
+	got := m.conv.extract(cellPos{row: 1, cell: 8}, cellPos{row: len(m.conv.rows) - 1, cell: last.width})
 	if got != word {
 		t.Errorf("selection = %q, want %q", got, word)
 	}
@@ -104,7 +104,7 @@ func TestUnicodeCells(t *testing.T) {
 	m.appendEntry("user", text)
 	m.renderConversation()
 	row := m.conv.rows[0]
-	got := m.conv.extract(cellPos{row: 0, cell: 0}, cellPos{row: 0, cell: len(row.cells)})
+	got := m.conv.extract(cellPos{row: 0, cell: 0}, cellPos{row: 0, cell: row.width})
 	if got != text {
 		t.Errorf("selection = %q, want %q", got, text)
 	}

@@ -7,51 +7,65 @@ import (
 	"github.com/clipperhouse/displaywidth"
 )
 
-// cellSpan is one display cell of a rendered row: a byte range in the
-// row's plain text and the number of terminal columns it occupies.
+// cellSpan is one grapheme cluster of a rendered row: the bytes it
+// occupies in the row's plain text and the terminal columns it covers.
 //
 // The cell map is what makes mouse selection possible at all: a terminal
 // reports cells, not text, so every selection has to be translated back
 // into the characters that produced those cells.
 type cellSpan struct {
-	start int // byte offset in the plain text
-	end   int // byte offset in the plain text
-	width int // display width in columns
-}
-
-// byteOrigin records where a byte of the plain text came from in the
-// original row, so a styled row can be rebuilt with a highlight inserted
-// at exactly the right place.
-type byteOrigin struct {
-	start int
-	end   int
+	start  int // byte offset in the plain text
+	end    int // byte offset in the plain text
+	width  int // display width in columns
+	column int // the first terminal column the cluster occupies
 }
 
 // rowCells is the cell map of one rendered row.
 type rowCells struct {
 	text    string     // the printable text of the row, ANSI stripped
-	cells   []cellSpan // one entry per display cell
-	origins []byteOrigin
+	cells   []cellSpan // one entry per grapheme cluster
+	origins []int      // origins[i] is the byte offset in the row of text[i]
 }
 
-// cellCount is the number of display cells in the row.
-func (r rowCells) cellCount() int { return len(r.cells) }
-
-// byteAt returns the byte offset in the plain text for a cell index. A
-// cell index outside the row clamps to the nearest end, so a pointer past
-// the end of a line selects the whole line.
-func (r rowCells) byteAt(cell int) int {
-	switch {
-	case cell < 0:
+// origin returns the byte offset in the rendered row of a byte offset in
+// the row's plain text.
+func (r rowCells) origin(offset int) int {
+	if offset < 0 {
 		return 0
-	case cell >= len(r.cells):
-		if len(r.cells) == 0 {
-			return 0
-		}
-		return r.cells[len(r.cells)-1].end
-	default:
-		return r.cells[cell].start
 	}
+	if offset >= len(r.origins) {
+		return len(r.origins) - 1
+	}
+	return r.origins[offset]
+}
+
+// byteRangeAt returns the byte range in the row's plain text that the
+// columns [c0, c1) cover.
+//
+// The columns are terminal columns, not clusters: a wide character
+// covers two of them, and a terminal reports the column it was drawn
+// in.
+func (r rowCells) byteRangeAt(c0, c1 int) (int, int) {
+	if c1 <= c0 {
+		return 0, 0
+	}
+	lo, hi := -1, -1
+	for _, c := range r.cells {
+		if c.column+c.width <= c0 {
+			continue // before the range
+		}
+		if c.column >= c1 {
+			break // after the range
+		}
+		if lo < 0 {
+			lo = c.start
+		}
+		hi = c.end
+	}
+	if lo < 0 {
+		return 0, 0
+	}
+	return lo, hi
 }
 
 // escapeLength returns the length of the ANSI escape sequence at the
@@ -104,7 +118,8 @@ func escapeLength(s string) int {
 // is one cell and never split in half.
 func scanRow(row string) rowCells {
 	var text strings.Builder
-	var origins []byteOrigin
+	var origins []int
+	textEnd := 0 // the row offset just after the last printable character
 
 	i := 0
 	for i < len(row) {
@@ -116,7 +131,8 @@ func scanRow(row string) rowCells {
 		if r == utf8.RuneError && size <= 1 {
 			// Not valid UTF-8: keep the byte so nothing is lost.
 			text.WriteByte(row[i])
-			origins = append(origins, byteOrigin{start: i, end: i + 1})
+			origins = append(origins, i)
+			textEnd = i + 1
 			i++
 			continue
 		}
@@ -126,12 +142,18 @@ func scanRow(row string) rowCells {
 			continue
 		}
 		text.WriteString(row[i : i+size])
-		origins = append(origins, byteOrigin{start: i, end: i + size})
+		for k := 0; k < size; k++ {
+			origins = append(origins, i)
+		}
+		textEnd = i + size
 		i += size
 	}
 
 	out := rowCells{text: text.String(), origins: origins}
+	out.origins = append(out.origins, textEnd)
+
 	pos := 0
+	column := 0
 	pending := -1 // start of a zero-width cluster waiting for a cell
 	iter := displaywidth.StringGraphemes(out.text)
 	for iter.Next() {
@@ -150,7 +172,13 @@ func scanRow(row string) rowCells {
 			start = pending
 			pending = -1
 		}
-		out.cells = append(out.cells, cellSpan{start: start, end: end, width: width})
+		out.cells = append(out.cells, cellSpan{
+			start:  start,
+			end:    end,
+			width:  width,
+			column: column,
+		})
+		column += width
 	}
 	if pending >= 0 && len(out.cells) > 0 {
 		last := &out.cells[len(out.cells)-1]
@@ -159,36 +187,61 @@ func scanRow(row string) rowCells {
 	return out
 }
 
-// highlightCells wraps the cells in [from, to) of a rendered row in
-// reverse video, so a selection is visible. The row's own styling is
-// preserved: only the video attribute is added and removed again.
+// highlightCells marks the columns [from, to) of a rendered row as
+// selected.
+//
+// The row's own styling survives. The reverse-video attribute is set
+// around every run of text inside the range and removed again: the row
+// resets the attributes between its styled segments, so one span around
+// the whole range would be cancelled by the first reset and only the
+// first segment would show as selected.
 func highlightCells(row string, from, to int) string {
 	if from < 0 || to <= from {
 		return row
 	}
 	cells := scanRow(row)
-	if from >= len(cells.cells) {
+	lo, hi := cells.byteRangeAt(from, to)
+	if lo >= hi {
 		return row
 	}
-	if to > len(cells.cells) {
-		to = len(cells.cells)
-	}
-	startCell := cells.cells[from]
-	endCell := cells.cells[to-1]
-	if startCell.start >= len(cells.origins) || endCell.end > len(cells.origins) {
-		return row
-	}
-	lo := cells.origins[startCell.start].start
-	hi := cells.origins[endCell.end-1].end
-	if lo < 0 || hi > len(row) || lo >= hi {
-		return row
-	}
+	return markRange(row, cells.origin(lo), cells.origin(hi))
+}
+
+// markRange marks the bytes in [lo, hi) of a rendered row as selected.
+//
+// The escapes are copied verbatim, so the row keeps its colours and its
+// bold and italic runs. Only the text inside the range is marked, and
+// each run of it is marked on its own, so a reset inside the row cannot
+// cancel the mark halfway through.
+func markRange(row string, lo, hi int) string {
 	var b strings.Builder
-	b.Grow(len(row) + 12)
-	b.WriteString(row[:lo])
-	b.WriteString("\x1b[7m")
-	b.WriteString(row[lo:hi])
-	b.WriteString("\x1b[27m")
-	b.WriteString(row[hi:])
+	b.Grow(len(row) + 16)
+	i := 0
+	for i < len(row) {
+		if n := escapeLength(row[i:]); n > 0 {
+			b.WriteString(row[i : i+n])
+			i += n
+			continue
+		}
+		// A run of printable text.
+		j := i
+		for j < len(row) && escapeLength(row[j:]) == 0 {
+			j++
+		}
+		run := row[i:j]
+		switch {
+		case j <= lo || i >= hi:
+			b.WriteString(run)
+		default:
+			s := max(i, lo)
+			e := min(j, hi)
+			b.WriteString(run[:s-i])
+			b.WriteString("\x1b[7m")
+			b.WriteString(run[s-i : e-i])
+			b.WriteString("\x1b[27m")
+			b.WriteString(run[e-i:])
+		}
+		i = j
+	}
 	return b.String()
 }

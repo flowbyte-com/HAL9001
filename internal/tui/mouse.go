@@ -227,20 +227,31 @@ func (m Model) highlightSelection(rows []string) []string {
 		if vy < 0 {
 			continue
 		}
-		row, inRow, ok := m.contentRowAt(m.viewport.YOffset() + vy)
+		idx, inRow, ok := m.contentRowAt(m.viewport.YOffset() + vy)
 		if !ok {
 			continue
 		}
-		if row < a.row || row > b.row {
+		if idx < a.row || idx > b.row {
 			continue
 		}
+		row := m.conv.rows[idx]
 		from := inRow * w
 		to := from + w
-		if row == a.row && from < a.cell {
+		if idx == a.row && from < a.cell {
 			from = a.cell
 		}
-		if row == b.row && to > b.cell {
+		if idx == b.row && to > b.cell {
 			to = b.cell
+		}
+		// The selection covers the row's text, not the decoration
+		// around it: the label, the indent and the renderer's margin
+		// are interface, and the padding behind the text is not part
+		// of it.
+		if from < row.cellStart {
+			from = row.cellStart
+		}
+		if to > row.cellEnd {
+			to = row.cellEnd
 		}
 		if to <= from {
 			continue

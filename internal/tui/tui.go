@@ -1648,6 +1648,10 @@ func (m *Model) rewrap() {
 
 // pendingRows splits the answer being streamed into the rows the
 // conversation shows while it is still arriving.
+//
+// Every row but the first carries the same indent as a finished reply,
+// so the rows the terminal shows and the rows the cell map knows about
+// are the same rows.
 func pendingRows(pending string) []string {
 	lines := strings.Split(pending, "\n")
 	rows := make([]string, 0, len(lines))
@@ -1656,7 +1660,7 @@ func pendingRows(pending string) []string {
 			rows = append(rows, "HAL > "+line)
 			continue
 		}
-		rows = append(rows, line)
+		rows = append(rows, strings.Repeat(" ", len("HAL > "))+line)
 	}
 	return rows
 }
@@ -1695,13 +1699,16 @@ func (m *Model) renderConversation() {
 		m.conv = buildConvMap(m.entries)
 	}
 	if m.pending != "" {
-		pending := "HAL > " + m.pending
-		if m.color {
-			pending = st.hal.Render("HAL > ") + m.pending
+		// The rows of the answer being streamed are shown one by one,
+		// exactly as the cell map knows them: one row per line, so
+		// the terminal and the map never disagree about which row is
+		// which.
+		pending := pendingRows(m.pending)
+		for _, row := range pending {
+			content = append(content, styleRow(row))
 		}
-		content = append(content, pending)
 		if m.mouse {
-			m.conv.addEntry(entry{role: "assistant", rows: pendingRows(m.pending), logical: pendingLogical(m.pending)})
+			m.conv.addEntry(entry{role: "assistant", rows: pending, logical: pendingLogical(m.pending)})
 		}
 	}
 	m.viewport.SetContent(strings.Join(content, "\n"))

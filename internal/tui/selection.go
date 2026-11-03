@@ -21,6 +21,8 @@ type convRow struct {
 	width      int // the display width of the row, in cells
 	textStart  int // byte offset in the row's text where the mapped text starts
 	textLen    int // length of the mapped text in bytes
+	cellStart  int // the first column of the row's visible text
+	cellEnd    int // the column after the row's visible text
 	logical    int // index of the logical line the row belongs to
 	logicalOff int // byte offset of the mapped text inside that logical line
 }
@@ -56,6 +58,21 @@ func (cm *convMap) addEntry(e entry) {
 	searchFrom := 0
 	for _, row := range e.rows {
 		cells := scanRow(row)
+		// mapped builds the row's entry: the cells of the row, the
+		// text it shows and the logical line behind it.
+		mapped := func(textStart, textLen, logical, logicalOff int) convRow {
+			cs, ce := textColumns(cells.cells, cells.text, textStart, textStart+textLen)
+			return convRow{
+				cells:      cells.cells,
+				width:      rowWidth(cells),
+				textStart:  textStart,
+				textLen:    textLen,
+				cellStart:  cs,
+				cellEnd:    ce,
+				logical:    logical,
+				logicalOff: logicalOff,
+			}
+		}
 		contentStart := len(cells.text)
 		if entryPrefixCells < len(cells.cells) {
 			contentStart = cells.cells[entryPrefixCells].start
@@ -70,26 +87,12 @@ func (cm *convMap) addEntry(e entry) {
 			// A blank row. It is a line of its own, and it lines up
 			// with the blank logical line the renderer produced.
 			if idx, ok := findBlankLogical(logical, li); ok {
-				cm.rows = append(cm.rows, convRow{
-					cells:      cells.cells,
-					width:      rowWidth(cells),
-					textStart:  contentStart,
-					textLen:    0,
-					logical:    base + idx,
-					logicalOff: 0,
-				})
+				cm.rows = append(cm.rows, mapped(contentStart, 0, base+idx, 0))
 				li = idx + 1
 				searchFrom = 0
 			} else {
 				cm.logical = append(cm.logical, "")
-				cm.rows = append(cm.rows, convRow{
-					cells:      cells.cells,
-					width:      rowWidth(cells),
-					textStart:  contentStart,
-					textLen:    0,
-					logical:    len(cm.logical) - 1,
-					logicalOff: 0,
-				})
+				cm.rows = append(cm.rows, mapped(contentStart, 0, len(cm.logical)-1, 0))
 			}
 			continue
 		}
@@ -107,14 +110,8 @@ func (cm *convMap) addEntry(e entry) {
 			if !ok {
 				continue
 			}
-			cm.rows = append(cm.rows, convRow{
-				cells:      cells.cells,
-				width:      rowWidth(cells),
-				textStart:  contentStart + cand.shift,
-				textLen:    len(cand.text),
-				logical:    base + idx,
-				logicalOff: off,
-			})
+			cm.rows = append(cm.rows, mapped(
+				contentStart+cand.shift, len(cand.text), base+idx, off))
 			li = idx
 			searchFrom = off + len(cand.text)
 			matched = true
@@ -128,15 +125,36 @@ func (cm *convMap) addEntry(e entry) {
 		// copyable, so it becomes a logical line of its own.
 		text := trimmed
 		cm.logical = append(cm.logical, text)
-		cm.rows = append(cm.rows, convRow{
-			cells:      cells.cells,
-			width:      rowWidth(cells),
-			textStart:  contentStart,
-			textLen:    len(text),
-			logical:    len(cm.logical) - 1,
-			logicalOff: 0,
-		})
+		cm.rows = append(cm.rows, mapped(contentStart, len(text), len(cm.logical)-1, 0))
 	}
+}
+
+// textColumns returns the range of columns that hold the row's visible
+// text.
+//
+// The label in front of a row, the indent and the renderer's margin are
+// interface decoration, and the padding behind the text is not part of
+// it. A selection covers the text alone, so those columns stay outside
+// the highlighted range: highlighting them would paint a pale block in
+// the margin and, on a blank line, a block where there is no text at
+// all.
+func textColumns(cells []cellSpan, text string, lo, hi int) (int, int) {
+	start, end := 0, 0
+	found := false
+	for _, c := range cells {
+		if c.end <= lo || c.start >= hi {
+			continue
+		}
+		if strings.TrimSpace(text[c.start:c.end]) == "" {
+			continue
+		}
+		if !found {
+			start = c.column
+			found = true
+		}
+		end = c.column + c.width
+	}
+	return start, end
 }
 
 // findBlankLogical finds the next logical line that holds no text.
@@ -178,23 +196,11 @@ func rowWidth(cells rowCells) int {
 	return w
 }
 
-// byteRange converts a cell range of a row into a byte range in the
+// byteRange converts a column range of a row into a byte range in the
 // row's text, clamped to the text that is actually mapped.
 func (row convRow) byteRange(c0, c1 int) (int, int) {
-	if len(row.cells) == 0 {
-		return 0, 0
-	}
-	if c0 < 0 {
-		c0 = 0
-	}
-	if c1 > len(row.cells) {
-		c1 = len(row.cells)
-	}
-	if c1 <= c0 {
-		return 0, 0
-	}
-	s := row.cells[c0].start
-	e := row.cells[c1-1].end
+	cells := rowCells{cells: row.cells}
+	s, e := cells.byteRangeAt(c0, c1)
 	if s < row.textStart {
 		s = row.textStart
 	}
@@ -224,7 +230,8 @@ func (cm convMap) extract(a, b cellPos) string {
 	start, end := 0, 0
 	for r := a.row; r <= b.row && r < len(cm.rows); r++ {
 		row := cm.rows[r]
-		c0, c1 := 0, len(row.cells)
+		// The columns of the selection, in the row's own width.
+		c0, c1 := 0, row.width
 		if r == a.row {
 			c0 = a.cell
 		}
@@ -234,8 +241,8 @@ func (cm convMap) extract(a, b cellPos) string {
 		if c0 < 0 {
 			c0 = 0
 		}
-		if c1 > len(row.cells) {
-			c1 = len(row.cells)
+		if c1 > row.width {
+			c1 = row.width
 		}
 		if c1 < c0 {
 			c1 = c0
