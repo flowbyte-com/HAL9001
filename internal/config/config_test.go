@@ -242,7 +242,7 @@ func TestSafeguardsRoundTripInFile(t *testing.T) {
 	}
 }
 
-func TestMouseDefaultsOffWithOverrides(t *testing.T) {
+func TestMouseDefaultsOnWithOverrides(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HAL9001_HOME", dir)
 	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "none.json"))
@@ -251,10 +251,10 @@ func TestMouseDefaultsOffWithOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mouse {
-		t.Error("mouse must default to off")
+	if !cfg.Mouse {
+		t.Error("mouse must default to on")
 	}
-	for _, v := range []string{"1", "true", "yes", "TRUE"} {
+	for _, v := range []string{"1", "true", "yes", "on", "TRUE"} {
 		t.Setenv("HAL9001_MOUSE", v)
 		cfg, err = LoadErr(nil)
 		if err != nil {
@@ -264,13 +264,25 @@ func TestMouseDefaultsOffWithOverrides(t *testing.T) {
 			t.Errorf("HAL9001_MOUSE=%q must enable mouse mode", v)
 		}
 	}
-	t.Setenv("HAL9001_MOUSE", "0")
+	for _, v := range []string{"0", "false", "no", "off", "OFF"} {
+		t.Setenv("HAL9001_MOUSE", v)
+		cfg, err = LoadErr(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Mouse {
+			t.Errorf("HAL9001_MOUSE=%q must disable mouse mode", v)
+		}
+	}
+	// A malformed value is ignored rather than quietly changing the
+	// terminal's behaviour.
+	t.Setenv("HAL9001_MOUSE", "maybe")
 	cfg, err = LoadErr(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Mouse {
-		t.Error("HAL9001_MOUSE=0 must not enable mouse mode")
+	if !cfg.Mouse {
+		t.Error("a malformed HAL9001_MOUSE must leave the default alone")
 	}
 	t.Setenv("HAL9001_MOUSE", "")
 	cfg, err = LoadErr([]string{"--mouse"})
@@ -279,5 +291,76 @@ func TestMouseDefaultsOffWithOverrides(t *testing.T) {
 	}
 	if !cfg.Mouse {
 		t.Error("--mouse must enable mouse mode")
+	}
+	cfg, err = LoadErr([]string{"--no-mouse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mouse {
+		t.Error("--no-mouse must disable mouse mode")
+	}
+	// The flag's value is honoured, so the flag package's own
+	// "-flag=false" form works too.
+	cfg, err = LoadErr([]string{"--mouse=false"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mouse {
+		t.Error("--mouse=false must disable mouse mode")
+	}
+	cfg, err = LoadErr([]string{"--no-mouse=false"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Mouse {
+		t.Error("--no-mouse=false must enable mouse mode")
+	}
+}
+
+// TestMouseFlagBeatsEnvironment checks the precedence: an explicit flag
+// wins over the environment, which wins over the default.
+func TestMouseFlagBeatsEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL9001_HOME", dir)
+	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "none.json"))
+
+	t.Setenv("HAL9001_MOUSE", "1")
+	cfg, err := LoadErr([]string{"--no-mouse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mouse {
+		t.Error("--no-mouse must win over HAL9001_MOUSE=1")
+	}
+	t.Setenv("HAL9001_MOUSE", "0")
+	cfg, err = LoadErr([]string{"--mouse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Mouse {
+		t.Error("--mouse must win over HAL9001_MOUSE=0")
+	}
+	t.Setenv("HAL9001_MOUSE", "0")
+	cfg, err = LoadErr(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mouse {
+		t.Error("HAL9001_MOUSE=0 must win over the default")
+	}
+}
+
+// TestMouseFlagsConflict checks that asking for both is refused instead
+// of silently choosing one.
+func TestMouseFlagsConflict(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL9001_HOME", dir)
+	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "none.json"))
+	t.Setenv("HAL9001_MOUSE", "")
+	if _, err := LoadErr([]string{"--mouse", "--no-mouse"}); err == nil {
+		t.Fatal("--mouse with --no-mouse must be an error")
+	}
+	if _, err := LoadErr([]string{"--no-mouse", "--mouse"}); err == nil {
+		t.Fatal("--no-mouse with --mouse must be an error")
 	}
 }

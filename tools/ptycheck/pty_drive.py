@@ -2,13 +2,15 @@
 """Drive the HAL9001 binary inside a real pseudo-terminal.
 
 The script forks a pty, starts hal9001 inside it and feeds it a scripted
-sequence of key presses and window resizes. The raw byte stream is
-returned so it can be replayed through a terminal emulator.
+sequence of key presses, window resizes and signals. The raw byte stream
+is returned so it can be replayed through a terminal emulator.
 
 Usage:
 
     from pty_drive import run
     raw = run([(2.0, b"/help\\r"), (1.0, b"\\x1b")])
+    raw = run([(2.5, ("signal", "SIGINT"))])
+    raw = run([(2.0, b"")], args=["--no-mouse"])
 """
 import fcntl
 import os
@@ -37,12 +39,25 @@ def reset_session(session=None):
         pass
 
 
-def run(script, cols=80, rows=24, timeout=12.0, fresh=True, session=None):
+def signal_number(sig):
+    """Turn a signal name ("SIGINT", "int") or a number into a number."""
+    if isinstance(sig, int):
+        return sig
+    name = str(sig).upper()
+    if not name.startswith("SIG"):
+        name = "SIG" + name
+    return getattr(signal, name)
+
+
+def run(script, cols=80, rows=24, timeout=12.0, fresh=True, session=None,
+        args=None):
     """Run the interface and send the scripted actions.
 
     script: list of (delay, payload) pairs. The payload is either bytes
-    to write or a ("resize", cols, rows) tuple. session selects a stored
-    conversation (default demo).
+    to write, a ("resize", cols, rows) tuple or a ("signal", signum)
+    tuple. session selects a stored conversation (default demo). args
+    holds extra command-line arguments for the binary, for example
+    ["--no-mouse"].
     """
     session = SESSION if session is None else session
     if fresh:
@@ -52,12 +67,13 @@ def run(script, cols=80, rows=24, timeout=12.0, fresh=True, session=None):
         os.environ["TERM"] = "xterm-256color"
         os.environ["HAL9001_CONFIG"] = CONFIG
         os.environ["HAL9001_HOME"] = HOME
-        args = [BINARY, "--store", STORE]
+        argv = [BINARY, "--store", STORE]
         if session:
             # An explicit --session wins over the stored active session;
             # omit it to exercise the persisted choice.
-            args = [BINARY, "--session", session, "--store", STORE]
-        os.execv(BINARY, args)
+            argv = [BINARY, "--session", session, "--store", STORE]
+        argv.extend(args or [])
+        os.execv(BINARY, argv)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     out = bytearray()
     start = time.time()
@@ -79,6 +95,8 @@ def run(script, cols=80, rows=24, timeout=12.0, fresh=True, session=None):
                 fcntl.ioctl(fd, termios.TIOCSWINSZ,
                             struct.pack("HHHH", action[2], action[1], 0, 0))
                 os.kill(pid, signal.SIGWINCH)
+            elif isinstance(action, tuple) and action and action[0] == "signal":
+                os.kill(pid, signal_number(action[1]))
             else:
                 os.write(fd, action)
             idx += 1

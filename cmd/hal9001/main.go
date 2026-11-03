@@ -48,6 +48,11 @@ func run(args []string) error {
 	if cfg.List {
 		return listSessions(cfg.StoreDir)
 	}
+	// The terminal's mouse modes are restored on every exit path: a
+	// clean quit, a cancellation, and an error on the way out.
+	if cfg.Mouse {
+		defer restoreMouseModes()
+	}
 	stored, err := config.LoadFile(config.ConfigPath())
 	if err != nil {
 		return err
@@ -78,6 +83,21 @@ func listSessions(storeDir string) error {
 		fmt.Println(name)
 	}
 	return nil
+}
+
+// restoreMouseModes turns the terminal's mouse reporting off.
+//
+// Bubble Tea already resets the modes when the program closes. Writing
+// the reset again is cheap insurance for the paths where the program
+// dies before the renderer gets there, and it leaves the terminal
+// exactly as HAL found it.
+func restoreMouseModes() {
+	f, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString("\x1b[?1002l\x1b[?1003l\x1b[?1006l")
 }
 
 type app struct {

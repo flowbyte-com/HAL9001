@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -205,33 +206,89 @@ def rename_checks():
 
 
 def mouse_checks():
-    """Wheel scrolling is opt-in. With reporting off the terminal never
-    receives mouse-event requests; with --mouse (or HAL9001_MOUSE=1) the
-    wheel pages the conversation."""
+    """Mouse reporting is on by default: HAL asks the terminal for mouse
+    events, so the wheel scrolls and a drag selects. --no-mouse (and
+    HAL9001_MOUSE=0) turns it off, and the terminal's own selection is
+    left in charge."""
     write_scroll_fixture()
+
+    # The default: reporting is requested.
     raw = run([(2.0, b"")], timeout=5.0, fresh=False, session="scrollfixture")
+    on = raw.decode("utf-8", "replace")
+    check("mouse: reporting is on by default", "\x1b[?1002h" in on, on[:200])
+    check("mouse: SGR reporting is on by default", "\x1b[?1006h" in on, on[:200])
+
+    # --no-mouse: nothing is requested.
+    raw = run([(2.0, b"")], timeout=5.0, fresh=False, session="scrollfixture",
+              args=["--no-mouse"])
     off = raw.decode("utf-8", "replace")
-    check("mouse: reporting stays off by default",
+    check("mouse: --no-mouse leaves reporting off",
           "\x1b[?1002h" not in off and "\x1b[?1006h" not in off, off[:200])
 
-    os.environ["HAL9001_MOUSE"] = "1"
+    # The environment says the same thing.
+    os.environ["HAL9001_MOUSE"] = "0"
     try:
-        before = run_fixture_text("scrollfixture")
-        # SGR wheel events (column 40, row 10, 1-based). Five ups move
-        # away from the bottom; five downs return to exactly the same
-        # screen, which a lossy emulator cannot blur.
-        moved = run([(2.5, b"\x1b[<64;40;10M" * 5)], timeout=7.0,
-                     fresh=False, session="scrollfixture")
-        moved_text = render(moved).text()
-        check("mouse: wheel-up scrolls with --mouse",
-              first_text(moved_text) != first_text(before), moved_text[:400])
-        back = run([(2.5, b"\x1b[<64;40;10M" * 5), (0.5, b"\x1b[<65;40;10M" * 5)],
-                   timeout=8.0, fresh=False, session="scrollfixture")
-        back_text = render(back).text()
-        check("mouse: wheel-down scrolls back symmetrically",
-              first_text(back_text) == first_text(before), back_text[:400])
+        raw = run([(2.0, b"")], timeout=5.0, fresh=False,
+                  session="scrollfixture")
+        off = raw.decode("utf-8", "replace")
+        check("mouse: HAL9001_MOUSE=0 leaves reporting off",
+              "\x1b[?1002h" not in off and "\x1b[?1006h" not in off, off[:200])
     finally:
         os.environ.pop("HAL9001_MOUSE", None)
+
+    # The wheel scrolls the conversation.
+    before = run_fixture_text("scrollfixture")
+    # SGR wheel events (column 40, row 10, 1-based). Five ups move
+    # away from the bottom; five downs return to exactly the same
+    # screen, which a lossy emulator cannot blur.
+    moved = run([(2.5, b"\x1b[<64;40;10M" * 5)], timeout=7.0,
+                 fresh=False, session="scrollfixture")
+    moved_text = render(moved).text()
+    check("mouse: wheel-up scrolls the conversation",
+          first_text(moved_text) != first_text(before), moved_text[:400])
+    back = run([(2.5, b"\x1b[<64;40;10M" * 5), (0.5, b"\x1b[<65;40;10M" * 5)],
+               timeout=8.0, fresh=False, session="scrollfixture")
+    back_text = render(back).text()
+    check("mouse: wheel-down scrolls back symmetrically",
+          first_text(back_text) == first_text(before), back_text[:400])
+
+    # The terminal is left as it was found.
+    raw = run([(2.0, b"/q\r")], timeout=6.0, fresh=False,
+              session="scrollfixture")
+    quit_text = raw.decode("utf-8", "replace")
+    check("mouse: the modes are reset on a clean exit",
+          "\x1b[?1002l" in quit_text, quit_text[-200:])
+
+    raw = run([(2.5, ("signal", "SIGINT"))], timeout=7.0, fresh=False,
+              session="scrollfixture")
+    signal_text = raw.decode("utf-8", "replace")
+    check("mouse: SIGINT ends the program",
+          "\x1b[?1049l" in signal_text, signal_text[-200:])
+    check("mouse: the modes are reset on SIGINT",
+          "\x1b[?1002l" in signal_text, signal_text[-200:])
+
+
+def flag_checks():
+    """The mouse flags are resolved in the documented order, and a
+    contradiction is refused rather than silently resolved."""
+    env = dict(os.environ)
+    env["HAL9001_CONFIG"] = pty_drive.CONFIG
+    env["HAL9001_HOME"] = pty_drive.HOME
+
+    proc = subprocess.run([pty_drive.BINARY, "--mouse", "--no-mouse"],
+                          capture_output=True, env=env, timeout=20)
+    err = proc.stderr.decode("utf-8", "replace")
+    check("flags: --mouse with --no-mouse fails",
+          proc.returncode != 0, str(proc.returncode))
+    check("flags: the error names the flags", "--no-mouse" in err, err)
+
+    proc = subprocess.run([pty_drive.BINARY, "--help"], capture_output=True,
+                          env=env, timeout=20)
+    usage = proc.stdout.decode("utf-8", "replace") + \
+        proc.stderr.decode("utf-8", "replace")
+    check("flags: --help lists --mouse", "-mouse" in usage, usage[-400:])
+    check("flags: --help lists --no-mouse", "-no-mouse" in usage,
+          usage[-400:])
 
 
 def run_fixture_text(session):
@@ -243,59 +300,51 @@ def selection_checks():
     it through OSC 52. The copied text must be the reply's own text: no
     interface labels, no colours."""
     write_scroll_fixture()
-    os.environ["HAL9001_MOUSE"] = "1"
-    try:
-        # SGR press, drag and release on one screen row.
-        dragging = run([(2.5, b"\x1b[<0;8;12M"), (0.6, b"\x1b[<32;44;12M")],
-                       timeout=9.0, fresh=False, session="scrollfixture")
-        check("mouse: the selection is highlighted while it is dragged",
-              "\x1b[7m" in dragging.decode("utf-8", "replace"),
-              dragging.decode("utf-8", "replace")[-200:])
-        raw = run([(2.5, b"\x1b[<0;8;12M"), (0.5, b"\x1b[<32;44;12M"),
-                   (0.5, b"\x1b[<0;44;12m")], timeout=9.0,
-                  fresh=False, session="scrollfixture")
-        text = raw.decode("utf-8", "replace")
-        found = re.search(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07", text)
-        check("mouse: a drag copies the selection", found is not None,
-              text[-300:])
-        if not found:
-            return
-        copied = base64.b64decode(found.group(1)).decode("utf-8", "replace")
-        check("mouse: the copy holds text", copied.strip() != "", repr(copied))
-        check("mouse: the copy has no interface labels",
-              "HAL >" not in copied and "You >" not in copied, repr(copied))
-        check("mouse: the copy has no escape sequences",
-              "\x1b" not in copied, repr(copied))
-        check("mouse: the copy is part of the reply",
-              "paragraph" in copied or "Section" in copied, repr(copied))
-    finally:
-        os.environ.pop("HAL9001_MOUSE", None)
+    # SGR press, drag and release on one screen row.
+    dragging = run([(2.5, b"\x1b[<0;8;12M"), (0.6, b"\x1b[<32;44;12M")],
+                   timeout=9.0, fresh=False, session="scrollfixture")
+    check("mouse: the selection is highlighted while it is dragged",
+          "\x1b[7m" in dragging.decode("utf-8", "replace"),
+          dragging.decode("utf-8", "replace")[-200:])
+    raw = run([(2.5, b"\x1b[<0;8;12M"), (0.5, b"\x1b[<32;44;12M"),
+               (0.5, b"\x1b[<0;44;12m")], timeout=9.0,
+              fresh=False, session="scrollfixture")
+    text = raw.decode("utf-8", "replace")
+    found = re.search(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07", text)
+    check("mouse: a drag copies the selection", found is not None,
+          text[-300:])
+    if not found:
+        return
+    copied = base64.b64decode(found.group(1)).decode("utf-8", "replace")
+    check("mouse: the copy holds text", copied.strip() != "", repr(copied))
+    check("mouse: the copy has no interface labels",
+          "HAL >" not in copied and "You >" not in copied, repr(copied))
+    check("mouse: the copy has no escape sequences",
+          "\x1b" not in copied, repr(copied))
+    check("mouse: the copy is part of the reply",
+          "paragraph" in copied or "Section" in copied, repr(copied))
 
 
 def composer_mouse_checks():
     """The wheel over the composer scrolls the draft instead of the
     conversation, and the caret stays where it was."""
     write_scroll_fixture()
-    os.environ["HAL9001_MOUSE"] = "1"
-    try:
-        before = run([(2.0, b"draft line\r draft line\r draft line\r")],
-                     timeout=6.0, fresh=False, session="scrollfixture")
-        before_text = render(before).text()
-        # The composer sits above the footer: row 21 of 24.
-        moved = run([(2.0, b"draft line\r draft line\r draft line\r"),
-                     (0.6, b"\x1b[<64;20;21M"), (0.6, b"\x1b[<64;20;21M")],
-                    timeout=9.0, fresh=False, session="scrollfixture")
-        moved_text = render(moved).text()
-        check("mouse: the wheel over the composer leaves the conversation alone",
-              "Section" in moved_text, moved_text[:400])
-        check("mouse: the wheel over the composer keeps the draft",
-              "draft line" in moved_text, moved_text[:400])
-        check("mouse: the composer window does not move the caret",
-              before_text.count("draft line") == moved_text.count("draft line"),
-              "%d vs %d" % (before_text.count("draft line"),
-                            moved_text.count("draft line")))
-    finally:
-        os.environ.pop("HAL9001_MOUSE", None)
+    before = run([(2.0, b"draft line\r draft line\r draft line\r")],
+                 timeout=6.0, fresh=False, session="scrollfixture")
+    before_text = render(before).text()
+    # The composer sits above the footer: row 21 of 24.
+    moved = run([(2.0, b"draft line\r draft line\r draft line\r"),
+                 (0.6, b"\x1b[<64;20;21M"), (0.6, b"\x1b[<64;20;21M")],
+                timeout=9.0, fresh=False, session="scrollfixture")
+    moved_text = render(moved).text()
+    check("mouse: the wheel over the composer leaves the conversation alone",
+          "Section" in moved_text, moved_text[:400])
+    check("mouse: the wheel over the composer keeps the draft",
+          "draft line" in moved_text, moved_text[:400])
+    check("mouse: the composer window does not move the caret",
+          before_text.count("draft line") == moved_text.count("draft line"),
+          "%d vs %d" % (before_text.count("draft line"),
+                        moved_text.count("draft line")))
 
 
 def exit_checks():
@@ -421,8 +470,8 @@ def main():
     check("alternate screen reset on exit", "\x1b[?1049l" in text)
     check("bracketed paste reset on exit", "\x1b[?2004l" in text)
     check("cursor shown again on exit", "\x1b[?25h" in text)
-    check("mouse never captured",
-          "\x1b[?1000h" not in text and "\x1b[?1006h" not in text)
+    check("mouse reporting is on by default", "\x1b[?1006h" in text)
+    check("mouse modes reset on exit", "\x1b[?1002l" in text)
 
     # Enter sends the message.
     text = screen(run([(2.0, b"hello hal\r")], timeout=6.0)).text()
@@ -468,6 +517,7 @@ def main():
     token_checks()
     rename_checks()
     mouse_checks()
+    flag_checks()
     selection_checks()
     composer_mouse_checks()
 

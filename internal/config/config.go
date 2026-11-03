@@ -8,6 +8,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -30,8 +31,9 @@ const (
 	EnvStreamIdleTimeout = "HAL9001_STREAM_IDLE_TIMEOUT"
 	// EnvTurnTimeout bounds one whole turn, in seconds.
 	EnvTurnTimeout = "HAL9001_TURN_TIMEOUT"
-	// EnvMouse enables terminal mouse reporting for wheel scrolling.
-	// Off by default because reporting disables native text selection.
+	// EnvMouse turns terminal mouse reporting on or off: 1/true/yes/on
+	// enables it, 0/false/no/off disables it. Unset leaves the default,
+	// which is enabled.
 	EnvMouse = "HAL9001_MOUSE"
 )
 
@@ -223,9 +225,9 @@ type Config struct {
 	Session  string
 	StoreDir string
 	NoColor  bool
-	// Mouse requests terminal mouse reporting so the wheel scrolls the
-	// conversation. Off by default: reporting disables native text
-	// selection in most terminals.
+	// Mouse requests terminal mouse reporting, so the wheel scrolls the
+	// conversation and a drag selects text. On by default; --no-mouse
+	// turns it off and leaves the terminal's own selection in charge.
 	Mouse    bool
 	ShowHelp bool
 	List     bool
@@ -289,7 +291,11 @@ func LoadErr(args []string) (Config, error) {
 	fs.StringVar(&cfg.Session, "session", cfg.Session, "conversation session name")
 	fs.StringVar(&cfg.StoreDir, "store", cfg.StoreDir, "conversation storage directory")
 	fs.BoolVar(&cfg.NoColor, "no-color", os.Getenv("NO_COLOR") != "", "disable colors")
-	fs.BoolVar(&cfg.Mouse, "mouse", envBool(EnvMouse), "report mouse events for wheel scrolling (disables native selection)")
+	// The mouse flags are read after parsing, because the flag package
+	// cannot tell "not given" from "given as false".
+	var mouseFlag, noMouseFlag bool
+	fs.BoolVar(&mouseFlag, "mouse", false, "report mouse events (the default): the wheel scrolls and a drag selects text")
+	fs.BoolVar(&noMouseFlag, "no-mouse", false, "do not report mouse events: the terminal keeps its own text selection")
 	fs.BoolVar(&cfg.List, "list-sessions", false, "list stored sessions and exit")
 	fs.IntVar(&cfg.MaxTokens, "max-tokens", cfg.MaxTokens, "cap one response (0 uses the default)")
 	fs.IntVar(&cfg.StreamIdleSeconds, "stream-idle-timeout", cfg.StreamIdleSeconds, "seconds of silence before a stream is closed")
@@ -297,6 +303,11 @@ func LoadErr(args []string) (Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
+	mouse, err := resolveMouse(fs, mouseFlag, noMouseFlag)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Mouse = mouse
 	cfg.configured = strings.TrimSpace(cfg.Endpoint) != "" &&
 		strings.TrimSpace(cfg.Model) != "" &&
 		strings.TrimSpace(cfg.APIKey) != ""
@@ -317,13 +328,41 @@ func envInt(name string) int {
 	return n
 }
 
-// envBool parses a truthy environment value: 1, true or yes.
-func envBool(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "1", "true", "yes":
-		return true
+// resolveMouse decides whether the terminal reports mouse events.
+//
+// Precedence: an explicit flag wins, then the environment, then the
+// default, which is enabled. Asking for both --mouse and --no-mouse is
+// a contradiction and is refused rather than resolved silently.
+func resolveMouse(fs *flag.FlagSet, mouseFlag, noMouseFlag bool) (bool, error) {
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	switch {
+	case given["mouse"] && given["no-mouse"]:
+		return false, errors.New("--mouse and --no-mouse cannot be used together")
+	case given["mouse"]:
+		// The flag's value is honoured, so --mouse=false means off.
+		return mouseFlag, nil
+	case given["no-mouse"]:
+		return !noMouseFlag, nil
 	}
-	return false
+	if v, ok := envMouse(EnvMouse); ok {
+		return v, nil
+	}
+	return true, nil
+}
+
+// envMouse reads a mouse setting from the environment. It reports
+// whether the variable was set: 1/true/yes/on enables mouse reporting,
+// 0/false/no/off disables it, and anything else is ignored so a typo
+// cannot quietly change the terminal's behaviour.
+func envMouse(name string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	}
+	return false, false
 }
 
 // firstNonZero returns the first positive value.
