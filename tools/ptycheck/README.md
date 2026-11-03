@@ -66,6 +66,10 @@ something fails.
   terminal colours and cursor.
 - The active conversation survives `/clear` and a relaunch, an empty new
   session stays selected, and `/sessions` recovers the previous one.
+- The footer row is contextual: the permission line on an empty composer,
+  `Enter send · Ctrl+J newline · Ctrl+U clear · /help` while there is a
+  draft, and `Ctrl+Z restore · /help` after `Ctrl+U` — on every theme and
+  shortened, not clipped, on a narrow terminal.
 - The footer and `/usage` report provider token usage; each finished
   answer carries a metadata line and the composer starts at one row.
 - The wheel scrolls symmetrically; with `--no-mouse` no mouse reporting

@@ -68,12 +68,17 @@ terminal never scrolls.
 Layout: a one-line `● HAL9001` header, a rule, the scrollable Markdown
 conversation, exactly one blank row, an optional command suggestion
 panel, a bordered composer with one text row by default (growing to
-five), a one-line status footer (`444 READ ONLY · /help` left, model and
-effort right) and a notice line. A `chatFrame` resolves that geometry
-once per size change; on short terminals it gives up the suggestion
-panel, the separator, the notice, the rules and finally the border —
-never the header, the composer text or the footer. Overlays replace the
-conversation region with their panel.
+five), a one-line status footer and a notice line. The footer's left
+side follows the draft — the permission line (`444 READ ONLY · /help`)
+when the composer is empty, the editing keys while it holds text, and the
+undo hint while a cleared draft can be restored — and its right side is
+the model and effort. The footer is one row at every width: the layout
+drops the effort, then the token usage, then part of the hint, then the
+model, so it never wraps and never moves the conversation. A `chatFrame`
+resolves that geometry once per size change; on short terminals it gives
+up the suggestion panel, the separator, the notice, the rules and finally
+the border — never the header, the composer text or the footer. Overlays
+replace the conversation region with their panel.
 
 Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`) with an
 wheel: `View.MouseMode` is on unless `--no-mouse` or

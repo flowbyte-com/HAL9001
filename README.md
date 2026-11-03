@@ -220,12 +220,21 @@ HAL remembers which conversation was active,
 
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;
-narrow terminals hide it before the model name or the 444 marker. `/usage`
+narrow terminals hide it before the model name. `/usage`
 breaks it down: input, output, reasoning, cached input, the last turn and
 how many turns were completed versus ended without a usage report. Counts
 come only from the provider — HAL never estimates or prices tokens — and
 are stored per session across restarts. `/diag` remains the place for
 streaming diagnostics.
+
+**The footer row.** The line under the composer is contextual. With an
+empty composer it is the permission line (`444 READ ONLY · /help`). As
+soon as the draft has text it offers the keys that act on it — `Enter
+send · Ctrl+J newline · Ctrl+U clear · /help` — and after `Ctrl+U` it
+offers the way back (`Ctrl+Z restore · /help`) until the draft is
+restored, submitted or the session changes. It is the same row as
+always: nothing is added, the conversation does not move, and a narrow
+terminal shortens the hint instead of clipping the row.
 
 **Clearing.** `/clear` empties the visible conversation and starts a fresh
 context for the next request, and selects that new session for later

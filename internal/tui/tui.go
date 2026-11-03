@@ -43,6 +43,13 @@ const (
 	keyEnter  = "enter"
 )
 
+// The draft keys. The footer hint and the clear notice are built from
+// these, so a rebound key can never leave a stale hint on screen.
+const (
+	keyClearDraft   = "ctrl+u"
+	keyRestoreDraft = "ctrl+z"
+)
+
 // newlineKeys insert a line break in the composer instead of sending.
 // ctrl+j is the universally reliable fallback; alt+enter arrives as ESC
 // CR on xterm-compatible terminals; shift+enter requires the Kitty
@@ -808,10 +815,10 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch key {
-		case "ctrl+u":
+		case keyClearDraft:
 			m.clearDraft()
 			return m, nil
-		case "ctrl+z":
+		case keyRestoreDraft:
 			m.restoreDraft()
 			return m, nil
 		}
@@ -1182,7 +1189,7 @@ func (m *Model) clearDraft() {
 	m.composer.Reset()
 	m.refreshSuggestions()
 	m.fitComposer()
-	m.notice = "Draft cleared · Ctrl+Z to restore"
+	m.notice = "Draft cleared · " + keyName(keyRestoreDraft) + " to restore"
 }
 
 // restoreDraft puts the last cleared draft back, but only into an empty
@@ -2294,7 +2301,6 @@ func (m Model) rule() string {
 
 func (m Model) statusBar() string {
 	st := m.theme.styles()
-	left := "444 READ ONLY · /help"
 	model := strings.TrimSpace(m.model)
 	effort := ""
 	if m.effortSupported && m.effort != "" {
@@ -2304,17 +2310,13 @@ func (m Model) statusBar() string {
 	if effort != "" {
 		right = strings.TrimSpace(model + " · " + effort)
 	}
-	// Narrow terminals shed detail in this order: effort, then the token
-	// usage, then the help hint, then the model. The permission indicator
-	// is the last thing to go.
-	candidates := []struct{ left, mid, right string }{
-		{left, m.usageLabel(), right},
-		{left, m.usageLabel(), model},
-		{left, "", model},
-		{"444 READ ONLY", "", model},
-		{"444 READ ONLY", "", ""},
-	}
-	for _, c := range candidates {
+	// The left side is contextual: the keys that act on a draft while
+	// there is one, the undo hint while a cleared draft can be restored,
+	// and the permission line when there is nothing to act on. Narrow
+	// terminals shed detail in this order: effort, then the token usage,
+	// then part of the hint, then the model — the row never wraps and
+	// never grows.
+	for _, c := range m.footerCandidates(right, model) {
 		if bar, ok := fitStatusBar(c.left, c.mid, c.right, m.width); ok {
 			if !m.color {
 				return bar
@@ -2322,14 +2324,93 @@ func (m Model) statusBar() string {
 			return st.footer.Render(bar)
 		}
 	}
-	bar := "444 READ ONLY"
-	if m.width > 0 && len(bar) > m.width {
-		bar = bar[:m.width]
+	bar := m.footerHint()
+	if m.width > 0 {
+		bar = lipgloss.NewStyle().MaxWidth(m.width).Render(bar)
 	}
 	if !m.color {
 		return bar
 	}
 	return st.footer.Render(bar)
+}
+
+// footerCandidate is one way to lay out the footer: a left hint, an
+// optional middle section and a right section.
+type footerCandidate struct{ left, mid, right string }
+
+// footerCandidates lists the footer layouts from richest to plainest.
+//
+// The order is the order detail is given up: the effort, then the token
+// usage, then part of the hint, and only then the model. The shortest
+// hint is the last thing to go. The empty-draft list is exactly the list
+// the footer has always used.
+func (m Model) footerCandidates(right, model string) []footerCandidate {
+	usage := m.usageLabel()
+	hints := m.footerHints()
+	out := []footerCandidate{
+		{hints[0], usage, right},
+		{hints[0], usage, model},
+	}
+	for _, left := range hints {
+		out = append(out, footerCandidate{left, "", model})
+	}
+	last := hints[len(hints)-1]
+	return append(out, footerCandidate{last, "", ""})
+}
+
+// footerHints is the left-hand shortcut text for the current draft, from
+// longest to shortest. A narrow terminal takes the next one down.
+func (m Model) footerHints() []string {
+	clear := keyName(keyClearDraft)
+	switch {
+	case m.draftActive():
+		return []string{
+			"Enter send · Ctrl+J newline · " + clear + " clear · /help",
+			"Enter send · " + clear + " clear · /help",
+			clear + " clear · /help",
+			clear + " clear",
+			clear,
+		}
+	case m.undoValid:
+		restore := keyName(keyRestoreDraft)
+		return []string{
+			restore + " restore · /help",
+			restore + " restore",
+			restore,
+		}
+	}
+	return []string{"444 READ ONLY · /help", "444 READ ONLY"}
+}
+
+// footerHint is the shortest legible hint for the current draft.
+func (m Model) footerHint() string {
+	hints := m.footerHints()
+	return hints[len(hints)-1]
+}
+
+// draftActive reports whether the composer holds something Ctrl+U would
+// clear. It is the same predicate clearDraft uses, so the hint never
+// offers a key that would do nothing.
+func (m Model) draftActive() bool {
+	return strings.TrimSpace(m.composer.Value()) != ""
+}
+
+// keyName renders a key binding for a hint: "ctrl+u" becomes "Ctrl+U".
+func keyName(binding string) string {
+	parts := strings.Split(binding, "+")
+	for i, part := range parts {
+		switch part {
+		case "ctrl":
+			parts[i] = "Ctrl"
+		case "alt":
+			parts[i] = "Alt"
+		case "shift":
+			parts[i] = "Shift"
+		default:
+			parts[i] = strings.ToUpper(part)
+		}
+	}
+	return strings.Join(parts, "+")
 }
 
 // usageLabel is the compact footer indicator. With no accounting at all
@@ -2347,28 +2428,32 @@ func (m Model) usageLabel() string {
 
 // fitStatusBar lays out left, an optional middle section and right within
 // width, reporting whether they fit.
+//
+// Widths are display cells, not bytes: the separators are multi-byte and
+// a byte count would leave the right section a cell short for each one.
 func fitStatusBar(left, mid, right string, width int) (string, bool) {
 	if width < 1 {
 		return "", false
 	}
+	l, m, r := lipgloss.Width(left), lipgloss.Width(mid), lipgloss.Width(right)
 	switch {
 	case mid == "" && right == "":
-		if len(left) > width {
+		if l > width {
 			return "", false
 		}
 		return left, true
 	case mid == "":
-		if len(left)+len(right)+1 > width {
+		if l+r+1 > width {
 			return "", false
 		}
-		return left + strings.Repeat(" ", width-len(left)-len(right)) + right, true
+		return left + strings.Repeat(" ", width-l-r) + right, true
 	case right == "":
-		if len(left)+len(mid)+1 > width {
+		if l+m+1 > width {
 			return "", false
 		}
 		return left + " " + mid, true
 	default:
-		pad := width - len(left) - len(mid) - len(right) - 1
+		pad := width - l - m - r - 1
 		if pad < 1 {
 			return "", false
 		}

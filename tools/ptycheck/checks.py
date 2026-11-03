@@ -702,6 +702,62 @@ def draft_notice_checks():
           scrolled[:400])
 
 
+def footer_hint_checks():
+    """The footer row under the composer is contextual: it offers the keys
+    that act on the draft, then the undo hint, then the minimal line."""
+    def hint(script, cols=100, rows=30, timeout=4.0):
+        raw = run(script, cols=cols, rows=rows, timeout=timeout, fresh=True,
+                  session="hintcheck")
+        return render(raw, cols, rows).text()
+
+    empty = hint([(1.5, b"")])
+    check("footer: an empty composer keeps the minimal line",
+          "444 READ ONLY · /help" in empty, empty)
+    check("footer: an empty composer does not offer Ctrl+U",
+          "Ctrl+U" not in empty, empty)
+
+    typed = hint([(1.5, b"hello")])
+    check("footer: typing offers the editing keys",
+          "Enter send · Ctrl+J newline · Ctrl+U clear · /help" in typed, typed)
+    check("footer: the model stays in the row", "MiniMax-M3.1-Flash" in typed,
+          typed)
+
+    cleared = hint([(1.5, b"hello"), (0.6, b"\x15")])
+    check("footer: Ctrl+U offers the bound restore key",
+          "Ctrl+Z restore · /help" in cleared, cleared)
+    check("footer: a cleared draft does not offer Ctrl+U",
+          "Ctrl+U" not in cleared, cleared)
+
+    restored = hint([(1.5, b"hello"), (0.5, b"\x15"), (0.5, b"\x1a")], timeout=4.5)
+    check("footer: restoring offers the clear key again",
+          "Ctrl+U clear" in restored, restored)
+
+    submitted = hint([(1.5, b"hello\r"), (1.5, b"")], timeout=5.5)
+    check("footer: submitting returns the minimal line",
+          "444 READ ONLY · /help" in submitted and "Ctrl+U" not in submitted,
+          submitted)
+
+    pasted = hint([(1.5, bracket_paste("alpha\nbravo")), (0.6, b"")])
+    check("footer: a paste offers the editing keys", "Ctrl+U clear" in pasted,
+          pasted)
+
+    # A narrow terminal shortens the hint instead of clipping the row.
+    narrow = hint([(1.5, b"hello")], cols=40, rows=20, timeout=3.5)
+    check("footer: a narrow terminal keeps the clear key visible",
+          "Ctrl+U clear" in narrow, narrow)
+
+    # The row is legible on every theme.
+    original = pty_drive.CONFIG
+    try:
+        for name, _ in THEMES:
+            pty_drive.CONFIG = write_theme_config(name, name)
+            text = hint([(1.5, b"hello")], timeout=3.5)
+            check("footer: the hint is visible on %s" % name,
+                  "Ctrl+U clear" in text, text)
+    finally:
+        pty_drive.CONFIG = original
+
+
 def composer_mouse_checks():
     """The wheel over the composer scrolls the draft instead of the
     conversation, and the caret stays where it was."""
@@ -904,6 +960,7 @@ def main():
     collapse_checks()
     paste_checks()
     draft_notice_checks()
+    footer_hint_checks()
     composer_mouse_checks()
 
     # Common terminal sizes keep the frame the right size.
@@ -915,11 +972,15 @@ def main():
               "444 READ ONLY" in lines[-2], repr(lines[-2:]))
         check(f"{cols}x{rows}: no terminal scroll", len(lines) == rows, str(len(lines)))
 
-    # A resize keeps the layout intact.
+    # A resize keeps the layout intact. The draft is still in the
+    # composer, so the footer carries the editing keys rather than the
+    # permission line; either way it is the same row at the bottom.
     s = screen(run([(2.0, b"hi"), (1.5, ("resize", 60, 15))], timeout=9.0), 60, 15)
     lines = s.text().split("\n")
     check("resize keeps the header", "HAL9001" in lines[0], repr(lines[0]))
-    check("resize keeps the footer", "444 READ ONLY" in lines[-2], repr(lines[-2:]))
+    footer = lines[-2]
+    check("resize keeps the footer",
+          "444 READ ONLY" in footer or "Ctrl+U clear" in footer, repr(lines[-2:]))
     check("resize leaves no leftover rows", len(lines) == 15, str(len(lines)))
 
     print()
