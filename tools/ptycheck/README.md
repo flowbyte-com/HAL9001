@@ -61,10 +61,13 @@ something fails.
 - The wheel scrolls symmetrically; with `--no-mouse` no mouse reporting
   (`?1002h`) is requested and native selection is untouched.
 - The mouse modes are reset when HAL exits, so the terminal is left as
-  it was found.
+  it was found — after a clean exit and after `SIGINT`.
 - A left drag over the conversation copies the selected text through
   OSC 52: the payload is the reply's own text, without labels, colours
-  or escape sequences.
+  or escape sequences. The text is marked while the drag is running.
+- `--mouse` with `--no-mouse` is refused, and a malformed
+  `HAL9001_MOUSE` is refused with a message that names the variable —
+  unless a flag has already decided.
 - The wheel over the composer scrolls the draft and leaves the caret
   where it was.
 - `Ctrl+U` clears the draft, `Ctrl+Z` restores it.

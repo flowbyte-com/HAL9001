@@ -291,8 +291,56 @@ def flag_checks():
           usage[-400:])
 
 
+def env_checks():
+    """A malformed HAL9001_MOUSE is refused with a clear message, and a
+    flag that decides is not blocked by it."""
+    env = dict(os.environ)
+    env["HAL9001_CONFIG"] = pty_drive.CONFIG
+    env["HAL9001_HOME"] = pty_drive.HOME
+    env["HAL9001_MOUSE"] = "maybe"
+
+    proc = subprocess.run([pty_drive.BINARY, "--list-sessions"],
+                          capture_output=True, env=env, timeout=20)
+    err = proc.stderr.decode("utf-8", "replace")
+    check("env: a malformed HAL9001_MOUSE fails",
+          proc.returncode != 0, str(proc.returncode))
+    check("env: the error names the variable", "HAL9001_MOUSE" in err, err)
+    check("env: the error names the value", "maybe" in err, err)
+    check("env: the error holds no secret",
+          "test-key" not in err, err)
+
+    # A flag decides on its own, so the malformed value is irrelevant.
+    proc = subprocess.run([pty_drive.BINARY, "--list-sessions", "--mouse"],
+                          capture_output=True, env=env, timeout=20)
+    check("env: a valid flag is not blocked by a malformed value",
+          proc.returncode == 0, proc.stderr.decode("utf-8", "replace"))
+
+    # Every accepted form works.
+    for value in ("1", "true", "yes", "on", "0", "false", "no", "off"):
+        env["HAL9001_MOUSE"] = value
+        proc = subprocess.run([pty_drive.BINARY, "--list-sessions"],
+                              capture_output=True, env=env, timeout=20)
+        if proc.returncode != 0:
+            check("env: HAL9001_MOUSE=%s is accepted" % value, False,
+                  proc.stderr.decode("utf-8", "replace"))
+
+
 def run_fixture_text(session):
     return run_fixture(session)
+
+
+def has_reverse_video(text):
+    """True when the stream turns the reverse-video attribute on.
+
+    The terminal renderer merges the attributes of a run of cells into a
+    single escape sequence, so the attribute is looked for as a
+    parameter rather than as a sequence of its own.
+    """
+    for match in re.finditer(r"\x1b\[([0-9;]*)m", text):
+        for param in match.group(1).split(";"):
+            if param == "7":
+                return True
+    return False
 
 
 def selection_checks():
@@ -304,7 +352,7 @@ def selection_checks():
     dragging = run([(2.5, b"\x1b[<0;8;12M"), (0.6, b"\x1b[<32;44;12M")],
                    timeout=9.0, fresh=False, session="scrollfixture")
     check("mouse: the selection is highlighted while it is dragged",
-          "\x1b[7m" in dragging.decode("utf-8", "replace"),
+          has_reverse_video(dragging.decode("utf-8", "replace")),
           dragging.decode("utf-8", "replace")[-200:])
     raw = run([(2.5, b"\x1b[<0;8;12M"), (0.5, b"\x1b[<32;44;12M"),
                (0.5, b"\x1b[<0;44;12m")], timeout=9.0,
@@ -518,6 +566,7 @@ def main():
     rename_checks()
     mouse_checks()
     flag_checks()
+    env_checks()
     selection_checks()
     composer_mouse_checks()
 
