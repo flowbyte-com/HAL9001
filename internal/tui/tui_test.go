@@ -60,6 +60,14 @@ func drain(m Model, cmd tea.Cmd) Model {
 		return m
 	}
 	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		// A batch runs its commands concurrently in the program; the
+		// helper runs them in order so a test sees the final state.
+		for _, sub := range batch {
+			m = drain(m, sub)
+		}
+		return m
+	}
 	if _, ok := msg.(noticeExpireMsg); ok {
 		return m
 	}

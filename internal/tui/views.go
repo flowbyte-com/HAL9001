@@ -1050,6 +1050,8 @@ func (m *Model) scrollPanel(delta int) {
 	switch m.view {
 	case viewDiag:
 		total = len(m.diagRows())
+	case viewApprove:
+		total = len(m.approvalRows())
 	default:
 		total = len(m.helpRows())
 	}
@@ -1078,6 +1080,8 @@ func (m *Model) clearConversation() {
 // a new session store and resets the visible conversation. The previous
 // session file is never deleted; it stays available through /sessions.
 func (m *Model) startFreshConversation(notice string) {
+	// A pending write belongs to the conversation it was prepared for.
+	m.cancelWrite("conversation changed")
 	m.closeSuggestions()
 	if m.sending {
 		m.stopStream()

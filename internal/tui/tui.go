@@ -24,6 +24,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/usage"
+	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
 
 // Keys.
@@ -48,6 +49,14 @@ const (
 const (
 	keyClearDraft   = "ctrl+u"
 	keyRestoreDraft = "ctrl+z"
+)
+
+// The approval keys. Chords on purpose: a stray letter, typed text or a
+// paste can never decide a write request, only a deliberate chord in the
+// approval view can.
+const (
+	keyApproveWrite = "ctrl+y"
+	keyRejectWrite  = "ctrl+n"
 )
 
 // newlineKeys insert a line break in the composer instead of sending.
@@ -212,6 +221,7 @@ const (
 	viewEffort
 	viewUsage
 	viewRename
+	viewApprove
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -422,6 +432,16 @@ type Model struct {
 	renameOpen  bool
 	// Help view state.
 	helpNotice string
+	// workspace is the trusted store for approved writes. Nil means the
+	// interface has no write capability: a proposal can never be
+	// approved, and HAL stays 444.
+	workspace *workspace.Store
+	// write is the proposal awaiting the operator's decision, writeOpen
+	// tells whether the approval view is showing, and writeState names
+	// the capability state (444, 666 REQUESTED, 666 WRITING).
+	write      workspace.Proposal
+	writeOpen  bool
+	writeState writeState
 }
 
 // New builds the interface. Color follows ColorEnabled at construction so
@@ -527,6 +547,7 @@ func (m *Model) SetTitle(title string) { m.title = title }
 // finished turn is not stored, so reopening a conversation never
 // perpetuates it.
 func (m *Model) SetHistory(lines []SessionLine) {
+	m.cancelWrite("session changed")
 	m.entries = nil
 	m.pending = ""
 	m.clearUndo()
@@ -586,6 +607,8 @@ type streamStartedMsg struct{ id int }
 type responseMsg struct {
 	id   int
 	text string
+	// proposal is one prepared write awaiting the operator's decision.
+	proposal *workspace.Proposal
 }
 type errorMsg struct {
 	id  int
@@ -612,11 +635,26 @@ func (m Model) sendCmd(id int, input string, ctx context.Context) tea.Cmd {
 }
 
 func (m Model) runRespond(id int, input string, ctx context.Context) tea.Msg {
-	reply, err := m.engine.RespondStream(ctx, input, nil)
+	var proposal *workspace.Proposal
+	reply, err := m.respondEvents(ctx, input, func(ev engine.Event) {
+		if ev.Proposal != nil {
+			p := *ev.Proposal
+			proposal = &p
+		}
+	})
 	if err != nil {
 		return errorMsg{id: id, err: err}
 	}
-	return responseMsg{id: id, text: reply}
+	return responseMsg{id: id, text: reply, proposal: proposal}
+}
+
+// respondEvents runs one turn and forwards its events. Engines without
+// progress events still answer; they simply bring no proposals.
+func (m Model) respondEvents(ctx context.Context, input string, emit func(engine.Event)) (string, error) {
+	if pe, ok := m.engine.(ProgressEngine); ok {
+		return pe.RespondStreamEvents(ctx, input, emit)
+	}
+	return m.engine.RespondStream(ctx, input, func(string) {})
 }
 
 // runStream drives the live turn. The engine reports reasoning presence
@@ -633,12 +671,20 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 			m.sender(streamThinkingMsg{id: id})
 		}
 	}
+	var proposal *workspace.Proposal
+	collect := func(ev engine.Event) {
+		if ev.Proposal != nil {
+			p := *ev.Proposal
+			proposal = &p
+		}
+		emit(ev)
+	}
 	var (
 		reply string
 		err   error
 	)
 	if pe, ok := m.engine.(ProgressEngine); ok {
-		reply, err = pe.RespondStreamEvents(ctx, input, emit)
+		reply, err = pe.RespondStreamEvents(ctx, input, collect)
 	} else {
 		reply, err = m.engine.RespondStream(ctx, input, func(text string) {
 			m.sender(streamDeltaMsg{id: id, text: text})
@@ -648,7 +694,7 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 		m.sender(errorMsg{id: id, err: err})
 		return
 	}
-	m.sender(responseMsg{id: id, text: reply})
+	m.sender(responseMsg{id: id, text: reply, proposal: proposal})
 }
 
 // Update implements tea.Model.
@@ -704,6 +750,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateUsage(msg)
 	case viewRename:
 		return m.updateRename(msg)
+	case viewApprove:
+		return m.updateApprove(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -909,7 +957,14 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The prompt was collapsed to make room for the answer. Now
 		// that the answer is here, the prompt opens again.
 		m.expandAfterTurn()
+		if msg.proposal != nil {
+			// One operation is ready for review. The overlay is the only
+			// authority: nothing is written until the operator says so.
+			m.requestWrite(*msg.proposal)
+		}
 		return m, nil
+	case writeResultMsg:
+		return m.updateWrite(msg)
 	case copyResultMsg:
 		return m.updateCopyResult(msg)
 	case errorMsg:
@@ -1291,6 +1346,7 @@ func turnFromStats(s provider.TurnStats) usage.Turn {
 // quit cancels any live turn and asks the program to exit. Ctrl+C and the
 // exit commands share this path, so there is one shutdown implementation.
 func (m *Model) quit() tea.Cmd {
+	m.cancelWrite("application exit")
 	m.stopStream()
 	m.sending = false
 	m.pending = ""
@@ -2119,6 +2175,8 @@ func (m Model) activePanel() []string {
 		return m.usageRows()
 	case viewRename:
 		return m.renameRows()
+	case viewApprove:
+		return m.approvalRows()
 	}
 	return nil
 }
@@ -2363,6 +2421,14 @@ func (m Model) footerCandidates(right, model string) []footerCandidate {
 func (m Model) footerHints() []string {
 	clear := keyName(keyClearDraft)
 	switch {
+	case m.writeState == writeWriting:
+		return []string{m.permissionLabel() + " · " + m.writeStatePath(), m.permissionLabel()}
+	case m.writeState == writeRequested:
+		return []string{
+			"666 REQUESTED · " + keyName(keyApproveWrite) + " approve · " + keyName(keyRejectWrite) + " reject · Esc rejects",
+			"666 REQUESTED · " + keyName(keyApproveWrite) + " approve · " + keyName(keyRejectWrite) + " reject",
+			"666 REQUESTED",
+		}
 	case m.draftActive():
 		return []string{
 			"Enter send · Ctrl+J newline · " + clear + " clear · /help",
@@ -2379,7 +2445,15 @@ func (m Model) footerHints() []string {
 			restore,
 		}
 	}
-	return []string{"444 READ ONLY · /help", "444 READ ONLY"}
+	return []string{m.permissionLabel() + " · /help", m.permissionLabel()}
+}
+
+// writeStatePath is the destination shown beside 666 WRITING.
+func (m Model) writeStatePath() string {
+	if m.write.Path == "" {
+		return "one file"
+	}
+	return m.displayWritePath(m.write)
 }
 
 // footerHint is the shortest legible hint for the current draft.
