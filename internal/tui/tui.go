@@ -223,6 +223,23 @@ const (
 	userPreviewRows = 4
 )
 
+// collapseState says how a long user message is presented.
+//
+// The states are distinct on purpose. A message the operator collapsed
+// stays collapsed; a message that was only collapsed to make room for
+// the answer opens again when the answer is there. The state is
+// presentation only: it never touches the stored message.
+type collapseState int
+
+const (
+	// collapseShown means the message is shown in full.
+	collapseShown collapseState = iota
+	// collapseManual means the operator collapsed the message.
+	collapseManual
+	// collapseAuto means the message was collapsed for the running turn.
+	collapseAuto
+)
+
 // entry is one conversation turn. Text is the original, untouched: user
 // text as typed and assistant text as Markdown. rows caches the rendered
 // form for the current width. note marks an explanatory line that is not
@@ -231,11 +248,15 @@ const (
 type entry struct {
 	role     string // "user" or "assistant"
 	text     string
-	expanded bool
+	collapse collapseState
 	note     bool
 	meta     usage.Turn
 	hasMeta  bool
 	rows     []string
+	// deco marks the rows that are interface decoration rather than
+	// message text: the collapse hint and the answer's metadata line.
+	// They stay on screen, but a selection never copies them.
+	deco []bool
 	// logical holds the entry's unwrapped lines of text. The rows are
 	// wrapped for the screen; the logical lines are what a selection
 	// copies, so a wrapped line never becomes two lines.
@@ -457,13 +478,17 @@ func (m *Model) SetTitle(title string) { m.title = title }
 
 // SetHistory replaces the conversation view with stored turns (raw user
 // text, raw assistant Markdown rendered on display).
+//
+// A stored turn is shown in full: the collapse that belonged to a
+// finished turn is not stored, so reopening a conversation never
+// perpetuates it.
 func (m *Model) SetHistory(lines []SessionLine) {
 	m.entries = nil
 	m.pending = ""
 	m.clearUndo()
 	m.clearSelection()
 	for _, line := range lines {
-		m.entries = append(m.entries, entry{role: line.Role, text: line.Text})
+		m.entries = append(m.entries, entry{role: line.Role, text: line.Text, collapse: collapseShown})
 	}
 	m.attachHistoryMeta()
 	m.rewrap()
@@ -683,6 +708,9 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.stopStream()
 				m.sending = false
 				m.notice = "cancelled — stored nothing from the assistant"
+				// The turn is over, so the prompt that was collapsed
+				// for it opens again.
+				m.expandAfterTurn()
 				return m, nil
 			}
 			// Remember the escape: a terminal that splits Alt+Enter into
@@ -798,6 +826,9 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if reported != nil && reported.HasUsage {
 			m.attachMeta(i, turnFromStats(*reported))
 		}
+		// The prompt was collapsed to make room for the answer. Now
+		// that the answer is here, the prompt opens again.
+		m.expandAfterTurn()
 		return m, nil
 	case copyResultMsg:
 		return m.updateCopyResult(msg)
@@ -830,6 +861,9 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "error: " + msg.err.Error()
 			m.appendNote("assistant", "(I couldn't answer that: "+msg.err.Error()+")")
 		}
+		// The turn is over, however it ended: a prompt that was
+		// collapsed for it opens again instead of staying abbreviated.
+		m.expandAfterTurn()
 		return m, nil
 	}
 	if m.ready {
@@ -905,7 +939,11 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.fitComposer()
 	m.streamID++
 	id := m.streamID
-	m.appendEntry("user", input)
+	i := m.appendEntry("user", input)
+	// A long prompt is collapsed while HAL answers: the answer is what
+	// the operator wants to read. The collapse is temporary and the
+	// prompt opens again when the answer is there.
+	m.collapseForTurn(i)
 	m.viewport.GotoBottom()
 	m.pending = ""
 	m.sending = true
@@ -1504,7 +1542,9 @@ func (m *Model) renderEntry(i int) {
 	e := &m.entries[i]
 	switch e.role {
 	case "user":
-		e.rows = m.renderUser(e)
+		rows, deco := m.renderUser(e)
+		e.rows = rows
+		e.deco = deco
 		// The user's own line breaks are the logical lines: a wrapped
 		// row is not a new line of what was written.
 		if len(e.logical) == 0 {
@@ -1523,8 +1563,12 @@ func (m *Model) renderEntry(i int) {
 			}
 			rows = append(rows, indent+line)
 		}
+		e.deco = nil
 		if e.hasMeta {
 			rows = append(rows, m.metaLine(e.meta))
+			// The metadata line is interface, not answer: it stays on
+			// screen but is never part of a selection.
+			e.deco = decorationRows(len(rows))
 		}
 		e.rows = rows
 		if len(e.logical) == 0 {
@@ -1537,7 +1581,11 @@ func (m *Model) renderEntry(i int) {
 
 // renderUser wraps a user message and decides how much of it to show.
 // The full text stays in e.text; only the rendering is shortened.
-func (m Model) renderUser(e *entry) []string {
+//
+// The last row of a shortened message is the hint that says how to
+// expand it. The hint is interface, not text: it is marked as
+// decoration, so a selection never copies it.
+func (m Model) renderUser(e *entry) ([]string, []bool) {
 	width := m.userWidth()
 	wrapped := strings.Split(lipgloss.NewStyle().Width(width).Render(e.text), "\n")
 	lines := make([]string, 0, len(wrapped))
@@ -1554,10 +1602,11 @@ func (m Model) renderUser(e *entry) []string {
 	}
 	preview := m.collapsedPreviewRows()
 	if len(rows) <= preview {
-		return rows
+		return rows, nil
 	}
-	if e.expanded {
-		return append(rows, m.collapseHint("Ctrl+O to collapse"))
+	if e.collapse == collapseShown {
+		rows = append(rows, m.collapseHint("Ctrl+O to collapse"))
+		return rows, decorationRows(len(rows))
 	}
 	visible := rows[:preview]
 	hidden := len(rows) - preview
@@ -1565,7 +1614,24 @@ func (m Model) renderUser(e *entry) []string {
 	if hidden == 1 {
 		hint = "… 1 more line · Ctrl+O to expand"
 	}
-	return append(visible, m.collapseHint(hint))
+	visible = append(visible, m.collapseHint(hint))
+	return visible, decorationRows(len(visible))
+}
+
+// decorationRows marks the last row of a set as interface decoration.
+func decorationRows(n int) []bool {
+	if n < 1 {
+		return nil
+	}
+	deco := make([]bool, n)
+	deco[n-1] = true
+	return deco
+}
+
+// isDecoration reports whether a row of the entry is interface rather
+// than message text.
+func (e entry) isDecoration(row int) bool {
+	return row < len(e.deco) && e.deco[row]
 }
 
 // metaLine renders one assistant turn's completion metadata: wall-clock
@@ -1596,7 +1662,7 @@ func (m Model) collapsible(i int) bool {
 	if e.role != "user" {
 		return false
 	}
-	full := m.renderUser(&entry{role: e.role, text: e.text, expanded: true})
+	full, _ := m.renderUser(&entry{role: e.role, text: e.text, collapse: collapseShown})
 	return len(full) > m.collapsedPreviewRows()
 }
 
@@ -1643,28 +1709,100 @@ func (m *Model) toggleLastUser() {
 }
 
 // toggleEntry flips one entry between preview and full text.
+//
+// The operator's choice is remembered as a manual collapse: the
+// automatic expansion that follows an answer never overrides it.
 func (m *Model) toggleEntry(i int) {
 	anchor := m.anchor()
-	m.entries[i].expanded = !m.entries[i].expanded
+	if m.entries[i].collapse == collapseShown {
+		m.entries[i].collapse = collapseManual
+	} else {
+		m.entries[i].collapse = collapseShown
+	}
 	m.renderEntry(i)
 	m.renderConversation()
 	m.restoreAnchor(anchor)
 }
 
-// expandAll and collapseAll apply to every long user message.
+// setAllUserExpanded applies to every long user message. An expanded
+// message is shown in full, a collapsed one is collapsed by hand: the
+// automatic expansion that follows an answer never overrides either.
 func (m *Model) setAllUserExpanded(expanded bool) {
 	stick := m.viewport.AtBottom()
 	for i := range m.entries {
 		if m.entries[i].role != "user" || !m.collapsible(i) {
 			continue
 		}
-		m.entries[i].expanded = expanded
+		if expanded {
+			m.entries[i].collapse = collapseShown
+		} else {
+			m.entries[i].collapse = collapseManual
+		}
 		m.renderEntry(i)
 	}
 	m.renderConversation()
 	if stick {
 		m.viewport.GotoBottom()
 	}
+}
+
+// collapseForTurn collapses a long user message for the running turn.
+//
+// The collapse is temporary: it only makes room for the answer. The
+// message expands again when the turn ends, unless the operator has
+// said otherwise in the meantime.
+//
+// The rows of the message change, so a selection in progress is
+// dropped: its ends point at rows that would move.
+func (m *Model) collapseForTurn(i int) {
+	if i < 0 || i >= len(m.entries) {
+		return
+	}
+	if m.entries[i].role != "user" || m.entries[i].collapse != collapseShown {
+		return
+	}
+	if !m.collapsible(i) {
+		return
+	}
+	m.clearSelection()
+	m.entries[i].collapse = collapseAuto
+	m.renderEntry(i)
+	m.renderConversation()
+}
+
+// expandAfterTurn opens the messages that were collapsed for the
+// running turn.
+//
+// The collapse was a way to make room for the answer; now the answer is
+// there and the prompt is readable again. A message the operator
+// collapsed by hand is left alone.
+//
+// The reading position is captured before the rows change, so the
+// finished answer stays where the operator was reading it instead of
+// the view jumping up into the expanded prompt. A selection in progress
+// is dropped, because the rows it points at move.
+func (m *Model) expandAfterTurn() {
+	auto := false
+	for i := range m.entries {
+		if m.entries[i].collapse == collapseAuto {
+			auto = true
+			break
+		}
+	}
+	if !auto {
+		return
+	}
+	anchor := m.anchor()
+	m.clearSelection()
+	for i := range m.entries {
+		if m.entries[i].collapse != collapseAuto {
+			continue
+		}
+		m.entries[i].collapse = collapseShown
+		m.renderEntry(i)
+	}
+	m.renderConversation()
+	m.restoreAnchor(anchor)
 }
 
 // rewrap re-renders every entry for the current width so resizing

@@ -7,6 +7,12 @@ import "strings"
 // decoration: they are never part of what a selection copies.
 const entryPrefixCells = len("You > ")
 
+// decorationRow marks a row that is interface rather than message text:
+// a collapse hint, an answer's metadata line. Such a row keeps its
+// place in the row index, so the screen and the map still agree about
+// which row is which, but it never becomes part of a selection.
+const decorationRow = -1
+
 // cellPos is a position in the conversation: a content row and a cell
 // index inside that row.
 type cellPos struct {
@@ -56,8 +62,26 @@ func (cm *convMap) addEntry(e entry) {
 	cm.logical = append(cm.logical, logical...)
 	li := 0
 	searchFrom := 0
-	for _, row := range e.rows {
+	for i, row := range e.rows {
 		cells := scanRow(row)
+		contentStart := len(cells.text)
+		if entryPrefixCells < len(cells.cells) {
+			contentStart = cells.cells[entryPrefixCells].start
+		}
+		if e.isDecoration(i) {
+			// A decoration row is on screen but not in the message: it
+			// keeps its place in the row index and contributes no text.
+			cm.rows = append(cm.rows, convRow{
+				cells:     cells.cells,
+				width:     rowWidth(cells),
+				textStart: contentStart,
+				textLen:   0,
+				cellStart: 0,
+				cellEnd:   0,
+				logical:   decorationRow,
+			})
+			continue
+		}
 		// mapped builds the row's entry: the cells of the row, the
 		// text it shows and the logical line behind it.
 		mapped := func(textStart, textLen, logical, logicalOff int) convRow {
@@ -72,10 +96,6 @@ func (cm *convMap) addEntry(e entry) {
 				logical:    logical,
 				logicalOff: logicalOff,
 			}
-		}
-		contentStart := len(cells.text)
-		if entryPrefixCells < len(cells.cells) {
-			contentStart = cells.cells[entryPrefixCells].start
 		}
 		content := cells.text[contentStart:]
 		trimmed := strings.TrimRight(content, " \t")
@@ -230,6 +250,16 @@ func (cm convMap) extract(a, b cellPos) string {
 	start, end := 0, 0
 	for r := a.row; r <= b.row && r < len(cm.rows); r++ {
 		row := cm.rows[r]
+		if row.logical == decorationRow {
+			// A decoration row ends the group of text before it and
+			// contributes no text of its own: a hint or a metadata
+			// line is never part of what a selection copies.
+			if cur >= 0 {
+				groups = append(groups, cm.line(cur, start, end))
+				cur = -1
+			}
+			continue
+		}
 		// The columns of the selection, in the row's own width.
 		c0, c1 := 0, row.width
 		if r == a.row {

@@ -1165,15 +1165,30 @@ func paste(m Model, text string) Model {
 	return m
 }
 
-// A long prompt collapses to a short preview; the original stays intact
-// in the entry, in Lines() and therefore in the session and the request.
+// startTurn submits the composer and leaves the turn in flight: the
+// engine is not run, so the model stays in the state it has while HAL
+// is answering.
+func startTurn(m Model) Model {
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	return updated.(Model)
+}
+
+// finishTurn delivers the answer of the running turn.
+func finishTurn(m Model, text string) Model {
+	updated, _ := m.Update(responseMsg{id: m.streamID, text: text})
+	return updated.(Model)
+}
+
+// A long prompt is collapsed while HAL answers; the original stays
+// intact in the entry, in Lines() and therefore in the session and the
+// request.
 func TestLongUserMessageCollapses(t *testing.T) {
 	m := testModel()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	long := strings.Repeat("museum thought experiment line\n", 20)
 	m = paste(m, long)
-	m = enterCurrent(m)
+	m = startTurn(m)
 	// Only trailing whitespace is normalised on submit.
 	want := strings.TrimRight(long, "\n")
 
@@ -1204,6 +1219,30 @@ func TestLongUserMessageCollapses(t *testing.T) {
 	}
 }
 
+// The answer arrives: the prompt that was collapsed for the turn opens
+// again, and the answer stays in view.
+func TestLongUserMessageExpandsAfterAnswer(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = paste(m, strings.Repeat("museum thought experiment line\n", 20))
+	m = startTurn(m)
+	collapsed := len(m.Entries()[0].rows)
+
+	m = finishTurn(m, "the answer is here")
+	expanded := len(m.Entries()[0].rows)
+	if expanded <= collapsed {
+		t.Fatalf("the prompt must open again: %d -> %d rows", collapsed, expanded)
+	}
+	if strings.Contains(m.viewport.View(), "Ctrl+O to expand") {
+		t.Errorf("the prompt is still abbreviated:\n%s", m.viewport.View())
+	}
+	// The stored text is untouched by the collapse.
+	if !strings.HasSuffix(m.Entries()[0].text, "museum thought experiment line") {
+		t.Error("the stored prompt must stay complete")
+	}
+}
+
 // Short messages are never collapsed.
 func TestShortUserMessageNotCollapsed(t *testing.T) {
 	m := testModel()
@@ -1226,7 +1265,7 @@ func TestCtrlOTogglesLongMessage(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	m = paste(m, strings.Repeat("line\n", 20))
-	m = enterCurrent(m)
+	m = startTurn(m)
 	collapsed := len(m.Entries()[0].rows)
 
 	m = pressKey(m, 'o', tea.ModCtrl, "")
@@ -1253,7 +1292,7 @@ func TestExpandCollapseCommands(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	m = paste(m, strings.Repeat("line\n", 20))
-	m = enterCurrent(m)
+	m = startTurn(m)
 	collapsed := len(m.Entries()[0].rows)
 
 	m = typeText(m, "/expand")
@@ -2338,7 +2377,7 @@ func TestCollapsedPromptOneThird(t *testing.T) {
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: h})
 		m = updated.(Model)
 		m = paste(m, strings.Repeat("museum line\n", 30))
-		m = enterCurrent(m)
+		m = startTurn(m)
 		user := m.Entries()[0]
 		// One third of the viewport, but always allow the minimum of a
 		// one-line preview plus its hint.
