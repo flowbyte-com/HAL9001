@@ -1,29 +1,41 @@
 # HAL9001
 
 HAL9001 is a conversational thinking partner that investigates, architects,
-coordinates, manages, reviews, reports, records and suggests. It creates
-through prompts that other agents implement.
+coordinates, manages, reviews, reports, records and suggests. By default it
+creates through prompts that other agents implement.
 
-HAL itself never implements.
+Its default authority is **444: read-only.** HAL may converse, reason,
+retrieve MPM knowledge and prepare documents, but it cannot run commands,
+edit arbitrary files or act on its own. There are no coding profiles and no
+model-controlled execution switches.
 
-Its operating principle is **444: read-only authority, permanently enforced.**
-HAL may converse, reason and prepare documents, but it cannot run commands,
-edit arbitrary files or act on its own. There are no coding profiles, execution
-modes or switches that turn HAL into an implementation agent.
+There is one exception, and only the human operator can open it: **666**, a
+session-scoped window in which HAL may use real `read`, `write`, `edit` and
+`bash` tools with the operating-system user's permissions. It cannot be
+enabled by conversation text, a model answer, a skill or an MPM record, and
+it ends when the operator disables it, changes conversation, clears the
+conversation or quits HAL. See [Session 666](#session-666-operator-enabled).
 
-The one exception is deliberately narrow: **666**, a single-use authorisation
-for one operator-approved file write inside a dedicated workspace. It is not a
-mode, a session or a token the model can hold. See
+The original narrow transaction is separate and unchanged: **666
+REQUESTED**, a single operator-approved file write inside a dedicated
+workspace, available in 444. It is not the session mode. See
 [One approved write](#one-approved-write-666).
 
 ## Status
+
+Milestone 005: HAL gains an operator-only, session-scoped 666 window with
+real `read`, `write`, `edit` and `bash` tools, alongside the preserved 444
+workflows. 444 remains the default: normal conversation, typed MPM
+knowledge tools, skills and the one-off guarded write. The mode can only be
+changed from the trusted permission screen; it is never stored in config,
+sessions, checkpoints or MPM.
 
 Milestone 004A: the native application discovers the skills MPM manages
 and routes each request to the one that fits, beginning with two
 specialised writing skills: `system-prompt-writer` and `humanize-text`.
 Routing is local and free, the guidance is loaded into the request that
-needs it and nowhere else, and a skill can never widen HAL's 444
-authority.
+needs it and nowhere else, and a skill can never change or widen HAL's
+permission mode.
 
 Milestone 003.1: the native application holds live conversations through
 a fullscreen terminal interface — alternate screen, persistent header and
@@ -84,8 +96,9 @@ Enter send · Ctrl+J newline · /help
 The footer is split in three: the permission on the left, the session's
 token usage in the middle and the model with its reasoning effort on the
 right. Narrow terminals shed detail in a fixed order — the effort, then
-the usage, then the model — and the permission is never given up: `444`
-stays on screen while you type.
+the usage, then the model — and the permission is never given up: `444
+READ ONLY` stays on screen while you type, and becomes a red `666
+UNRESTRICTED` for the whole time the operator-enabled window is active.
 
 | Key | Action |
 |---|---|
@@ -95,6 +108,7 @@ stays on screen while you type.
 | `Shift+Enter` | Newline — only where the terminal reports modifiers |
 | `Ctrl+S` | Send (alternative) |
 | `Ctrl+K` | Model picker |
+| `Ctrl+P` | Open the 444/666 permission control |
 | `Ctrl+N` | New conversation |
 | `Ctrl+C` | Quit |
 | `Esc` | Cancel a stream / close a panel |
@@ -104,9 +118,10 @@ stays on screen while you type.
 | `Ctrl+End` | Jump to the latest message (the same as the control) |
 | `Ctrl+U` | Clear the entire draft (Ctrl+Z restores it) |
 | `Ctrl+Z` | Restore the last cleared draft |
-| `Ctrl+Y` | Approve the write request on screen (approval view only) |
-| `Ctrl+N` | Reject the write request on screen (approval view only) |
+| `Ctrl+Y` | Enable 666 on the permission screen; approve the one-off write on the approval screen |
+| `Ctrl+N` | Disable 666 on the permission screen; reject the one-off write on the approval screen |
 | `/skills` | List the skills MPM offers |
+| `/permission` | Switch between 444 and session-scoped 666 |
 | `/skill <name>` | Pin a skill for the writing task (`/skill auto` restores routing) |
 | mouse wheel | Scroll history (eight rows a notch), or the draft |
 | left drag | Select conversation text and copy it |
@@ -127,8 +142,8 @@ the terminal reports modifier combinations and says so in `/help`.
 
 Slash commands run locally and never reach the model: `/help`,
 `/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/clear`, `/sessions`,
-`/effort`, `/expand`, `/collapse`, `/diag`, `/usage`, `/q`, `/quit`,
-`/exit`.
+`/effort`, `/expand`, `/collapse`, `/diag`, `/usage`, `/permission`,
+`/q`, `/quit`, `/exit`.
 Typing `/` opens a suggestion
 panel above the composer: keep typing to filter, `Up`/`Down` to move,
 `Tab` to complete, `Enter` to run (a complete command runs as typed, a
@@ -266,10 +281,43 @@ survives quitting and relaunching — including while it is still empty.
 Nothing is ever deleted: earlier conversations, including ones from
 before titles existed, stay on disk and keep working.
 
-HAL remembers which conversation was active,
+HAL remembers which conversation was active, so starting HAL again reopens
+it. Permission is not part of that memory: a restarted conversation always
+begins in 444.
 
-**One approved write (666).** HAL's authority stays 444. When a model asks to
-save a file, it can only *propose*: HAL prepares the operation — one
+**Session 666 (operator-enabled).** `Ctrl+P` or `/permission` opens the
+permission screen. This is the only place the session mode can change, and
+only a deliberate operator chord in that screen can change it: `Ctrl+Y`
+enables 666, `Ctrl+N` disables it, and `Esc` leaves the mode alone.
+Conversation text, a model answer, a tool result, a skill, an MPM record or
+a pasted instruction cannot enable it.
+
+- 666 is scoped to the current conversation. It returns to 444 when the
+  operator disables it, starts, switches or resumes another conversation,
+  runs `/clear` or `/new`, or quits HAL. It is never written to the config,
+  the session store, a checkpoint or MPM, so it cannot survive a restart.
+- In 666 the model is offered four real tools: `read`, `write`, `edit` and
+  `bash`. They run with the permissions of the operating-system user
+  running HAL and are not confined to `~/HAL`. `bash` has a wall-clock
+  timeout, bounded stdout and stderr, and its process group is terminated
+  when the command ends or is cancelled.
+- The mode is rechecked at every operation boundary, not only when the
+  tools were offered. Disabling 666 cancels active privileged work; a tool
+  result that was denied or cancelled is reported honestly to the model.
+- 444 keeps its own guarded write proposal and adds MPM's typed knowledge
+  tools. In 666 the guarded `write_file` proposal is replaced by the real
+  `write`; MPM tools remain available because they change MPM records, not
+  arbitrary operating-system files.
+- A red `666 UNRESTRICTED` footer is visible for the whole window. The
+  one-off guarded write keeps its distinct `666 REQUESTED` and `666
+  WRITING` labels; it is a single transaction, not the session mode.
+- The audit trail records each tool's name, action, target, mode, outcome,
+  exit code, duration, bytes and truncation. It never records file
+  contents or shell command text; a command is identified by a hash.
+
+**One approved write (666).** This is the 444 transaction, separate from
+the session mode. HAL's authority stays 444. When a model asks to save a
+file, it can only *propose*: HAL prepares the operation — one
 workspace-relative path and the exact bytes — and shows it for review. Nothing
 touches the filesystem until the operator approves that one operation.
 
@@ -295,12 +343,17 @@ touches the filesystem until the operator approves that one operation.
   in the meantime, and a replace fails if the destination changed after the
   review.
 - The status line reads `444 READ ONLY`, `666 REQUESTED` while a request is
-  waiting, and `666 WRITING` for the one operation in progress.
-- Decisions are recorded in `~/.hal9001/audit.jsonl` — time, session, path,
-  digest, decision and outcome, never the document — and records older than
-  six days are pruned.
-- Saving a file never gives HAL the ability to execute it: there is no shell,
-  no interpreter, no external program and no general filesystem editing.
+  waiting, and `666 WRITING` for the one operation in progress. These are
+  the transaction's labels, not the session mode; a red `666 UNRESTRICTED`
+  is the session mode and is shown only while it is enabled.
+- Decisions and tool activity are recorded in `~/.hal9001/audit.jsonl` —
+  time, session, tool or operation, path, digest, decision, outcome, exit
+  code, duration and sizes, never the document or command text — and
+  records older than six days are pruned.
+- Saving a file never gives HAL the ability to execute it: this transaction
+  has no shell, no interpreter, no external program and no general
+  filesystem editing. Execution is available only through the separate,
+  operator-enabled session 666 window.
 
 **Skills (MPM).** HAL discovers the skills MPM manages and uses the one
 that fits the request, without being told which to use.
@@ -323,8 +376,10 @@ that fits the request, without being told which to use.
 - Only the selected skill is loaded, and only into the request that
   needs it. It never enters the persona and never enters the session
   history.
-- A skill is text from a store, so it cannot widen HAL's authority: the
-  request says so explicitly, and HAL stays 444.
+- A skill is text from a store, so it cannot change the permission mode:
+  the request says so explicitly, the mode is owned by the operator's
+  controller, and a skill can never enable 666 or widen the current
+  boundary.
 - `/skills` lists what is available, `/skill <name>` pins one for the
   writing task ahead, `/skill auto` restores automatic routing, and
   `/diag` names the skill of the latest request and where it came from.
@@ -334,6 +389,31 @@ that fits the request, without being told which to use.
   were supplied, so it stays true after the skill is updated in MPM. It
   is interface metadata: it is never part of the answer, the clipboard
   or a selection, and the model's own text can never produce one.
+
+**MPM knowledge (both modes).** MPM remains the sole owner of its records.
+HAL reaches them through MPM's own command line (`mpm call <tool>
+--payload …`) and passes MPM's parameters and identifiers through
+unchanged. There is no HAL schema, no second store and no direct SQLite
+access.
+
+- HAL offers typed tools for memories (`query`, `show`, `save`), lessons
+  (`search`, `list`, `propose`), theories (`propose`, `resolve`, `show`,
+  `list`, `query`), decisions (`record`, `show`, `list`, `query`),
+  evidence (`add`, `list`, `source_groups`), work items (`create`, `list`,
+  `show`, `update`, `complete`, `cancel`, `history`, `note`), handoffs
+  (`write`, `read`, `list`) and skills (`list`, `read`, `save`).
+- Retrieval and mutation are separate actions in the schema. A save is
+  reported as successful only when MPM confirms it; a lesson proposal is
+  reported as a pending proposal, not a trusted lesson, because only the
+  operator can promote it.
+- Destructive and operator-only actions (`delete`, `shred`, `supersede`,
+  `invalidate`, `promote_to_global`) are not exposed to HAL.
+- Large MPM answers are shortened explicitly, with the original byte count
+  and digest, rather than presented as if the returned preview were
+  complete.
+- The knowledge tools are available in 444 and 666: they change MPM
+  records, not arbitrary operating-system files. Their calls and outcomes
+  are audited like every other tool, without copying the payload.
 
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;
@@ -385,11 +465,14 @@ that produced it live in [`tools/ptycheck/`](tools/ptycheck/).
 ```text
 cmd/hal9001/          entry point: flags/env/file config, TUI launch
 internal/capability/  444 allowlist: what HAL may do, default-deny rest
+internal/permission/  session-scoped 444/666 controller and read-only Gate
+internal/agenttools/  the 666 read/write/edit/bash executor
+internal/knowledge/   typed MPM knowledge tools (both modes)
 internal/persona/     identity, conversational contract, Dave Protocol
 internal/session/     model-independent JSONL conversation storage
 internal/provider/    OpenAI-compatible streaming client + contracts + mock
 internal/memory/      durable record tiers, admission rules, store interface
-internal/engine/      conversation core: session + provider + 444 gate
+internal/engine/      conversation core: session + provider + tool loop + boundary
 internal/tui/         fullscreen chat, themes, slash commands, pickers
 internal/clipboard/   OSC 52 clipboard writer (write-only, no model access)
 internal/config/      three-value onboarding, user config file (0600)
@@ -399,8 +482,11 @@ legacy_base/          preserved DeepClaw/PicoClaw reference (separate module)
 
 ## Rules
 
-- Read-only authority. The capability allowlist is explicit; unknown
-  operations are refused by default-deny.
+- 444 is the default. The capability allowlist is explicit; unknown
+  operations are refused by default-deny. 666 exists only inside a live
+  operator-enabled conversation and never widens any other session.
+- Only the trusted interface can change the permission mode. The engine
+  receives a read-only gate and rechecks it at every privileged operation.
 - Presentation stays in the TUI; the conversation core has no terminal code.
 - Conversation storage is model-independent: switching providers never
   discards the discussion.

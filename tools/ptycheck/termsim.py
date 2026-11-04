@@ -49,6 +49,13 @@ class Screen:
             self.rev.pop(self.bottom)
             self.rev.insert(self.top, [False] * self.cols)
 
+    def reverse_index(self):
+        """Move up one line, scrolling the region down at its top."""
+        if self.y > self.top:
+            self.y -= 1
+            return
+        self.scroll_down()
+
     def newline(self):
         """Move down one line, scrolling the region when it is at its
         bottom."""
@@ -83,6 +90,13 @@ class Screen:
         while i < n:
             c = data[i]
             if c == "\x1b":
+                # Two-byte escapes that Bubble Tea uses to move the
+                # cursor without a CSI sequence. Reverse index (ESC M)
+                # rewrites the line above the current one.
+                if i + 1 < n and data[i + 1] == "M":
+                    self.reverse_index()
+                    i += 2
+                    continue
                 m = re.match(r"\x1b\[([0-9;?]*)([ -/]*)([@-~])", data[i:])
                 if m:
                     self.csi(m.group(1), m.group(3))
@@ -221,10 +235,21 @@ class Screen:
             for _ in range(p(0)):
                 self.buf.pop(self.bottom)
                 self.buf.insert(self.y, [" "] * self.cols)
+                self.rev.pop(self.bottom)
+                self.rev.insert(self.y, [False] * self.cols)
         elif cmd == "M":
+            # Reverse index: move up one line, or scroll the region down
+            # when the cursor is already at its top. Bubble Tea uses this
+            # to rewrite the line above the cursor without repainting the
+            # whole frame.
             for _ in range(p(0)):
-                self.buf.pop(self.y)
-                self.buf.insert(self.bottom, [" "] * self.cols)
+                if self.y > self.top:
+                    self.y -= 1
+                else:
+                    self.buf.pop(self.bottom)
+                    self.buf.insert(self.top, [" "] * self.cols)
+                    self.rev.pop(self.bottom)
+                    self.rev.insert(self.top, [False] * self.cols)
         elif cmd == "r":
             # The scrolling region. Without arguments it goes back to
             # the whole screen.

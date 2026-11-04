@@ -5,6 +5,12 @@ Besides the ordinary echo reply, a prompt containing a ``[[save PATH]]``
 directive makes the stub answer like a model that proposes a write: a
 short sentence plus a streamed ``write_file`` tool call. The interface
 must show the approval review, and only an operator key may save it.
+
+A ``[[read PATH]]`` or ``[[bash COMMAND]]`` directive makes the stub
+propose the corresponding real tool. On the second provider round, when
+the tool result is present, it answers with the result instead of asking
+again. The stub never executes anything: the engine and the permission
+gate decide.
 """
 import json
 import os
@@ -30,9 +36,35 @@ SAVE_BODY = (
 LONG_SAVE_BODY = "\n".join("document line %03d" % i for i in range(1, 61))
 
 SAVE_RE = re.compile(r"\[\[save\s+([^\]]+)\]\]")
+READ_RE = re.compile(r"\[\[read\s+([^\]]+)\]\]")
+BASH_RE = re.compile(r"\[\[bash\s+([^\]]+)\]\]")
 
 # SKILL_RE finds the skill name in a composed system instruction.
 SKILL_RE = re.compile(r"MPM skill: ([A-Za-z0-9_.-]+)")
+
+
+def tool_results(request):
+    """Return the tool-result messages of a multi-step request."""
+    out = []
+    for message in request.get("messages", []):
+        if message.get("role") == "tool":
+            out.append(message)
+    return out
+
+
+def result_field(request, name, field):
+    """Read one JSON field from the last tool result, if it is there."""
+    results = tool_results(request)
+    for message in reversed(results):
+        try:
+            payload = json.loads(message.get("content", "{}"))
+        except Exception:
+            continue
+        if payload.get("tool") != name:
+            continue
+        value = payload.get(field, "")
+        return value if isinstance(value, str) else str(value)
+    return ""
 
 
 def applied_skill(request):
@@ -74,6 +106,24 @@ class Handler(BaseHTTPRequestHandler):
             self.propose_write(save.group(1))
             return
 
+        read = READ_RE.search(last)
+        if read:
+            if tool_results(request):
+                body = result_field(request, "read", "content")
+                self.answer("READ RESULT: " + body.strip()[:120])
+            else:
+                self.propose_tool("read", {"path": read.group(1)})
+            return
+
+        command = BASH_RE.search(last)
+        if command:
+            if tool_results(request):
+                out = result_field(request, "bash", "stdout")
+                self.answer("BASH RESULT: " + out.strip()[:120])
+            else:
+                self.propose_tool("bash", {"command": command.group(1)})
+            return
+
         # A skill in the system instruction means the guidance was loaded
         # for this request. The reply names it, so the checks can see
         # which skill the interface actually used.
@@ -112,6 +162,43 @@ class Handler(BaseHTTPRequestHandler):
         self.event({"choices": [{"delta": {"tool_calls": [{
             "index": 0,
             "function": {"arguments": arguments[24:]},
+        }]}, "index": 0}]})
+        time.sleep(0.05)
+        self.event({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+        self.usage()
+
+    def answer(self, text):
+        """Stream one short, complete visible answer."""
+        for piece in (text[:40], text[40:]):
+            if not piece:
+                continue
+            time.sleep(0.05)
+            self.event({"choices": [{"delta": {"content": piece}, "index": 0}]})
+        self.event({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        self.usage()
+
+    def propose_tool(self, name, arguments):
+        """Stream one tool call whose arguments are split across chunks.
+
+        The adapter must reassemble the fragments exactly as it does for a
+        real provider. The call is only a request: the engine decides
+        whether the tool exists and whether the permission gate allows it.
+        """
+        payload = json.dumps(arguments)
+        half = len(payload) // 2
+        time.sleep(0.1)
+        self.event({"choices": [{"delta": {"content": "Let me look."}, "index": 0}]})
+        time.sleep(0.1)
+        self.event({"choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_" + name,
+            "type": "function",
+            "function": {"name": name, "arguments": payload[:half]},
+        }]}, "index": 0}]})
+        time.sleep(0.1)
+        self.event({"choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "function": {"arguments": payload[half:]},
         }]}, "index": 0}]})
         time.sleep(0.05)
         self.event({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})

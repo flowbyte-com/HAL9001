@@ -241,10 +241,13 @@ def main():
         text = s.text()
         check("narrow help scrolls to the 666 reference",
               "666" in text, text)
-        check("narrow help explains the one-off 666 approval",
-              "666" in text and "one-off transaction" in text, text)
-        check("narrow help shows the pending-approval controls",
-              "Ctrl+Y" in text and "Ctrl+N" in text, text)
+        check("narrow help explains the session-scoped 666 control",
+              "666" in text and "only you" in text
+              and "enable or disable 666" in text, text)
+        check("narrow help shows the permission controls",
+              "Ctrl+P" in text and "Ctrl+Y" in text and "Ctrl+N" in text, text)
+        check("narrow help keeps the one-off write distinct",
+              "one-off write" in text, text)
         check("the title and exit instruction survive scrolling",
               title_visible(text), text)
         check("scrolling help does not overflow", no_overflow(s, 60), text)

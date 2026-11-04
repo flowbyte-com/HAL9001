@@ -61,6 +61,16 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/help_checks.py
 ```
 
+The permission checks start their own fake provider on port 8117 and own
+their config, `HOME`, workspace, session store and audit file. They prove
+the operator-only enable path and that 666 does not survive a conversation
+change or a restart:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/permission_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -72,11 +82,12 @@ python3 tools/ptycheck/help_checks.py
   and `Esc` closes it.
 - `/help` is one vertical, grouped reference with fixed label and
   description columns, keeps its title and exit instruction fixed while
-  the body scrolls, reaches the 666 reference and its pending-approval
-  keys at 60x20, and does not overflow on any theme. Slash suggestions are
-  capped, aligned, filter as text is typed, shorten a long syntax inside
-  its label column, and report how many results are above or below the
-  visible window; scrolling reaches `/skills` and `/skill`.
+  the body scrolls, reaches the 666 permission reference and the
+  `Ctrl+P`/`Ctrl+Y`/`Ctrl+N` controls at 60x20, and does not overflow on
+  any theme. Slash suggestions are capped, aligned, filter as text is
+  typed, shorten a long syntax inside its label column, and report how
+  many results are above or below the visible window; scrolling reaches
+  `/skills` and `/skill`.
 - A bracketed paste stays in the composer and never submits.
 - A short single-line paste stays one row; a CRLF paste is one line break,
   not two; a pasted line that wraps takes exactly its wrapped rows.
@@ -108,6 +119,14 @@ python3 tools/ptycheck/help_checks.py
   terminal colours and cursor.
 - The active conversation survives `/clear` and a relaunch, an empty new
   session stays selected, and `/sessions` recovers the previous one.
+- The permission suite runs the lifecycle end to end: 444 is the default;
+  a model-invented `read` is refused; conversation text and a plain `y` do
+  not enable 666; `Ctrl+P` then `Ctrl+Y` enables a red `666 UNRESTRICTED`
+  footer; `read` and `bash` run outside the workspace and return their
+  results; `Ctrl+P` then `Ctrl+N` returns to 444 and a later read is
+  refused; `/clear` and a restart start in 444. Its audit checks prove the
+  tool records carry mode and exit status but never file contents, shell
+  command text, or a missing command hash.
 - A `[[save PATH]]` prompt makes the stub propose a write: the review shows
   the destination, create-versus-overwrite, size, digest and contents, and
   `666 REQUESTED`; nothing is written before approval. `Ctrl+Y` saves exactly
@@ -168,4 +187,5 @@ by hand in a real terminal.
 | `termsim.py` | replays the byte stream into a screen buffer |
 | `checks.py` | the shared assertions |
 | `help_checks.py` | isolated help and suggestion checks with their own temporary config, home, store and sessions |
-| `fake_provider.py` | a local OpenAI-compatible streaming stub |
+| `permission_checks.py` | isolated 444/666 enable, execution, disable, reset and audit checks with their own provider |
+| `fake_provider.py` | a local OpenAI-compatible streaming stub (`[[save]]`, `[[read]]`, `[[bash]]`) |
