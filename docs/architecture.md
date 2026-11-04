@@ -102,7 +102,7 @@ terminals it gives up the suggestion panel, the notice, the hint row, the
 divider and finally the border — never the header, the composer text or
 the footer. Overlays replace the conversation region with their panel.
 
-Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`) with an
+Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`) with a
 wheel: `View.MouseMode` is on unless `--no-mouse` or
 `HAL9001_MOUSE=0` turns it off, so the pointer works out of the box and
 the terminal keeps its own selection only when asked.
@@ -121,6 +121,23 @@ selection, the drag extends it, and the release copies it through OSC 52
 selection lives in conversation coordinates, not screen coordinates, so
 scrolling the history does not move it; it is dropped when the
 conversation changes or the terminal is resized.
+
+The wheel moves the conversation eight rows a notch. Three rows meant a
+lot of notching to cross a long reply, and reading is not selecting: the
+step belongs to the conversation alone, and the auto-scroll of a drag
+selection keeps its own one row per tick, because selecting text needs
+precision. A short conversation area scrolls a screen at a time rather
+than overshooting it.
+
+When the reader is away from the latest message, a small control is
+drawn over the bottom row of the conversation: `↓ Jump to latest message
+· Ctrl+End`. It is drawn *over* the conversation rather than in a row of
+its own, so the frame never changes size, nothing jumps when it appears
+or disappears, and the reading position is the same either way. A click
+on it jumps; `Ctrl+End` does the same and works with the pointer turned
+off. The control is interface, not conversation: it is not part of the
+conversation's text, so a selection never copies it, and a drag that
+passes over it is not turned into a jump.
 
 A drag that reaches the top or the bottom of the conversation scrolls
 the history by itself, one row per tick, so a selection can reach text

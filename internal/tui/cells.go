@@ -20,11 +20,45 @@ type cellSpan struct {
 	column int // the first terminal column the cluster occupies
 }
 
+// overlayText writes a label over the columns [from, to) of a rendered
+// row.
+//
+// The row keeps its own escape sequences: only the printable text
+// inside the range is replaced, and the label brings its own styling.
+// The label must cover exactly as many columns as the range, so the text
+// after it does not move.
+func overlayText(row string, from, to int, label string) string {
+	if to <= from || label == "" {
+		return row
+	}
+	cells := scanRow(row)
+	lo, hi := cells.byteRangeAt(from, to)
+	if lo >= hi {
+		// The row has no text in that range: the label goes after
+		// whatever the row has, padded to the column it starts at.
+		pad := from - cells.width()
+		if pad < 0 {
+			pad = 0
+		}
+		return row + strings.Repeat(" ", pad) + label
+	}
+	return row[:cells.origin(lo)] + label + row[cells.origin(hi):]
+}
+
 // rowCells is the cell map of one rendered row.
 type rowCells struct {
 	text    string     // the printable text of the row, ANSI stripped
 	cells   []cellSpan // one entry per grapheme cluster
 	origins []int      // origins[i] is the byte offset in the row of text[i]
+}
+
+// width is how many columns the row's cells cover.
+func (r rowCells) width() int {
+	if len(r.cells) == 0 {
+		return 0
+	}
+	last := r.cells[len(r.cells)-1]
+	return last.column + last.width
 }
 
 // origin returns the byte offset in the rendered row of a byte offset in

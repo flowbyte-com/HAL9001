@@ -142,6 +142,50 @@ def theme_checks():
     check("themes: five distinct colour palettes", unique_pal, str(palettes))
 
 
+def jump_checks():
+    """A clickable way back to the latest message, and a conversation
+    that scrolls at a comfortable speed."""
+    write_scroll_fixture()
+
+    # At the bottom there is no control.
+    bottom = run_fixture_text("scrollfixture")
+    check("jump: no control at the bottom", "Jump to latest" not in bottom,
+          bottom[:400])
+
+    # One wheel notch up is enough to show it.
+    raw = run([(2.0, b"\x1b[<64;40;10M"), (0.8, b"")],
+              timeout=9.0, fresh=False, session="scrollfixture")
+    moved = render(raw).text()
+    check("jump: the control appears above the bottom",
+          "Jump to latest" in moved, moved[:600])
+
+    # Ctrl+End returns to the latest message and the control goes away.
+    raw = run([(2.0, b"\x1b[<64;40;10M"), (0.6, b"\x1b[1;5F"), (0.8, b"")],
+              timeout=10.0, fresh=False, session="scrollfixture")
+    back = render(raw).text()
+    check("jump: Ctrl+End returns to the latest message",
+          "Jump to latest" not in back and "Section 15" in back, back[:600])
+
+    # The wheel moves a comfortable step. One notch carries the view
+    # past a whole section, which three rows a notch would not.
+    raw = run([(2.0, b"\x1b[<64;40;10M"), (0.8, b"")],
+              timeout=10.0, fresh=False, session="scrollfixture")
+    paged = render(raw).text()
+    check("jump: the wheel moves more than three rows a notch",
+          "Section 15" not in paged and "Section 14" in paged, paged[:600])
+
+    # A click on the control jumps to the latest message. The control is
+    # centred on the last row of the conversation: row 17 at this size,
+    # and the label starts at column 23.
+    raw = run([(2.0, b"\x1b[<64;40;10M"), (0.5, b"\x1b[<0;30;17M"),
+               (0.5, b"\x1b[<0;30;17m"), (0.8, b"")],
+              timeout=11.0, fresh=False, session="scrollfixture")
+    clicked = render(raw).text()
+    check("jump: a click on the control returns to the latest message",
+          "Jump to latest" not in clicked and "Section 15" in clicked,
+          clicked[:600])
+
+
 def layout_checks():
     write_short_fixture()
     text = run_fixture("shortchat")
@@ -1277,6 +1321,7 @@ def main():
     draft_notice_checks()
     footer_hint_checks()
     layout_checks()
+    jump_checks()
     approval_checks()
     skills_checks()
     composer_mouse_checks()

@@ -992,6 +992,11 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "end":
 			m.viewport.GotoBottom()
 			return m, nil
+		case keyJumpLatest:
+			// The shortcut of the jump control. It works with the
+			// pointer turned off: the keyboard is not the mouse.
+			m.jumpToLatest()
+			return m, nil
 		case "ctrl+o":
 			m.toggleLastUser()
 			return m, nil
@@ -1339,7 +1344,10 @@ func (m Model) updateWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if msg.Y >= 0 && msg.Y < 2+m.frame.viewport {
+	if msg.Y >= 0 && msg.Y < m.viewportTop()+m.frame.viewport {
+		// The conversation scrolls a comfortable step per notch. The
+		// viewport keeps its own clamping, so the limits are exact.
+		m.viewport.MouseWheelDelta = m.wheelRows()
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
 		if m.selecting {
@@ -1357,6 +1365,32 @@ func (m Model) updateWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	// caret around with it.
 	m.scrollDraft(draftWheelDelta(msg))
 	return m, nil
+}
+
+// conversationWheelRows is how many rows one wheel notch moves the
+// conversation.
+//
+// Three rows a notch meant a lot of notching to cross a long reply.
+// Eight rows is a comfortable step, and the conversation is where the
+// wheel is meant to be used.
+//
+// The step is separate from the auto-scroll of a drag selection, which
+// stays at one row per tick: selecting text needs precision, reading
+// does not.
+const conversationWheelRows = 8
+
+// wheelRows is the effective step for the current conversation area.
+//
+// A short area scrolls a screen at a time rather than overshooting it.
+func (m Model) wheelRows() int {
+	height := m.frame.viewport
+	if height < 1 {
+		return conversationWheelRows
+	}
+	if height < conversationWheelRows {
+		return height
+	}
+	return conversationWheelRows
 }
 
 // draftWheelDelta is how far one wheel notch moves the composer
@@ -2239,7 +2273,7 @@ func (m Model) chatLayout() []string {
 	f := m.frame
 	rows := make([]string, 0, m.height)
 	rows = append(rows, m.headerRow())
-	rows = append(rows, m.highlightSelection(m.viewportRows(f.viewport))...)
+	rows = append(rows, m.jumpOverlay(m.highlightSelection(m.viewportRows(f.viewport)))...)
 	if f.suggest > 0 {
 		rows = append(rows, m.suggestionRows(f.suggest)...)
 	}

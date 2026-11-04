@@ -101,14 +101,23 @@ stays on screen while you type.
 | `Ctrl+O` | Expand or collapse the last long prompt |
 | `PgUp` / `PgDn` | Scroll the conversation by a page |
 | `Home` / `End` | Jump to the start / end of the conversation |
+| `Ctrl+End` | Jump to the latest message (the same as the control) |
 | `Ctrl+U` | Clear the entire draft (Ctrl+Z restores it) |
 | `Ctrl+Z` | Restore the last cleared draft |
 | `Ctrl+Y` | Approve the write request on screen (approval view only) |
 | `Ctrl+N` | Reject the write request on screen (approval view only) |
 | `/skills` | List the skills MPM offers |
 | `/skill <name>` | Pin a skill for the writing task (`/skill auto` restores routing) |
-| mouse wheel | Scroll history, or the draft |
+| mouse wheel | Scroll history (eight rows a notch), or the draft |
 | left drag | Select conversation text and copy it |
+
+When you scroll back through the conversation, a small `↓ Jump to
+latest message · Ctrl+End` control appears over the bottom of the
+conversation. Click it, or press `Ctrl+End`, to return to the latest
+message and to the bottom-follow that shows the next answer as it
+arrives. The control is drawn over the conversation rather than in a row
+of its own, so the frame never changes size and the reading position
+never moves when it appears.
 
 `Enter` and `Ctrl+M` are the same byte on a terminal, so the model
 picker moved to `Ctrl+K`; `/model` works everywhere. Most terminals

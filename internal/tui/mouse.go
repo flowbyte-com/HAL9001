@@ -53,6 +53,13 @@ func (m Model) mousePress(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	if msg.Button != tea.MouseLeft || m.view != viewChat {
 		return m, nil
 	}
+	// The jump control is not conversation: a press on it jumps to the
+	// latest message and starts no selection, so the control's own
+	// label is never selected or copied.
+	if m.jumpHit(msg.X, msg.Y) {
+		m.jumpToLatest()
+		return m, nil
+	}
 	pos, ok := m.contentCell(msg.X, msg.Y)
 	if !ok {
 		return m, nil
