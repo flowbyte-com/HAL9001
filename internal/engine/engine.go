@@ -1,9 +1,7 @@
 // Package engine is HAL9001's conversation core: session continuity plus a
-// provider turn, with the 444 capability boundary enforced on every
-// provider-requested operation. Presentation lives in internal/tui; this
-// package has no terminal code. No implementation-capable tool is
-// registered here: the engine knows text turns, and anything else the
-// provider asks for is refused with the 444 refusal.
+// provider turn. The 444 capability boundary is the default, and the
+// operator-enabled session 666 tools are checked again at each operation.
+// Presentation lives in internal/tui; this package has no terminal code.
 package engine
 
 import (

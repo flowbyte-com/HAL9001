@@ -1,7 +1,11 @@
-// Package capability enforces HAL9001's 444 contract: read-only authority,
-// permanently. There are no coding profiles, execution modes, or switches
-// that widen it. Anything not explicitly allowed is refused by default-deny,
+// Package capability enforces HAL9001's 444 contract: read-only authority by
+// default. There are no coding profiles, and no model-controlled switches that
+// widen it. Anything not explicitly allowed is refused by default-deny,
 // including unknown future tools that no denylist could name.
+//
+// The operator-enabled 666 tool set is a separate path, enforced by
+// internal/permission at each operation. Nothing in this allowlist can enter
+// 666, and the four privileged tools are never granted here.
 package capability
 
 import "strings"

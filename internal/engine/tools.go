@@ -12,9 +12,9 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
 
-// The one operation the model may propose. Offering it grants nothing:
-// the model can only ask, and the interface decides whether the operation
-// ever happens.
+// The one operation the model may propose in 444. Offering it grants
+// nothing: the model can only ask, and the interface decides whether the
+// operation ever happens.
 //
 // The schema asks for the complete contents so that what the operator
 // reviews is exactly what is written. There is deliberately no overwrite
