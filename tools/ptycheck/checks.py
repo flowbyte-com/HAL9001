@@ -59,27 +59,43 @@ def first_text(text, skip=1):
     return lines[skip] if len(lines) > skip else ""
 
 
-def composer_line(text):
-    """The text inside the composer's border."""
+def is_rule(line):
+    """Whether the row is one unbroken horizontal rule."""
+    return bool(line) and set(line) == {"─"}
+
+
+def rule_rows(lines):
+    """The indices of the frame's full-width rules."""
+    return [i for i, line in enumerate(lines) if is_rule(line)]
+
+
+def composer_bounds(text):
+    """The rows of the composer's two full-width rules."""
     lines = text.split("\n")
-    for i, line in enumerate(lines):
-        if line.startswith("╭"):
-            return lines[i + 1] if i + 1 < len(lines) else ""
-    return ""
+    rules = rule_rows(lines)
+    if not rules:
+        return -1, -1
+    # The divider above the footer is the last rule in the frame. The
+    # hint row is above it, and the composer's bottom rule above that.
+    divider = rules[-1]
+    hint = divider - 1
+    keys = ("Enter send", "Ctrl+U", "Ctrl+Z", "Draft cleared")
+    bottom = hint - 1 if hint >= 0 and any(k in lines[hint] for k in keys) else divider - 1
+    if bottom < 0 or not is_rule(lines[bottom]):
+        return -1, -1
+    above = [row for row in rules if row < bottom]
+    if not above:
+        return -1, -1
+    return above[-1], bottom
 
 
 def composer_rows(text):
-    """Every row inside the composer's border, top to bottom."""
+    """Every row of the draft, top to bottom."""
     lines = text.split("\n")
-    start = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
-    if start < 0:
+    top, bottom = composer_bounds(text)
+    if top < 0:
         return []
-    rows = []
-    for line in lines[start + 1:]:
-        if line.startswith("╰"):
-            break
-        rows.append(line.strip("│").strip())
-    return rows
+    return [line.strip() for line in lines[top + 1:bottom]]
 
 
 def reverse_cells(screen):
@@ -186,11 +202,11 @@ def jump_checks():
           clicked[:600])
 
 
-def layout_checks():
+def short_layout_checks():
     write_short_fixture()
     text = run_fixture("shortchat")
     lines = text.split("\n")
-    top = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
+    top, _ = composer_bounds(text)
     msg = next((i for i, l in enumerate(lines) if "You > a short question" in l), -1)
     check("layout: a short conversation sits above the composer",
           msg > 0 and top > 0 and 0 < top - msg <= 4, "\n".join(lines))
@@ -637,8 +653,7 @@ def paste_checks():
         # on the composer's last row, after the text.
         s = render(raw)
         cells = reverse_cells(s)
-        lines = s.text().split("\n")
-        bottom = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
+        _, bottom = composer_bounds(s.text())
         check("paste: %d lines keep the cursor in the composer" % n,
               bottom > 0 and any(row == bottom - 1 and col > 1 for row, col in cells),
               str(cells[:6]))
@@ -667,6 +682,36 @@ def paste_checks():
     rows = composer_rows(text)
     check("paste: a long line wraps into the five-row window",
           len(rows) == 5 and all("word" in r for r in rows), repr(rows))
+
+    # A single short line is one row: the paste event itself must not
+    # grow the composer.
+    body = "a short line pasted from another window"
+    text = render(paste_and_wait(body)).text()
+    rows = composer_rows(text)
+    check("paste: a short single-line paste is one row",
+          len(rows) == 1 and rows[0] == body, repr(rows))
+
+    # A terminal that sends CRLF has sent one line break, not two: the
+    # composer must not open two extra blank rows.
+    text = render(paste_and_wait("hello\r\n")).text()
+    rows = composer_rows(text)
+    check("paste: a CRLF paste is one break, not two",
+          len(rows) == 2 and rows[0] == "hello", repr(rows))
+
+    body = "line one\r\nline two\r\n"
+    text = render(paste_and_wait(body)).text()
+    rows = composer_rows(text)
+    check("paste: two CRLF lines and their break are three rows",
+          len(rows) == 3 and rows[0] == "line one" and rows[1] == "line two",
+          repr(rows))
+
+    # One long line wraps according to the visible width, not the paste.
+    body = "x" * 100
+    text = render(paste_and_wait(body)).text()
+    rows = composer_rows(text)
+    check("paste: a wrapped single line is two rows",
+          len(rows) == 2 and rows[0] == "x" * 78 and rows[1] == "x" * 22,
+          repr(rows))
 
     # Trailing line breaks are part of the draft.
     body = "alpha\nbravo\n\n"
@@ -705,7 +750,9 @@ def draft_notice_checks():
     text = render(raw).text()
     rows = composer_rows(text)
     check("draft: Ctrl+U collapses the composer",
-          len(rows) == 1 and "Message HAL" in rows[0], repr(rows))
+          len(rows) == 1 and rows[0] == "", repr(rows))
+    check("draft: the composer no longer shows a placeholder",
+          "Message HAL" not in text, text)
     check("draft: Ctrl+U says what it did",
           "Draft cleared · Ctrl+Z to restore" in text, text)
 
@@ -820,15 +867,23 @@ def layout_checks():
 
     lines = frame([(1.5, b"")])
     check("layout: the frame fills the terminal", len(lines) == 24, str(len(lines)))
-    top = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
-    bottom = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
-    check("layout: the composer has a border", top > 0 and bottom > top,
+    top, bottom = composer_bounds("\n".join(lines))
+    check("layout: the composer has two full-width rules", top > 0 and bottom > top,
           "\n".join(lines[max(0, top - 1):bottom + 2]))
+    check("layout: the composer rules span the terminal",
+          top >= 0 and bottom >= 0 and len(lines[top]) == 80 and len(lines[bottom]) == 80,
+          "%r / %r" % (lines[top] if top >= 0 else "", lines[bottom] if bottom >= 0 else ""))
+    check("layout: the composer has no side borders",
+          top >= 0 and "│" not in "\n".join(lines[top:bottom + 1]),
+          "\n".join(lines[max(0, top):bottom + 1]))
+    check("layout: the composer starts empty, without a placeholder",
+          bottom - top - 1 == 1 and not lines[top + 1].strip(),
+          "\n".join(lines[max(0, top):bottom + 1]))
     check("layout: the hint sits below the composer",
           bottom + 1 < len(lines) and "Enter send" in lines[bottom + 1],
           "\n".join(lines[max(0, bottom):bottom + 3]))
     check("layout: a divider sits above the footer",
-          bottom + 2 < len(lines) and lines[bottom + 2].startswith("─"),
+          bottom + 2 < len(lines) and is_rule(lines[bottom + 2]),
           "\n".join(lines[max(0, bottom):bottom + 4]))
     check("layout: the footer carries the permission",
           bottom + 3 < len(lines) and "444 READ ONLY" in lines[bottom + 3],
@@ -838,7 +893,7 @@ def layout_checks():
 
     # The permission does not disappear while the operator is typing.
     lines = frame([(1.5, b"hello")])
-    bottom = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
+    _, bottom = composer_bounds("\n".join(lines))
     check("layout: the permission stays while typing",
           "444 READ ONLY" in lines[bottom + 3], lines[bottom + 3])
     check("layout: the hint offers the editing keys",
@@ -849,8 +904,7 @@ def layout_checks():
     body = "\n".join("line %03d of the draft" % i for i in range(1, 21))
     lines = frame([(1.5, bracket_paste(body)), (0.6, b"")], timeout=5.0,
                   session="pastecheck")
-    top = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
-    bottom = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
+    top, bottom = composer_bounds("\n".join(lines))
     check("layout: a long draft grows the composer",
           bottom - top - 1 == 5, "%d" % (bottom - top - 1))
     check("layout: the hint is still one row",
@@ -1243,25 +1297,40 @@ def skills_checks():
 
 def composer_mouse_checks():
     """The wheel over the composer scrolls the draft instead of the
-    conversation, and the caret stays where it was."""
+    conversation, and the draft is not edited."""
     write_scroll_fixture()
-    before = run([(2.0, b"draft line\r draft line\r draft line\r")],
-                 timeout=6.0, fresh=False, session="scrollfixture")
-    before_text = render(before).text()
-    # The composer sits above the footer: row 21 of 24.
-    moved = run([(2.0, b"draft line\r draft line\r draft line\r"),
-                 (0.6, b"\x1b[<64;20;21M"), (0.6, b"\x1b[<64;20;21M")],
-                timeout=9.0, fresh=False, session="scrollfixture")
-    moved_text = render(moved).text()
+    body = "\n".join("draft line %02d" % i for i in range(1, 13))
+    before = render(run([(2.0, bracket_paste(body)), (0.6, b"")],
+                        timeout=5.0, fresh=False, session="scrollfixture")).text()
+    # The composer text is on row 19 of 24 in this fixture; two notches
+    # up must show earlier lines, not the top of the answer.
+    moved = render(run([(2.0, bracket_paste(body)),
+                        (0.5, b"\x1b[<64;20;19M"), (0.5, b"\x1b[<64;20;19M"),
+                        (0.6, b"")], timeout=7.0, fresh=False,
+                       session="scrollfixture")).text()
     check("mouse: the wheel over the composer leaves the conversation alone",
-          "Section" in moved_text, moved_text[:400])
+          "Section" in moved and first_text(moved) == first_text(before),
+          moved[:400])
     check("mouse: the wheel over the composer keeps the draft",
-          "draft line" in moved_text, moved_text[:400])
-    # The draft itself is untouched: the wheel moves the composer's
-    # window, not its text.
-    check("mouse: the composer window does not move the caret",
-          composer_line(before_text) == composer_line(moved_text),
-          "%r vs %r" % (composer_line(before_text), composer_line(moved_text)))
+          all("draft line" in row for row in composer_rows(moved)),
+          repr(composer_rows(moved)))
+    check("mouse: the wheel scrolls the composer window",
+          bool(composer_rows(before)) and bool(composer_rows(moved)) and
+          composer_rows(before)[0] != composer_rows(moved)[0],
+          "%r -> %r" % (composer_rows(before), composer_rows(moved)))
+
+    # Scrolling back down shows the same window and still does not edit
+    # or submit the draft.
+    back = render(run([(2.0, bracket_paste(body)),
+                       (0.4, b"\x1b[<64;20;19M"), (0.4, b"\x1b[<64;20;19M"),
+                       (0.4, b"\x1b[<65;20;19M"), (0.4, b"\x1b[<65;20;19M"),
+                       (0.6, b"")], timeout=9.0, fresh=False,
+                      session="scrollfixture")).text()
+    check("mouse: scrolling back shows the end of the draft",
+          composer_rows(back) == composer_rows(before),
+          "%r -> %r" % (composer_rows(before), composer_rows(back)))
+    check("mouse: the composer wheel never submits the draft",
+          "You >" not in moved and "You >" not in back, moved[:400])
 
 
 def exit_checks():
@@ -1337,12 +1406,11 @@ def scroll_checks():
     check("scroll: starts at the end of the conversation",
           "Section 15" in bottom, bottom[:400])
 
-    # Composer geometry against a full viewport: border, three text rows,
-    # exactly one blank row between the conversation and the border.
+    # Composer geometry against a full viewport: two full-width rules,
+    # one text row, the conversation directly above it.
     lines = bottom.split("\n")
-    top = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
-    end = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
-    check("composer: bordered", top > 0 and end > top, bottom)
+    top, end = composer_bounds(bottom)
+    check("composer: two full-width rules", top > 0 and end > top, bottom)
     check("composer: one text row by default", end - top - 1 == 1, str(end - top - 1))
     check("composer: the conversation is right above it",
           top > 0 and lines[top - 1].strip() != "",
@@ -1380,6 +1448,13 @@ def main():
     check("starts in the alternate screen", s.alt)
     check("header on the first row", "HAL9001" in lines[0], repr(lines[0]))
     check("footer at the bottom", "444 READ ONLY" in lines[-2], repr(lines[-2:]))
+    top, bottom = composer_bounds(s.text())
+    check("composer: the empty composer shows the caret",
+          bottom > top and any(row == bottom - 1 and col > 0
+                               for row, col in reverse_cells(s)),
+          str(reverse_cells(s)[:8]))
+    check("composer: no placeholder text", "Message HAL" not in s.text(),
+          "\n".join(lines[max(0, top):bottom + 1]))
     check("bracketed paste enabled", "bracketed-paste" in s.modes)
     check("the frame fits the terminal", len(lines) == 24, str(len(lines)))
 
@@ -1430,6 +1505,7 @@ def main():
     ui_checks()
     scroll_checks()
     theme_checks()
+    short_layout_checks()
     layout_checks()
     exit_checks()
     session_checks()
@@ -1451,13 +1527,18 @@ def main():
     skills_checks()
     composer_mouse_checks()
 
-    # Common terminal sizes keep the frame the right size.
-    for cols, rows in [(120, 40), (160, 50)]:
+    # Common terminal sizes keep the frame the right size, including the
+    # three reference layouts.
+    for cols, rows in [(80, 24), (120, 30), (170, 38), (160, 50)]:
         s = screen(run([(2.0, b"")], cols=cols, rows=rows, timeout=4.0), cols, rows)
         lines = s.text().split("\n")
         check(f"{cols}x{rows}: header stays on row one", "HAL9001" in lines[0], repr(lines[0]))
         check(f"{cols}x{rows}: footer stays at the bottom",
               "444 READ ONLY" in lines[-2], repr(lines[-2:]))
+        top, bottom = composer_bounds("\n".join(lines))
+        check(f"{cols}x{rows}: the composer rules span the terminal",
+              top >= 0 and bottom > top and len(lines[top]) == cols and len(lines[bottom]) == cols,
+              repr(lines[top:bottom + 1]))
         check(f"{cols}x{rows}: no terminal scroll", len(lines) == rows, str(len(lines)))
 
     # A resize keeps the layout intact. The draft is still in the

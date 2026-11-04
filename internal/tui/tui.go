@@ -254,11 +254,16 @@ type SessionInfo struct {
 }
 
 // Composer geometry: one visible text row by default, growing with the
-// content up to maxComposerHeight. The border is drawn around it.
+// content up to maxComposerHeight. Two full-width rules frame it — one
+// above the text and one below — and the text sits one cell inside them.
 const (
 	maxComposerHeight = 5
 	minComposerRows   = 1
 	maxSuggestions    = 11
+	// composerPadding is the space on each side of the draft. The
+	// composer has no side borders, so this is all that keeps the text
+	// off the terminal edge.
+	composerPadding = 2
 )
 
 // Long user prompts are collapsed to a short preview: a pasted prompt is
@@ -485,7 +490,9 @@ func New(engine Engine) Model {
 // NewWithHooks builds the interface with application hooks.
 func NewWithHooks(engine Engine, hooks Hooks) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Message HAL..."
+	// No placeholder: the composer is a writing surface, not a form
+	// field, and an empty draft has to show the caret instead of a
+	// label telling the operator what the surface is for.
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.SetHeight(minComposerRows)
@@ -1019,7 +1026,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A paste ends any escape-sequence window: the user is typing.
 		// Pasted text is inserted, never executed.
 		m.escapedAt = time.Time{}
-		m.composer.InsertString(msg.Content)
+		m.composer.InsertString(clipboardText(msg.Content))
 		m.refreshSuggestions()
 		m.fitComposer()
 		return m, nil
@@ -1556,8 +1563,8 @@ func (m *Model) sizePanes() bool {
 	m.composer.SetHeight(max(m.draftRows(), m.frame.composer))
 	m.viewport.SetWidth(m.width)
 	m.viewport.SetHeight(m.frame.viewport)
-	// The composer text sits one cell inside its border on each side.
-	w := m.width - 4
+	// The composer text sits one cell inside each full-width rule.
+	w := m.width - composerPadding
 	if w < 1 {
 		w = 1
 	}
@@ -1732,7 +1739,7 @@ type chatFrame struct {
 	viewport int
 	composer int
 	suggest  int
-	border   bool
+	rules    bool
 	divider  bool
 	hint     bool
 	notice   bool
@@ -1740,7 +1747,7 @@ type chatFrame struct {
 
 // chrome counts every row that is neither the viewport nor the composer
 // text: header, rule, footer, notice, hint, divider, suggestions,
-// borders.
+// composer rules.
 //
 // The hint row and the divider are reserved: they exist whether or not
 // they have anything to say, so the composer and the footer never move
@@ -1757,7 +1764,7 @@ func (f chatFrame) chrome() int {
 		n++
 	}
 	n += f.suggest
-	if f.border {
+	if f.rules {
 		n += 2
 	}
 	return n
@@ -1766,14 +1773,14 @@ func (f chatFrame) chrome() int {
 func (f chatFrame) total() int { return f.chrome() + f.composer + f.viewport }
 
 // computeChatFrame fits the frame to the terminal. When space runs out it
-// gives up the suggestion panel, the notice, the hint row, the divider,
-// the rule and finally the border — never the header, the composer text
-// or the footer.
+// gives up the suggestion panel, the notice, the hint row, the divider
+// and finally the composer rules — never the header, the composer text or
+// the footer.
 func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
 	f := chatFrame{
 		composer: desiredComposer,
 		suggest:  suggestions,
-		border:   true,
+		rules:    true,
 		divider:  true,
 		hint:     true,
 		notice:   true,
@@ -1796,8 +1803,8 @@ func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
 			f.hint = false
 		case f.divider:
 			f.divider = false
-		case f.border:
-			f.border = false
+		case f.rules:
+			f.rules = false
 		default:
 			f.viewport = 1
 			return f
@@ -2296,7 +2303,7 @@ func (m Model) chatLayout() []string {
 	if f.suggest > 0 {
 		rows = append(rows, m.suggestionRows(f.suggest)...)
 	}
-	rows = append(rows, m.composerBlock(f.composer, f.border)...)
+	rows = append(rows, m.composerBlock(f.composer, f.rules)...)
 	// One reserved row of keyboard hints sits immediately below the
 	// composer, and a thin divider separates the frame from the footer.
 	if f.hint {
@@ -2430,36 +2437,36 @@ func (m Model) fitToHeight(rows []string) []string {
 	return rows
 }
 
-// composerBlock renders the bordered composer.
+// composerBlock renders the composer as two full-width rules around the
+// draft.
 //
-// The border is drawn in the theme's muted rule colour and the text sits
-// one cell inside it, so the draft is not flush against the frame. The
-// textarea keeps its own cursor and placeholder styling inside.
-func (m Model) composerBlock(ch int, border bool) []string {
+// There are no side borders and no corners: the composer is part of the
+// frame, not a box floating on it. The rules are drawn in the theme's
+// muted rule colour, exactly the width of the terminal, and the text sits
+// one cell inside them.
+func (m Model) composerBlock(ch int, rules bool) []string {
 	inner := m.composerWindow(ch)
-	if !border {
+	if !rules {
 		return inner
 	}
 	width := m.width
-	if width < 6 {
-		width = 6
+	if width < 1 {
+		width = 1
 	}
-	edge := strings.Repeat("─", width-2)
-	top := "╭" + edge + "╮"
-	bottom := "╰" + edge + "╯"
-	side := "│"
+	text := width - composerPadding
+	if text < 1 {
+		text = 1
+	}
+	rule := strings.Repeat("─", width)
 	if m.color {
-		st := m.theme.styles()
-		top = st.rule.Render(top)
-		bottom = st.rule.Render(bottom)
-		side = st.rule.Render("│")
+		rule = m.theme.styles().rule.Render(rule)
 	}
 	rows := make([]string, 0, ch+2)
-	rows = append(rows, top)
+	rows = append(rows, rule)
 	for _, line := range inner {
-		rows = append(rows, side+" "+m.fitWidth(line, width-4)+" "+side)
+		rows = append(rows, " "+m.fitWidth(line, text)+" ")
 	}
-	rows = append(rows, bottom)
+	rows = append(rows, rule)
 	return rows
 }
 

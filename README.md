@@ -73,9 +73,9 @@ bottom.
 ```text
 ● HAL9001 · the quarterly review
   the conversation scrolls here
-╭────────────────────────────────────────────╮
-│ Message HAL...                              │
-╰────────────────────────────────────────────╯
+──────────────────────────────────────────────
+ the draft
+──────────────────────────────────────────────
 Enter send · Ctrl+J newline · /help
 ──────────────────────────────────────────────
 444 READ ONLY    Tokens: 4.2k in / 2.8k out    MiniMax-M3.1-Flash · medium
@@ -135,14 +135,17 @@ panel above the composer: keep typing to filter, `Up`/`Down` to move,
 partial one runs the highlighted suggestion), `Esc` to dismiss it and
 keep the draft. A leading `//` sends a literal slash-prefixed message.
 
-The composer is a single bordered one-line input that grows as you write,
-up to five rows, and shrinks back when you delete. One reserved row
-below it offers the keys that act on the draft right now, and it is the
-same row whatever the draft holds: only its text changes, so the
-composer and the footer never move. Pasting never submits: multiline pastes keep
-their line breaks, indentation and code fences in the composer, where
-you can edit them before sending. The composer shows a five-row window
-on the draft — never a cut-down copy: a paste of any size is kept whole,
+The composer is framed by two full-width rules with no side borders and
+no placeholder. It is one row for ordinary input, grows only as the text
+really wraps (up to five rows) and shrinks back when you delete. One
+reserved row below it offers the keys that act on the draft right now, and
+it is the same row whatever the draft holds: only its text changes, so the
+composer and the footer never move. A short paste stays one row, and a
+clipboard's CRLF line endings are one break, not two. Pasting never
+submits: multiline pastes keep their line breaks, indentation and code
+fences in the composer, where you can edit them before sending. The
+composer shows a five-row window on the draft — never a cut-down copy: a
+paste of any size is kept whole,
 `Enter` sends all of it, and the window follows the caret. `Ctrl+U`
 clears the whole draft (even hundreds of pasted lines) without submitting
 anything and returns the composer to one row, and says so
@@ -239,7 +242,7 @@ scroll offsets or `Home`/`End`.
 **Themes.** `/theme` switches between HAL Classic, Midnight, Amber,
 Paper and Monochrome. Each palette paints the whole interface: the
 application background and default text, the header and footer, message
-labels, rules, the composer border, panels and Markdown. Paper is a real
+labels, rules, the composer rules, panels and Markdown. Paper is a real
 light theme. Moving through the picker previews the palette live,
 including history already on screen; `Esc` restores the previous theme
 and `Enter` saves the choice for the next start. The terminal's own

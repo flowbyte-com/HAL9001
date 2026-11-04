@@ -15,19 +15,87 @@ import (
 // footer. Every row has its place, and nothing moves when the contents
 // of one of them change.
 
-// composerBorder finds the rows of the composer's border.
-func composerBorder(rows []string) (int, int) {
-	top, bottom := -1, -1
-	for i, row := range rows {
-		plain := stripANSI(row)
-		if strings.HasPrefix(plain, "╭") {
-			top = i
-		}
-		if strings.HasPrefix(plain, "╰") {
-			bottom = i
+// isRuleRow reports whether a row is one unbroken horizontal rule.
+func isRuleRow(row string) bool {
+	plain := strings.TrimSpace(stripANSI(row))
+	if plain == "" {
+		return false
+	}
+	for _, r := range plain {
+		if r != '─' {
+			return false
 		}
 	}
+	return true
+}
+
+// ruleWidth is the cell width of a rule row, or 0 when the row is not a
+// rule.
+func ruleWidth(row string) int {
+	if !isRuleRow(row) {
+		return 0
+	}
+	return lipgloss.Width(strings.TrimSpace(stripANSI(row)))
+}
+
+// frameParts locates the bottom of the frame: the composer's two rules,
+// the hint row and the divider above the footer. The divider is the last
+// rule in the frame; the footer and any notice follow it.
+func frameParts(rows []string) (top, bottom, hint, divider, footer int) {
+	top, bottom, hint, divider, footer = -1, -1, -1, -1, -1
+	for i := len(rows) - 1; i >= 0; i-- {
+		if isRuleRow(rows[i]) {
+			divider = i
+			break
+		}
+	}
+	if divider < 2 {
+		return
+	}
+	hint = divider - 1
+	plainHint := stripANSI(rows[hint])
+	if !strings.Contains(plainHint, "Enter send") &&
+		!strings.Contains(plainHint, "Ctrl+U") &&
+		!strings.Contains(plainHint, "Ctrl+Z") &&
+		!strings.Contains(plainHint, "Draft cleared") {
+		return
+	}
+	if !isRuleRow(rows[hint-1]) {
+		return
+	}
+	bottom = hint - 1
+	for i := bottom - 1; i >= 0; i-- {
+		if isRuleRow(rows[i]) {
+			top = i
+			break
+		}
+	}
+	if divider+1 < len(rows) {
+		footer = divider + 1
+	}
+	return
+}
+
+// composerRules finds the two full-width rules that frame the composer.
+func composerRules(rows []string) (int, int) {
+	top, bottom, _, _, _ := frameParts(rows)
 	return top, bottom
+}
+
+// composerDisplay is the draft as displayed: the rows between the
+// composer's two rules, stripped of styling and the one-cell padding.
+func composerDisplay(rows []string) []string {
+	top, bottom := composerRules(rows)
+	if top < 0 || bottom < 0 || bottom <= top+1 {
+		return nil
+	}
+	out := make([]string, 0, bottom-top-1)
+	for _, row := range rows[top+1 : bottom] {
+		line := stripANSI(row)
+		line = strings.TrimPrefix(line, " ")
+		out = append(out, strings.TrimRight(line, " "))
+	}
+	return out
 }
 
 // TestTheFrameHasItsPartsInOrder checks the order of the rows: the
@@ -38,24 +106,30 @@ func TestTheFrameHasItsPartsInOrder(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = updated.(Model)
 	rows := m.layoutRows()
-	top, bottom := composerBorder(rows)
-	if top < 0 || bottom < 0 {
-		t.Fatalf("the composer border is missing:\n%s", strings.Join(rows, "\n"))
+	top, bottom, hintRow, dividerRow, footerRow := frameParts(rows)
+	if top < 0 || bottom < 0 || hintRow < 0 || dividerRow < 0 || footerRow < 0 {
+		t.Fatalf("the frame is missing one of its parts:\n%s", strings.Join(rows, "\n"))
 	}
-	if bottom+1 >= len(rows) {
-		t.Fatal("there is no row below the composer")
+	if !(top < bottom && bottom < hintRow && hintRow < dividerRow && dividerRow < footerRow) {
+		t.Fatalf("the frame parts are out of order: top=%d bottom=%d hint=%d divider=%d footer=%d",
+			top, bottom, hintRow, dividerRow, footerRow)
 	}
-	hint := stripANSI(rows[bottom+1])
+	hint := stripANSI(rows[hintRow])
 	if !strings.Contains(hint, "Enter send") {
 		t.Errorf("the row below the composer is not the hint: %q", hint)
 	}
-	divider := stripANSI(rows[bottom+2])
+	divider := stripANSI(rows[dividerRow])
 	if !strings.HasPrefix(divider, "─") {
 		t.Errorf("the row above the footer is not the divider: %q", divider)
 	}
-	footer := stripANSI(rows[bottom+3])
+	footer := stripANSI(rows[footerRow])
 	if !strings.Contains(footer, "444 READ ONLY") {
 		t.Errorf("the footer is missing: %q", footer)
+	}
+	for _, row := range []int{top, bottom, dividerRow} {
+		if w := ruleWidth(rows[row]); w != 100 {
+			t.Errorf("row %d is a rule %d cells wide, want 100", row, w)
+		}
 	}
 }
 
@@ -115,13 +189,13 @@ func TestTheComposerExpandsToFiveRows(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	rows := m.layoutRows()
-	top, bottom := composerBorder(rows)
+	top, bottom := composerRules(rows)
 	if bottom-top-1 != minComposerRows {
 		t.Errorf("the composer shows %d rows, want %d", bottom-top-1, minComposerRows)
 	}
 	m = pasteText(m, numberedLines(30))
 	rows = m.layoutRows()
-	top, bottom = composerBorder(rows)
+	top, bottom = composerRules(rows)
 	if bottom-top-1 != maxComposerHeight {
 		t.Errorf("the composer shows %d rows, want %d", bottom-top-1, maxComposerHeight)
 	}

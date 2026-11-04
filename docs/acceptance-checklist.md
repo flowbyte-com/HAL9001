@@ -19,9 +19,17 @@ go build -o /tmp/hal9001 ./cmd/hal9001
 - [ ] A long title is shortened with an ellipsis instead of wrapping.
       `/diag` still shows the immutable session name.
 - [ ] The conversation sits between the header and the composer.
-- [ ] The composer is a bordered box with one text row and one cell of
-      padding inside the border.
-- [ ] A long paste grows the composer to five rows and no further.
+- [ ] The composer is two full-width rules around the draft: no side
+      borders, no rounded corners and no placeholder. The draft starts
+      one cell from the terminal edge, and the caret is visible when it
+      is empty.
+- [ ] Empty input, one character and a short single-line paste each stay
+      one row.
+- [ ] Genuine line breaks and wrapped lines grow the composer by exactly
+      the rows they need; a long paste stops at five and scrolls inside.
+- [ ] A paste whose lines end in CRLF does not add blank rows.
+- [ ] `Ctrl+U` collapses the composer to one row and `Ctrl+Z` restores
+      the draft at its proper height.
 - [ ] One row under the composer shows `Enter send · Ctrl+J newline · /help`.
 - [ ] A thin divider sits above the footer.
 - [ ] The footer shows `444 READ ONLY` on the left, the session's token
@@ -103,7 +111,8 @@ zones, and only the middle one moves.
 Run `/theme` and walk through all five. For each one:
 
 - [ ] The frame has the same shape: the same rows, the same places.
-- [ ] The header, the hint row, the divider and the footer are legible.
+- [ ] The header, the composer rules, the hint row, the divider and the
+      footer are legible.
 - [ ] The jump control is legible and centred.
 - [ ] The composer's text is legible, including the caret on a light
       theme.
@@ -114,7 +123,11 @@ Resize the terminal while HAL is running, or start it at another size.
 
 - [ ] 80×24: the conversation keeps its rows, the hint row and the
       divider are present, nothing overlaps.
-- [ ] 120×30 and 170×38: the same frame, with more conversation.
+- [ ] 120×30 and 170×38: the same frame, with more conversation. A line
+      that fits at 170×38 wraps at 80×24 and the composer grows with it.
+- [ ] The composer rules are exactly the terminal width at every size and
+      never wrap at the final column.
+- [ ] The reading position survives the composer growing or collapsing.
 - [ ] A narrow terminal (40 columns): the hint row shortens instead of
       clipping, and the footer drops the effort, then the usage, then the
       model — `444 READ ONLY` is the last thing to go.

@@ -67,17 +67,19 @@ terminal never scrolls.
 
 Layout: a one-line `● HAL9001` header carrying the session title, the
 scrollable Markdown conversation, an optional command suggestion panel, a
-bordered composer with one text row by default (growing to five), one
-reserved row of keyboard hints, a thin divider, a one-line status footer
-and a notice line.
+composer framed by two full-width rules with one text row by default
+(growing to five), one reserved row of keyboard hints, a thin divider, a
+one-line status footer and a notice line.
 
-The frame has one rule, and it is above the footer. The header carries
-the identity marker and the title — shortened to whatever room the
-terminal has, because the header is one row and the immutable session
-identity stays in the diagnostics — and the conversation follows it
-directly. Moving the rule rather than adding one is deliberate: the
-conversation keeps the height it had, and the suggestion panel keeps
-its room on short terminals.
+The header carries the identity marker and the title — shortened to
+whatever room the terminal has, because the header is one row and the
+immutable session identity stays in the diagnostics — and the
+conversation follows it directly. The composer is framed by two rules
+rather than a box: there are no side borders and no corners, and the
+draft sits one cell inside the terminal edge. The rule above the footer
+is deliberately the same weight. The composer's rules replace the old
+border rather than adding frame rows, so the conversation keeps its
+height and the suggestion panel keeps its room on short terminals.
 
 The hint row below the composer is about the composer alone. It offers
 the keys that act on the draft right now — the plain keys when the
@@ -99,8 +101,8 @@ the model, so it never wraps and never moves the conversation.
 
 A `chatFrame` resolves that geometry once per size change; on short
 terminals it gives up the suggestion panel, the notice, the hint row, the
-divider and finally the border — never the header, the composer text or
-the footer. Overlays replace the conversation region with their panel. The
+divider and finally the composer rules — never the header, the composer
+text or the footer. Overlays replace the conversation region with their panel. The
 666 review is the exception: it keeps a fixed header and a fixed footer
 around a panel that scrolls, because the decisions must not scroll out of
 sight.
@@ -179,6 +181,17 @@ scroll. The textarea's default maximum (99 rows) made it scroll its own
 viewport on a long paste, and the window HAL sliced out of the scrolled
 view could land past the end — a blank composer over a buffer that held
 the whole draft.
+
+The height comes from the draft, not from the event that inserted it.
+`draftRows` counts the rows the text really wraps to at the terminal's
+width, including wide characters, and the frame shows at most five. A
+short single-line paste is one row; a line that wraps is as tall as its
+wrapped rows. Clipboard text is normalized to the composer's line break
+before insertion — CRLF and a lone CR each become one newline, because
+the textarea's sanitizer would otherwise turn CRLF into two breaks and
+open extra blank rows — and no text is dropped. The empty composer draws
+its caret rather than a placeholder, and an unsized frame is derived from
+the terminal rather than the widget's default width.
 
 ## Skills
 

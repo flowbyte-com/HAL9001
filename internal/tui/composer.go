@@ -92,9 +92,39 @@ func repeatSpaces(n int) []rune {
 	return []rune(strings.Repeat(" ", n))
 }
 
+// clipboardText turns the line endings a clipboard carries into the one
+// line break the composer draws.
+//
+// Text copied from a browser, a text field or a program on another
+// platform usually ends its lines with CR LF. The textarea's own
+// sanitizer maps each of CR and LF to a newline, so a CRLF arrives as two
+// breaks: one pasted line becomes an extra blank row, and a short
+// two-line paste can open the composer at its full five rows on its own.
+// A CRLF is one line break, so it becomes one newline; a lone CR is a
+// break too, because some terminals send CR for a pasted newline.
+//
+// Nothing is dropped: every line and every intentional break survives,
+// and the draft keeps the text as it was written.
+func clipboardText(s string) string {
+	if !strings.ContainsRune(s, '\r') {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
+}
+
 // draftWidth is the width the draft is wrapped at.
+//
+// The terminal is the source of truth, and the textarea is set to the
+// same width when the frame is sized. The widget's own width is only a
+// fallback for a model that was never given a terminal size: before the
+// first layout the textarea still carries its default, and wrapping the
+// draft at that width would misjudge how tall it is.
 func (m Model) draftWidth() int {
-	w := m.composer.Width()
+	w := m.width - composerPadding
+	if w < 1 {
+		w = m.composer.Width()
+	}
 	if w < 1 {
 		w = 1
 	}

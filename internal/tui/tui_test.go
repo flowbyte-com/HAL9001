@@ -485,42 +485,46 @@ func TestComposerStartsSingleRowAndGrows(t *testing.T) {
 	}
 }
 
-// The composer is one bordered block with three text rows inside it.
-func TestComposerBorderAndThreeRows(t *testing.T) {
+// The composer is two full-width rules around one row of text: no side
+// borders, no corners, and one row for an empty draft.
+func TestComposerRulesAndOneRow(t *testing.T) {
 	m := testModel()
 	m.SetColor(false)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	// Fill the conversation so the row above the separator is real text.
+	// Fill the conversation so the row above the composer is real text.
 	for i := 0; i < 40; i++ {
 		m.appendEntry("assistant", "filler line")
 	}
 	rows := m.layoutRows()
-	top, bottom := -1, -1
-	for i, row := range rows {
-		if strings.HasPrefix(row, "╭") {
-			top = i
-		}
-		if strings.HasPrefix(row, "╰") {
-			bottom = i
-		}
-	}
+	top, bottom := composerRules(rows)
 	if top < 0 || bottom < 0 {
-		t.Fatalf("composer border missing:\n%s", strings.Join(rows, "\n"))
+		t.Fatalf("composer rules missing:\n%s", strings.Join(rows, "\n"))
 	}
 	if bottom-top-1 != minComposerRows {
 		t.Errorf("composer text rows = %d, want %d", bottom-top-1, minComposerRows)
 	}
-	if w := lipgloss.Width(rows[top]); w != 80 {
-		t.Errorf("border width = %d, want 80", w)
+	if w := ruleWidth(rows[top]); w != 80 {
+		t.Errorf("top rule width = %d, want 80", w)
+	}
+	if w := ruleWidth(rows[bottom]); w != 80 {
+		t.Errorf("bottom rule width = %d, want 80", w)
 	}
 	if w := lipgloss.Width(rows[top+1]); w != 80 {
 		t.Errorf("composer row width = %d, want 80", w)
 	}
-	// The border follows the conversation directly: the frame has no
+	for _, marker := range []string{"╭", "╮", "╰", "╯", "│"} {
+		if strings.Contains(strings.Join(rows[top:bottom+1], "\n"), marker) {
+			t.Errorf("the composer still draws %q:\n%s", marker, strings.Join(rows[top:bottom+1], "\n"))
+		}
+	}
+	if got := stripANSI(rows[top+1]); got != " "+strings.Repeat(" ", 78)+" " {
+		t.Errorf("an empty composer must be blank with the caret in it: %q", got)
+	}
+	// The composer follows the conversation directly: the frame has no
 	// filler row, so the conversation keeps its height.
 	if top < 1 || strings.TrimSpace(rows[top-1]) == "" {
-		t.Errorf("expected the conversation above the composer border:\n%s", strings.Join(rows, "\n"))
+		t.Errorf("expected the conversation above the composer:\n%s", strings.Join(rows, "\n"))
 	}
 }
 
@@ -2082,20 +2086,18 @@ func TestSuggestionPanelPlacement(t *testing.T) {
 	m := longConversation(t, 40)
 	m = typeText(m, "/")
 	rows := m.layoutRows()
-	top, firstSuggestion := -1, -1
+	top, _ := composerRules(rows)
+	firstSuggestion := -1
 	for i, row := range rows {
-		if strings.HasPrefix(row, "╭") {
-			top = i
-		}
 		if strings.Contains(row, "/help") && strings.Contains(row, "Show available commands") {
 			firstSuggestion = i
 		}
 	}
 	if top < 0 || firstSuggestion < 0 {
-		t.Fatalf("panel or border missing:\n%s", strings.Join(rows, "\n"))
+		t.Fatalf("panel or composer missing:\n%s", strings.Join(rows, "\n"))
 	}
 	if firstSuggestion >= top {
-		t.Errorf("suggestions at %d must be above the border at %d", firstSuggestion, top)
+		t.Errorf("suggestions at %d must be above the composer at %d", firstSuggestion, top)
 	}
 	if !strings.Contains(strings.Join(rows[:firstSuggestion], "\n"), "line 0") {
 		t.Error("the conversation must stay visible behind the panel")
@@ -2119,26 +2121,35 @@ func TestSuggestionsNarrow(t *testing.T) {
 	}
 }
 
-// The composer border uses the theme's muted rule colour, and none at all
+// The composer rules use the theme's muted rule colour, and none at all
 // when colour is disabled.
-func TestComposerBorderThemes(t *testing.T) {
+func TestComposerRuleThemes(t *testing.T) {
 	for _, theme := range Themes() {
 		m := testModel()
 		m.SetTheme(theme)
 		m.SetColor(true)
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 		m = updated.(Model)
-		block := strings.Join(m.composerBlock(3, true), "\n")
-		if !strings.HasPrefix(stripANSI(strings.Split(block, "\n")[0]), "╭") {
-			t.Errorf("%s: border missing", theme.Name)
+		block := m.composerBlock(3, true)
+		if !isRuleRow(block[0]) {
+			t.Errorf("%s: top rule missing: %q", theme.Name, stripANSI(block[0]))
 		}
-		if !strings.Contains(block, "\x1b[") {
-			t.Errorf("%s: border is not styled", theme.Name)
+		if w := ruleWidth(block[0]); w != 80 {
+			t.Errorf("%s: top rule is %d cells wide, want 80", theme.Name, w)
+		}
+		if !strings.Contains(block[0], "\x1b[") {
+			t.Errorf("%s: top rule is not styled", theme.Name)
+		}
+		if !strings.Contains(block[len(block)-1], "\x1b[") {
+			t.Errorf("%s: bottom rule is not styled", theme.Name)
 		}
 		m.SetColor(false)
 		plain := m.composerBlock(3, true)
 		if strings.Contains(plain[0], "\x1b[") || strings.Contains(plain[len(plain)-1], "\x1b[") {
-			t.Errorf("%s: monochrome border contains escapes", theme.Name)
+			t.Errorf("%s: monochrome rule contains escapes", theme.Name)
+		}
+		if !isRuleRow(plain[0]) || !isRuleRow(plain[len(plain)-1]) {
+			t.Errorf("%s: monochrome rules missing", theme.Name)
 		}
 	}
 }
@@ -2174,14 +2185,9 @@ func TestSeparatorRowAccounting(t *testing.T) {
 			t.Errorf("height %d: frame has %d rows", h, len(m.layoutRows()))
 		}
 		rows := m.layoutRows()
-		top := -1
-		for i, row := range rows {
-			if strings.HasPrefix(row, "╭") {
-				top = i
-			}
-		}
+		top, _ := composerRules(rows)
 		if top < 0 {
-			continue // border shed on a very short terminal
+			continue // composer shed on a very short terminal
 		}
 		if top == 0 || strings.TrimSpace(rows[top-1]) != "" {
 			t.Errorf("height %d: no blank row above the composer", h)
@@ -2361,14 +2367,9 @@ func TestShortConversationBottomAnchored(t *testing.T) {
 	m.SetHistory([]SessionLine{{Role: "user", Text: "hello"}})
 	rows := m.layoutRows()
 
-	top := -1
-	for i, row := range rows {
-		if strings.HasPrefix(row, "╭") {
-			top = i
-		}
-	}
+	top, _ := composerRules(rows)
 	if top < 0 {
-		t.Fatal("composer border missing")
+		t.Fatal("composer missing")
 	}
 	// The user message must be immediately above the separator, not at
 	// the top of the viewport.
@@ -2382,7 +2383,7 @@ func TestShortConversationBottomAnchored(t *testing.T) {
 		t.Fatalf("message not visible:\n%s", strings.Join(rows, "\n"))
 	}
 	if messageRow < top-2 {
-		t.Errorf("message at row %d, want it near the bottom (border at %d)", messageRow, top)
+		t.Errorf("message at row %d, want it near the bottom (composer at %d)", messageRow, top)
 	}
 	// The conversation still starts at the top of its own content.
 	if !m.viewport.AtTop() || !m.viewport.AtBottom() {
@@ -2397,12 +2398,7 @@ func TestEmptyConversationBottomAnchored(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	rows := m.layoutRows()
-	top := -1
-	for i, row := range rows {
-		if strings.HasPrefix(row, "╭") {
-			top = i
-		}
-	}
+	top, _ := composerRules(rows)
 	for i := 2; i < top; i++ {
 		if strings.TrimSpace(rows[i]) != "" {
 			t.Errorf("row %d is not blank in an empty conversation: %q", i, rows[i])

@@ -41,17 +41,22 @@ something fails.
   still sends, `Ctrl+K` opens the model picker, `/help` opens on Enter
   and `Esc` closes it.
 - A bracketed paste stays in the composer and never submits.
+- A short single-line paste stays one row; a CRLF paste is one line break,
+  not two; a pasted line that wraps takes exactly its wrapped rows.
 - A paste of 2, 5, 20, 100 or 150 lines is visible in the five-row
   composer window, with the caret on its last row; Unicode, Markdown, a
   long wrapped line and trailing newlines survive; and `Enter` stores the
   complete draft, not the visible rows.
-- `Ctrl+U` collapses the composer and says `Draft cleared · Ctrl+Z to
-  restore`; `Ctrl+Z` restores the whole draft and says `Draft restored`.
-  A notice replaces the previous one and disappears after its interval.
+- `Ctrl+U` collapses the composer to one empty row and says `Draft cleared
+  · Ctrl+Z to restore`; `Ctrl+Z` restores the whole draft at its height
+  and says `Draft restored`. A notice replaces the previous one and
+  disappears after its interval.
 - Typing `/` opens the command panel, typing filters it, `Tab`
   completes, `Esc` dismisses it and keeps the draft.
-- The composer is bordered with three text rows and exactly one blank
-  row between the conversation and the border.
+- The composer is two full-width rules with one text row by default: no
+  side borders, no corners and no placeholder, and the caret is visible
+  in the empty composer. Exactly one hint row separates its bottom rule
+  from the divider above the footer.
 - `Home`/`End`/`PgUp`/`PgDn` navigate a long stored conversation, and
   shrinking the terminal keeps the reading position. Page keys work with
   modifier bits too (`shift+pgup`, as a laptop Fn key reports them).

@@ -136,6 +136,11 @@ func (m Model) updateOnboard(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, ti := range []*textinput.Model{&m.obEndpoint, &m.obModel, &m.obKey} {
 			ti.SetWidth(m.width - 24)
 		}
+		// The conversation behind the setup form is laid out too: setup
+		// is the only view that can hand over to the chat without the
+		// chat ever having been sized, and an unsized frame has no
+		// composer rows at all.
+		m.sizePanes()
 		return m, nil
 	case tea.KeyPressMsg:
 		switch msg.String() {

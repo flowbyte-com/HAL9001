@@ -36,12 +36,11 @@ func footerText(m Model) string {
 // hintText is the reserved hint row below the composer, without styling.
 func hintText(m Model) string {
 	rows := m.layoutRows()
-	for i, row := range rows {
-		if strings.HasPrefix(stripANSI(row), "╰") && i+1 < len(rows) {
-			return stripANSI(rows[i+1])
-		}
+	_, _, hint, _, _ := frameParts(rows)
+	if hint < 0 || hint >= len(rows) {
+		return ""
 	}
-	return ""
+	return stripANSI(rows[hint])
 }
 
 // draftHint is the exact hint the interface promises for a draft.
