@@ -23,6 +23,7 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/skills"
 	"github.com/flowbyte-com/HAL9001/internal/usage"
 	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
@@ -222,6 +223,7 @@ const (
 	viewUsage
 	viewRename
 	viewApprove
+	viewSkills
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -442,6 +444,11 @@ type Model struct {
 	write      workspace.Proposal
 	writeOpen  bool
 	writeState writeState
+	// skills reaches the MPM skill store. It is shared with the engine,
+	// which routes each turn, so the operator's override is seen by both.
+	skills *skills.Selector
+	// lastSkill is the routing decision of the latest turn.
+	lastSkill *skills.Decision
 }
 
 // New builds the interface. Color follows ColorEnabled at construction so
@@ -527,6 +534,14 @@ func (m *Model) refreshUsage() {
 // SetMouse enables or disables terminal mouse reporting.
 func (m *Model) SetMouse(enabled bool) { m.mouse = enabled }
 
+// SetSkills attaches the MPM skill selector.
+//
+// The selector is shared with the engine: the engine routes each turn
+// through it, and the interface reads the catalogue and the last
+// decision from it. Without one, no skill is ever selected and HAL
+// behaves exactly as it did before skills existed.
+func (m *Model) SetSkills(sel *skills.Selector) { m.skills = sel }
+
 // SetEffort sets the active reasoning level and whether the model
 // supports it, for the footer and the selector.
 func (m *Model) SetEffort(level string, supported bool) {
@@ -604,6 +619,13 @@ type streamStatsMsg struct {
 	stats provider.TurnStats
 }
 type streamStartedMsg struct{ id int }
+
+// skillDecisionMsg carries the routing decision of a turn back to the
+// interface, so the diagnostics view can show which skill was used.
+type skillDecisionMsg struct {
+	decision skills.Decision
+}
+
 type responseMsg struct {
 	id   int
 	text string
@@ -676,6 +698,9 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 		if ev.Proposal != nil {
 			p := *ev.Proposal
 			proposal = &p
+		}
+		if ev.Skill != nil {
+			m.sender(skillDecisionMsg{decision: *ev.Skill})
 		}
 		emit(ev)
 	}
@@ -752,6 +777,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateRename(msg)
 	case viewApprove:
 		return m.updateApprove(msg)
+	case viewSkills:
+		return m.updateSkills(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -962,6 +989,10 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// authority: nothing is written until the operator says so.
 			m.requestWrite(*msg.proposal)
 		}
+		return m, nil
+	case skillDecisionMsg:
+		d := msg.decision
+		m.lastSkill = &d
 		return m, nil
 	case writeResultMsg:
 		return m.updateWrite(msg)
@@ -2177,6 +2208,8 @@ func (m Model) activePanel() []string {
 		return m.renameRows()
 	case viewApprove:
 		return m.approvalRows()
+	case viewSkills:
+		return m.skillsRows()
 	}
 	return nil
 }

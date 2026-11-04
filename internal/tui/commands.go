@@ -158,6 +158,24 @@ var commandTable = []*command{
 		},
 	},
 	{
+		name:        "/skills",
+		description: "List the available skills",
+		run: func(m *Model, _ []string) tea.Cmd {
+			m.view = viewSkills
+			m.panelOffset = 0
+			return nil
+		},
+	},
+	{
+		name:        "/skill",
+		usage:       "/skill <name>|auto",
+		description: "Pin a skill for the writing task (/skill auto restores routing)",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			return m.skillCmd(args)
+		},
+	},
+	{
 		name:        "/collapse",
 		description: "Collapse long prompts",
 		run: func(m *Model, _ []string) tea.Cmd {

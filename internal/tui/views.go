@@ -838,6 +838,9 @@ func (m Model) diagRows() []string {
 		m.ComposerRows(), m.draftRows(), m.draftOffset))
 	composer("textarea", fmt.Sprintf("%d×%d · scrolled %d",
 		m.Composer().Width(), m.Composer().Height(), m.Composer().ScrollYOffset()))
+	if d, ok := m.lastRouting(); ok {
+		composer("skill", skillSummary(d))
+	}
 	s := m.lastStats
 	if s == nil {
 		rows = append(rows, "", "  No completed turn yet.")
