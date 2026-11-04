@@ -18,6 +18,13 @@ mode, a session or a token the model can hold. See
 
 ## Status
 
+Milestone 004A: the native application discovers the skills MPM manages
+and routes each request to the one that fits, beginning with two
+specialised writing skills: `system-prompt-writer` and `humanize-text`.
+Routing is local and free, the guidance is loaded into the request that
+needs it and nowhere else, and a skill can never widen HAL's 444
+authority.
+
 Milestone 003.1: the native application holds live conversations through
 a fullscreen terminal interface — alternate screen, persistent header and
 footer, `Enter` to send, safe multiline input, five themes, clipboard
@@ -80,6 +87,8 @@ footer stay at the bottom.
 | `Ctrl+Z` | Restore the last cleared draft |
 | `Ctrl+Y` | Approve the write request on screen (approval view only) |
 | `Ctrl+N` | Reject the write request on screen (approval view only) |
+| `/skills` | List the skills MPM offers |
+| `/skill <name>` | Pin a skill for the writing task (`/skill auto` restores routing) |
 | mouse wheel | Scroll history, or the draft |
 | left drag | Select conversation text and copy it |
 
@@ -255,6 +264,33 @@ touches the filesystem until the operator approves that one operation.
   six days are pruned.
 - Saving a file never gives HAL the ability to execute it: there is no shell,
   no interpreter, no external program and no general filesystem editing.
+
+**Skills (MPM).** HAL discovers the skills MPM manages and uses the one
+that fits the request, without being told which to use.
+
+- The skills live in **MPM's store**, not in this repository. HAL reads
+  them through MPM's own command line (`mpm call mpm_skills`, the `list`
+  and `read` actions only) and never writes to it. A skill can be
+  updated in MPM and HAL picks it up on the next request, with no
+  rebuild.
+- Two skills ship with this milestone: `system-prompt-writer` (clear,
+  structured instructions for LLMs, coding agents and automated
+  workflows) and `humanize-text` (natural human correspondence that
+  keeps the meaning and the sender's voice). Their authoring source is
+  in [`skills/`](skills/).
+- Routing is decided locally, without an extra model call: the request
+  is matched against the activation guidance MPM publishes for each
+  skill. Ordinary conversation, investigation and philosophical questions
+  select nothing and HAL behaves exactly as before. A follow-up such as
+  "make it shorter" continues the writing task already under way.
+- Only the selected skill is loaded, and only into the request that
+  needs it. It never enters the persona and never enters the session
+  history.
+- A skill is text from a store, so it cannot widen HAL's authority: the
+  request says so explicitly, and HAL stays 444.
+- `/skills` lists what is available, `/skill <name>` pins one for the
+  writing task ahead, `/skill auto` restores automatic routing, and
+  `/diag` names the skill of the latest request and where it came from.
 
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;
