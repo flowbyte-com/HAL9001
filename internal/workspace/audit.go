@@ -20,26 +20,88 @@ const AuditRetention = 6 * 24 * time.Hour
 // runs. Pruning is cheap but not free, so it happens at most this often.
 const AuditInterval = time.Hour
 
-// Record is one audited decision about one proposed write.
-//
-// The trail is bookkeeping for the operator, not a conversation store: it
-// records what happened to a proposal, never the document itself. The
-// digest identifies the content without reproducing it.
+// Record is one audited event. The trail began as the history of proposed
+// writes and now also carries tool activity, but the promise is unchanged:
+// it is bookkeeping for the operator, not a conversation store. It records
+// what happened, never the document or command text. A digest identifies
+// content without reproducing it.
 type Record struct {
 	Time      time.Time `json:"ts"`
 	Session   string    `json:"session,omitempty"`
 	Operation string    `json:"operation"`
-	Path      string    `json:"path"`
+	Path      string    `json:"path,omitempty"`
 	Digest    string    `json:"digest,omitempty"`
 	Bytes     int       `json:"bytes,omitempty"`
 	Overwrite bool      `json:"overwrite,omitempty"`
-	// Decision is "approved" or "rejected".
-	Decision string `json:"decision"`
-	// Outcome is "written", "failed" or "not-run".
+	// Decision is "approved" or "rejected" for a write review.
+	Decision string `json:"decision,omitempty"`
+	// Outcome is "written", "failed", "not-run", "ok", "denied",
+	// "cancelled" or "timeout".
 	Outcome string `json:"outcome"`
 	// Reason is a short, content-free explanation for a refusal or a
 	// failure.
 	Reason string `json:"reason,omitempty"`
+	// Kind distinguishes a guarded write decision ("write", the default
+	// for older records) from a tool invocation ("tool").
+	Kind string `json:"kind,omitempty"`
+	// Tool is the model-callable tool name. It is never the command text.
+	Tool string `json:"tool,omitempty"`
+	// Mode is "444" or "666" at the execution boundary.
+	Mode string `json:"mode,omitempty"`
+	// Action names the tool operation, for example "read" or "record".
+	Action string `json:"action,omitempty"`
+	// ExitCode is present only when a command really ran.
+	ExitCode *int `json:"exit_code,omitempty"`
+	// DurationMS is wall-clock execution time.
+	DurationMS int64 `json:"duration_ms,omitempty"`
+	// Truncated reports that the tool bounded its output.
+	Truncated bool `json:"truncated,omitempty"`
+	// CommandHash identifies a shell command without storing it.
+	CommandHash string `json:"command_hash,omitempty"`
+}
+
+// ToolRecord is one execution-boundary record for a model-callable tool.
+// Callers put paths and work directories in Target, never file contents or
+// command text. A shell command is represented by its hash only.
+type ToolRecord struct {
+	Time        time.Time
+	Session     string
+	Mode        string
+	Tool        string
+	Action      string
+	Target      string
+	Outcome     string
+	Reason      string
+	ExitCode    *int
+	Bytes       int
+	DurationMS  int64
+	Truncated   bool
+	CommandHash string
+}
+
+// AppendTool records one tool invocation in the same bounded trail as the
+// guarded write decisions.
+func (a *Audit) AppendTool(r ToolRecord) error {
+	if a == nil {
+		return nil
+	}
+	return a.Append(Record{
+		Time:        r.Time,
+		Session:     r.Session,
+		Operation:   "tool",
+		Path:        r.Target,
+		Outcome:     r.Outcome,
+		Reason:      r.Reason,
+		Kind:        "tool",
+		Tool:        r.Tool,
+		Mode:        r.Mode,
+		Action:      r.Action,
+		ExitCode:    r.ExitCode,
+		DurationMS:  r.DurationMS,
+		Bytes:       r.Bytes,
+		Truncated:   r.Truncated,
+		CommandHash: r.CommandHash,
+	})
 }
 
 // Audit is the bounded JSONL trail under the application data directory.
