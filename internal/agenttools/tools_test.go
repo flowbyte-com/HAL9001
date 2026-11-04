@@ -253,6 +253,38 @@ func TestRevoking666CancelsRunningBash(t *testing.T) {
 	}
 }
 
+func TestCancelledOperationKeepsItsStartingModeInTheAudit(t *testing.T) {
+	c := permission.New()
+	c.SetSession("s")
+	if err := c.Enable("s"); err != nil {
+		t.Fatal(err)
+	}
+	audit, err := workspace.OpenAudit(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex := New(c, audit).WithSession(func() string { return "s" })
+	done := make(chan Result, 1)
+	go func() {
+		done <- ex.Execute(context.Background(), call("bash", map[string]any{
+			"command": "sleep 20", "timeout_seconds": 30,
+		}))
+	}()
+	time.Sleep(200 * time.Millisecond)
+	c.Disable()
+	res := <-done
+	if res.Status != "cancelled" {
+		t.Fatalf("status = %s: %s", res.Status, res.Content)
+	}
+	records, err := audit.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Mode != "666" || records[0].Outcome != "cancelled" {
+		t.Fatalf("record = %#v", records)
+	}
+}
+
 func TestMalformedArgumentsNeverExecute(t *testing.T) {
 	ex, _ := enabled(t)
 	res := ex.Execute(context.Background(), provider.ToolCall{

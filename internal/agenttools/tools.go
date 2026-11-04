@@ -151,6 +151,9 @@ type Result struct {
 	Bytes     int
 	Truncated bool
 	ExitCode  *int
+	// Mode is the permission mode captured at the execution boundary.
+	// A later revocation must not relabel a cancelled operation as 444.
+	Mode permission.Mode
 }
 
 // Execute runs one structured call. Arguments are validated before any
@@ -158,10 +161,14 @@ type Result struct {
 // operation begins.
 func (e *Executor) Execute(ctx context.Context, call provider.ToolCall) Result {
 	start := e.now()
+	mode := permission.Guarded
+	if e.gate != nil {
+		mode = e.gate.Mode()
+	}
 	if raw, ok := call.Arguments["_invalid"]; ok {
 		_ = raw
 		return e.finish(call, Result{
-			Tool: call.Name, Status: "failed", Action: "invalid",
+			Tool: call.Name, Status: "failed", Action: "invalid", Mode: mode,
 			Content: errorJSON(call.Name, "arguments are not valid JSON"),
 		}, start)
 	}
@@ -183,6 +190,7 @@ func (e *Executor) Execute(ctx context.Context, call provider.ToolCall) Result {
 			Content: errorJSON(call.Name, "unknown tool")}
 		res.Summary = call.Name + " denied · unknown tool"
 	}
+	res.Mode = mode
 	return e.finish(call, res, start)
 }
 
@@ -223,7 +231,7 @@ func (e *Executor) finish(call provider.ToolCall, res Result, start time.Time) R
 		res.Summary = res.Tool + " " + res.Status
 	}
 	mode := "444"
-	if e.gate != nil && e.gate.Mode() == permission.Unrestricted {
+	if res.Mode == permission.Unrestricted {
 		mode = "666"
 	}
 	rec := workspace.ToolRecord{

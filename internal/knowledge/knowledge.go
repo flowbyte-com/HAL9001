@@ -468,6 +468,8 @@ type Result struct {
 	Summary   string
 	Duration  time.Duration
 	Truncated bool
+	// Mode is the permission mode captured when the call began.
+	Mode permission.Mode
 }
 
 // Registry is the set of MPM-backed tools HAL offers.
@@ -518,7 +520,11 @@ func (r *Registry) Has(name string) bool {
 // result.
 func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) Result {
 	start := r.now()
-	res := Result{Action: "unknown", Target: call.Name, Status: "failed"}
+	mode := permission.Guarded
+	if r.mode != nil {
+		mode = r.mode()
+	}
+	res := Result{Action: "unknown", Target: call.Name, Status: "failed", Mode: mode}
 	def, ok := defByName[call.Name]
 	if !ok {
 		res.Content = toolError(call.Name, "unknown MPM tool")
@@ -613,7 +619,7 @@ func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) Result {
 func (r *Registry) finish(call provider.ToolCall, res Result, start time.Time) Result {
 	res.Duration = r.now().Sub(start)
 	mode := "444"
-	if r.mode != nil && r.mode() == permission.Unrestricted {
+	if res.Mode == permission.Unrestricted {
 		mode = "666"
 	}
 	if r.audit != nil {
