@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -276,5 +277,48 @@ func TestALaterUpdateDoesNotChangeTheCredit(t *testing.T) {
 	}
 	if got.Skills[0].ContentHash != "sha256:0123456789abcdef" {
 		t.Errorf("hash = %q", got.Skills[0].ContentHash)
+	}
+}
+
+// failingSkillEngine answers with a routing decision and then fails, the
+// way a provider that gives up does.
+type failingSkillEngine struct {
+	decision skills.Decision
+}
+
+func (e *failingSkillEngine) RespondStream(context.Context, string, func(string)) (string, error) {
+	return "", errors.New("the provider is down")
+}
+
+func (e *failingSkillEngine) RespondStreamEvents(_ context.Context, _ string, emit func(engine.Event)) (string, error) {
+	d := e.decision
+	emit(engine.Event{Skill: &d, Attribution: humanizeCredit(), TurnID: "turn-1"})
+	return "", errors.New("the provider is down")
+}
+
+// TestAFailedTurnIsNotCredited checks that a turn which produced no
+// answer carries no credit: the skill was loaded, but it never shaped
+// an answer.
+func TestAFailedTurnIsNotCredited(t *testing.T) {
+	m := New(&failingSkillEngine{decision: skills.Decision{
+		Skills:  []string{"humanize-text"},
+		Applied: []string{"humanize-text"},
+		Source:  skills.SourceAuto,
+	}})
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "write an email")
+	m = sendCurrent(m)
+	for _, e := range m.Entries() {
+		if e.attribution != nil {
+			t.Errorf("a failed turn was credited: %#v", e.attribution)
+		}
+	}
+	// The failure is explained on screen, and no answer carries a
+	// credit.
+	view := stripANSI(string(m.View().Content))
+	if strings.Contains(view, "skill: humanize-text") {
+		t.Errorf("the failed turn shows a credit:\n%s", view)
 	}
 }
