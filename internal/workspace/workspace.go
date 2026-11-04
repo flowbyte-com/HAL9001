@@ -5,9 +5,15 @@
 // proposal into an immutable record without touching the filesystem;
 // only Approve — called from the trusted interface after a deliberate key
 // action — performs one operation, and only for the exact path and
-// content that were reviewed. Every check runs twice: when the proposal is
-// prepared and again immediately before the write, so a destination that
-// changed in between fails closed instead of being followed.
+// content that were reviewed.
+//
+// Every filesystem operation is resolved through an os.Root: a handle on
+// the workspace directory that names each file relative to itself and
+// refuses any path that leaves the tree. The checks in this package
+// produce the operator's error messages; the root is what makes them
+// true. A directory replaced by a symbolic link between the check and the
+// write cannot redirect the write, because the write is resolved by the
+// handle and not by a path assembled in user space.
 //
 // Nothing here executes anything. A saved file is just a file.
 package workspace
@@ -43,6 +49,13 @@ const MaxBytes = 1 << 20
 // maxPathDepth bounds how deep inside the workspace a proposal may reach.
 const maxPathDepth = 16
 
+// dirPerm is the mode of a directory the executor creates.
+const dirPerm = 0o755
+
+// filePerm is the mode of a file the executor creates. A saved file is
+// never executable: writing one grants no way to run it.
+const filePerm = 0o644
+
 // Errors are stable classes: callers show a short reason and the audit
 // records the class, never the file contents.
 var (
@@ -67,6 +80,11 @@ var (
 	// ErrClosed reports a store without a usable root.
 	ErrClosed = errors.New("workspace: store is not configured")
 )
+
+// errNoWorkspace reports that the workspace directory does not exist yet.
+// It is not a refusal: the directory is created by the first approved
+// write, never by a proposal.
+var errNoWorkspace = fmt.Errorf("workspace: %w", os.ErrNotExist)
 
 // Proposal is one reviewed operation. It is immutable by contract: the
 // content is copied when the proposal is made, and Approve recomputes the
@@ -93,9 +111,9 @@ type Proposal struct {
 	// existing is the identity of the file seen at preparation time.
 	// Approve compares it with the destination to detect a swap.
 	existing os.FileInfo
-	// root and abs are resolved once, at preparation.
+	// root is the workspace the proposal was prepared against. Approve
+	// refuses a proposal that belongs to another workspace.
 	root string
-	abs  string
 }
 
 // Size returns the number of bytes the file would contain.
@@ -109,106 +127,6 @@ type Entry struct {
 	Dir bool
 	// Bytes is the file size; zero for directories.
 	Bytes int64
-}
-
-// List returns the entries directly inside a workspace directory. An empty
-// path lists the workspace root.
-//
-// Listing is a read capability, not an authority: it never leaves the
-// workspace, never follows a symbolic link and never recurses into one.
-func (s *Store) List(rel string) ([]Entry, error) {
-	if s == nil {
-		return nil, ErrClosed
-	}
-	dir, err := s.readPath(rel, true)
-	if err != nil {
-		return nil, err
-	}
-	items, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil, fmt.Errorf("workspace: %w", err)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("workspace: %w", err)
-	}
-	out := make([]Entry, 0, len(items))
-	for _, item := range items {
-		info, err := item.Info()
-		if err != nil {
-			continue
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			// A link is reported by name, never followed.
-			info, err = os.Lstat(filepath.Join(dir, item.Name()))
-			if err != nil {
-				continue
-			}
-		}
-		child := item.Name()
-		if rel != "" && rel != "." {
-			child = path.Join(rel, item.Name())
-		}
-		out = append(out, Entry{
-			Path:  child,
-			Dir:   info.IsDir(),
-			Bytes: info.Size(),
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, nil
-}
-
-// ReadFile returns one workspace file's contents. It is bounded to the
-// same size as a write and refused when it is not text.
-func (s *Store) ReadFile(rel string) ([]byte, error) {
-	if s == nil {
-		return nil, ErrClosed
-	}
-	abs, err := s.readPath(rel, false)
-	if err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(abs)
-	if err != nil {
-		return nil, fmt.Errorf("workspace: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, ErrNotRegular
-	}
-	if info.Size() > MaxBytes {
-		return nil, ErrTooLarge
-	}
-	data, err := os.ReadFile(abs)
-	if err != nil {
-		return nil, fmt.Errorf("workspace: %w", err)
-	}
-	if err := validateContent(data); err != nil {
-		return nil, err
-	}
-	return data, nil
-}
-
-// readPath validates a read destination and proves it is inside the
-// workspace and free of symbolic links.
-func (s *Store) readPath(rel string, dir bool) (string, error) {
-	if rel == "" || rel == "." {
-		if !dir {
-			return "", ErrPath
-		}
-		return s.root, nil
-	}
-	clean, err := cleanRelPath(rel)
-	if err != nil {
-		return "", err
-	}
-	abs, err := s.resolve(clean)
-	if err != nil {
-		return "", err
-	}
-	if err := s.checkPath(abs, dir); err != nil {
-		return "", err
-	}
-	return abs, nil
 }
 
 // Result describes a file that was written.
@@ -234,6 +152,12 @@ type Store struct {
 	audit   *Audit
 	now     func() time.Time
 	homeDir string
+
+	// beforeWrite runs after every check and immediately before the
+	// write itself. It exists so a test can move the filesystem inside
+	// the exact window where a check-based executor would be vulnerable.
+	// Production code never sets it.
+	beforeWrite func()
 }
 
 // Open resolves a workspace root. The directory is created only when a
@@ -254,13 +178,42 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("workspace: %w", err)
 	}
-	abs = filepath.Clean(abs)
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
-	}
+	abs = resolvePath(filepath.Clean(abs))
 	home, _ := os.UserHomeDir()
+	if home != "" {
+		home = resolvePath(home)
+	}
 	s := &Store{root: abs, now: time.Now, homeDir: home}
 	return s, nil
+}
+
+// resolvePath returns the absolute path with every symbolic link in the
+// part that already exists resolved.
+//
+// The workspace directory usually does not exist when the store is
+// opened, so the whole path cannot be resolved at once: the deepest
+// existing ancestor is resolved and the remaining names are appended.
+// This keeps the root stable — and comparable — on systems where a
+// parent directory is itself a link, as /var is on macOS.
+func resolvePath(abs string) string {
+	rest := ""
+	cur := abs
+	for {
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			if rest == "" {
+				return resolved
+			}
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the top without finding an existing ancestor.
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
 }
 
 // WithAudit attaches the audit trail. A nil audit is allowed: the store
@@ -282,7 +235,10 @@ func (s *Store) Protect(dir string) *Store {
 	if err != nil {
 		return s
 	}
-	s.deny = append(s.deny, filepath.Clean(abs))
+	// Resolve the link so the comparison is made against the real
+	// directory, whichever name it is reached by.
+	abs = resolvePath(filepath.Clean(abs))
+	s.deny = append(s.deny, abs)
 	return s
 }
 
@@ -323,11 +279,7 @@ func (s *Store) Prepare(op Op) (Proposal, error) {
 	if err != nil {
 		return Proposal{}, err
 	}
-	abs, err := s.resolve(rel)
-	if err != nil {
-		return Proposal{}, err
-	}
-	if err := s.checkDestination(abs); err != nil {
+	if err := s.checkProtected(rel); err != nil {
 		return Proposal{}, err
 	}
 	if err := validateContent(op.Content); err != nil {
@@ -345,21 +297,40 @@ func (s *Store) Prepare(op Op) (Proposal, error) {
 		Turn:    op.Turn,
 		Created: s.now(),
 		root:    s.root,
-		abs:     abs,
 	}
-	if info, err := os.Lstat(abs); err == nil {
-		p.Overwrite = true
-		p.Existing = info.Size()
-		p.existing = info
-	} else if !os.IsNotExist(err) {
-		return Proposal{}, fmt.Errorf("workspace: %w", err)
+	// Inspect the destination, if there is a workspace to inspect. A
+	// workspace that does not exist yet cannot hold a file, a link or a
+	// replacement.
+	root, err := s.rootHandle()
+	switch {
+	case err == nil:
+		defer root.Close()
+		if err := checkDestination(root, rel, false); err != nil {
+			return Proposal{}, err
+		}
+		info, err := root.Lstat(rel)
+		switch {
+		case err == nil:
+			p.Overwrite = true
+			p.Existing = info.Size()
+			p.existing = info
+		case errors.Is(err, os.ErrNotExist):
+			// Nothing is there: this is a create.
+		default:
+			return Proposal{}, rootError(err)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		// The workspace does not exist yet.
+	default:
+		return Proposal{}, err
 	}
 	return p, nil
 }
 
 // Approve performs exactly one approved write. It re-validates everything,
-// verifies that the destination is still the one that was reviewed, writes
-// a temporary file and moves it into place, and records the outcome.
+// verifies that the destination is still the one that was reviewed, and
+// writes through the root handle, which resolves every name inside the
+// workspace.
 //
 // A proposal can only be executed once: after a create the destination
 // exists, and after a replace the file is no longer the one that was
@@ -373,36 +344,48 @@ func (s *Store) Approve(p Proposal) (Result, error) {
 		s.record(p, true, outcomeFailed, errClass(err))
 		return res, err
 	}
-	if p.root == "" || p.abs == "" {
+	if p.root == "" || p.root != s.root {
+		// The proposal belongs to another workspace, or to none.
 		return fail(ErrDestinationChanged)
 	}
 	rel, err := cleanRelPath(p.Path)
 	if err != nil {
 		return fail(err)
 	}
-	abs, err := s.resolve(rel)
-	if err != nil {
+	if err := s.checkProtected(rel); err != nil {
 		return fail(err)
 	}
-	// The proposal must still describe the same destination and bytes.
-	if abs != p.abs {
-		return fail(ErrDestinationChanged)
-	}
+	// The proposal must still describe the same bytes.
 	if sha256Hex(p.Content) != p.Digest {
 		return fail(ErrDestinationChanged)
 	}
 	if err := validateContent(p.Content); err != nil {
 		return fail(err)
 	}
-	if err := s.checkDestination(abs); err != nil {
+	// The workspace directory is created by the first approved write.
+	if err := s.ensureRootDir(); err != nil {
 		return fail(err)
 	}
-	if err := s.prepareParents(abs); err != nil {
+	root, err := s.rootHandle()
+	if err != nil {
+		return fail(err)
+	}
+	defer root.Close()
+
+	if err := checkDestination(root, rel, false); err != nil {
+		return fail(err)
+	}
+	if err := ensureParents(root, rel); err != nil {
+		return fail(err)
+	}
+	// Walk the path again now that the directories exist: a link
+	// substituted for one of them in the meantime is still refused.
+	if err := checkDestination(root, rel, false); err != nil {
 		return fail(err)
 	}
 	// Re-check the destination immediately before the write. For a
 	// replacement the identity must match the file that was reviewed.
-	cur, statErr := os.Lstat(abs)
+	cur, statErr := root.Lstat(rel)
 	switch {
 	case p.Overwrite:
 		if statErr != nil || cur.Mode()&os.ModeSymlink != 0 || !cur.Mode().IsRegular() {
@@ -413,18 +396,24 @@ func (s *Store) Approve(p Proposal) (Result, error) {
 		}
 	case statErr == nil:
 		return fail(ErrDestinationChanged)
-	case !os.IsNotExist(statErr):
-		return fail(statErr)
+	case !errors.Is(statErr, os.ErrNotExist):
+		return fail(rootError(statErr))
+	}
+
+	// Every check has passed. The write below is still confined by the
+	// root handle, so a directory replaced by a link in this window
+	// cannot redirect it.
+	if s.beforeWrite != nil {
+		s.beforeWrite()
 	}
 
 	if p.Overwrite {
-		if err := replaceFile(abs, p.Content); err != nil {
-			return fail(err)
-		}
+		err = replaceFile(root, rel, p.Content)
 	} else {
-		if err := createFile(abs, p.Content); err != nil {
-			return fail(err)
-		}
+		err = createFile(root, rel, p.Content)
+	}
+	if err != nil {
+		return fail(err)
 	}
 	res.Bytes = int64(len(p.Content))
 	s.record(p, true, outcomeWritten, "")
@@ -466,58 +455,144 @@ func (s *Store) record(p Proposal, approved bool, outcome, reason string) {
 	})
 }
 
-// resolve joins a validated relative path onto the root and proves the
-// result is still inside it.
-func (s *Store) resolve(rel string) (string, error) {
-	abs := filepath.Join(s.root, filepath.FromSlash(rel))
-	back, err := filepath.Rel(s.root, abs)
-	if err != nil || back == ".." || strings.HasPrefix(back, ".."+string(filepath.Separator)) || filepath.IsAbs(back) {
-		return "", ErrPath
+// rootHandle opens the confined handle on the workspace.
+//
+// The handle is the enforcement mechanism: every later name is resolved
+// relative to it, so no operation can leave the workspace even when the
+// tree changes while the operation is in progress.
+func (s *Store) rootHandle() (*os.Root, error) {
+	if s == nil {
+		return nil, ErrClosed
 	}
+	info, err := os.Lstat(s.root)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, errNoWorkspace
+	case err != nil:
+		return nil, fmt.Errorf("workspace: %w", err)
+	case info.Mode()&os.ModeSymlink != 0:
+		return nil, ErrSymlink
+	case !info.IsDir():
+		return nil, ErrNotRegular
+	}
+	// The root path must still be the plain directory it was when the
+	// store was opened. A link substituted for it would redirect every
+	// later operation.
+	if resolved, err := filepath.EvalSymlinks(s.root); err != nil || resolved != s.root {
+		return nil, ErrSymlink
+	}
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return nil, fmt.Errorf("workspace: %w", err)
+	}
+	// The handle must refer to the directory that was just checked. The
+	// window between the check and the open is closed by comparing the
+	// two: a link substituted for the root in between would otherwise be
+	// followed by the open itself.
+	want, err := os.Lstat(s.root)
+	if err != nil {
+		root.Close()
+		return nil, fmt.Errorf("workspace: %w", err)
+	}
+	got, err := root.Stat(".")
+	if err != nil {
+		root.Close()
+		return nil, fmt.Errorf("workspace: %w", err)
+	}
+	if want.Mode()&os.ModeSymlink != 0 {
+		root.Close()
+		return nil, ErrSymlink
+	}
+	if !os.SameFile(want, got) {
+		root.Close()
+		return nil, ErrDestinationChanged
+	}
+	return root, nil
+}
+
+// ensureRootDir creates the workspace directory itself, once, before the
+// first approved write. It refuses a link or a file in its place.
+func (s *Store) ensureRootDir() error {
+	info, err := os.Lstat(s.root)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 {
+			return ErrSymlink
+		}
+		if !info.IsDir() {
+			return ErrNotRegular
+		}
+		return nil
+	case !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("workspace: %w", err)
+	}
+	if err := os.Mkdir(s.root, dirPerm); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// Something appeared between the check and the creation:
+			// look at it again rather than assume.
+			info, lerr := os.Lstat(s.root)
+			if lerr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+				return nil
+			}
+		}
+		return fmt.Errorf("workspace: %w", err)
+	}
+	return nil
+}
+
+// checkProtected refuses a destination inside a protected application
+// directory.
+//
+// The comparison is made on logical paths and touches no file, so it
+// cannot be raced: the root handle keeps the operation inside the
+// workspace whatever the directory tree looks like.
+func (s *Store) checkProtected(rel string) error {
+	if s == nil || len(s.deny) == 0 {
+		return nil
+	}
+	full := filepath.Join(s.root, filepath.FromSlash(rel))
 	for _, deny := range s.deny {
-		if within(deny, abs) {
-			return "", ErrProtected
+		if within(deny, full) {
+			return ErrProtected
 		}
 	}
-	return abs, nil
+	return nil
 }
 
-// checkDestination refuses symbolic links anywhere on the way to the
-// destination, and a destination that is not a regular file.
-func (s *Store) checkDestination(abs string) error {
-	return s.checkPath(abs, false)
-}
-
-// checkPath is checkDestination with the expected kind of the final
-// component: a regular file for a write, a directory for a listing.
-func (s *Store) checkPath(abs string, dir bool) error {
-	rel, err := filepath.Rel(s.root, abs)
-	if err != nil {
+// checkDestination walks the destination inside the root and refuses a
+// symbolic link anywhere on the way, a non-directory in the middle, and a
+// final component that is not of the expected kind.
+//
+// The walk uses the root handle, so every name is resolved inside the
+// workspace: the check cannot be pointed somewhere else.
+func checkDestination(root *os.Root, rel string, dir bool) error {
+	if rel == "" || rel == "." {
+		if dir {
+			return nil
+		}
 		return ErrPath
 	}
-	parts := strings.Split(rel, string(filepath.Separator))
-	cur := s.root
+	parts := strings.Split(rel, "/")
+	cur := ""
 	for i, part := range parts {
-		cur = filepath.Join(cur, part)
-		info, err := os.Lstat(cur)
-		if os.IsNotExist(err) {
+		if cur == "" {
+			cur = part
+		} else {
+			cur += "/" + part
+		}
+		info, err := root.Lstat(cur)
+		if errors.Is(err, os.ErrNotExist) {
 			// The rest does not exist yet; the components checked so
 			// far are real directories.
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("workspace: %w", err)
+			return rootError(err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return ErrSymlink
 		}
-		if i < len(parts)-1 {
-			if !info.IsDir() {
-				return ErrNotRegular
-			}
-			continue
-		}
-		if dir {
+		if i < len(parts)-1 || dir {
 			if !info.IsDir() {
 				return ErrNotRegular
 			}
@@ -530,96 +605,16 @@ func (s *Store) checkPath(abs string, dir bool) error {
 	return nil
 }
 
-// prepareParents creates the workspace root and the missing parent
-// directories one component at a time, refusing symbolic links and
-// non-directories on the way.
-func (s *Store) prepareParents(abs string) error {
-	if err := ensureDir(s.root); err != nil {
-		return err
-	}
-	if err := mkdirChain(s.root, filepath.Dir(abs)); err != nil {
-		return err
-	}
-	// The root may have been created just now; it must be a real
-	// directory, not a link that appeared in the meantime.
-	info, err := os.Lstat(s.root)
-	if err != nil {
-		return fmt.Errorf("workspace: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return ErrSymlink
-	}
-	return nil
-}
-
-// ensureDir creates dir when it is missing and refuses a link or a file.
-// It creates exactly one level: a missing grandparent is a configuration
-// problem, not something a write may invent.
-func ensureDir(dir string) error {
-	info, err := os.Lstat(dir)
-	switch {
-	case err == nil:
-		if info.Mode()&os.ModeSymlink != 0 {
-			return ErrSymlink
-		}
-		if !info.IsDir() {
-			return ErrNotRegular
-		}
-		return nil
-	case !os.IsNotExist(err):
-		return fmt.Errorf("workspace: %w", err)
-	}
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		if os.IsExist(err) {
-			info, lerr := os.Lstat(dir)
-			if lerr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-				return nil
-			}
-		}
-		return fmt.Errorf("workspace: %w", err)
-	}
-	return nil
-}
-
-// mkdirChain creates dir below root, one component at a time.
-func mkdirChain(root, dir string) error {
-	rel, err := filepath.Rel(root, dir)
-	if err != nil {
-		return ErrPath
-	}
-	if rel == "." {
+// ensureParents creates the directories the destination needs, inside the
+// root. The handle creates them relative to itself, so a link swapped in
+// for one of them cannot move the creation outside the workspace.
+func ensureParents(root *os.Root, rel string) error {
+	dir := path.Dir(rel)
+	if dir == "." || dir == "" {
 		return nil
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return ErrPath
-	}
-	cur := root
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		cur = filepath.Join(cur, part)
-		info, err := os.Lstat(cur)
-		switch {
-		case err == nil:
-			if info.Mode()&os.ModeSymlink != 0 {
-				return ErrSymlink
-			}
-			if !info.IsDir() {
-				return ErrNotRegular
-			}
-			continue
-		case !os.IsNotExist(err):
-			return fmt.Errorf("workspace: %w", err)
-		}
-		if err := os.Mkdir(cur, 0o755); err != nil {
-			if os.IsExist(err) {
-				// Something appeared between the check and the
-				// creation: look at it again rather than assume.
-				info, lerr := os.Lstat(cur)
-				if lerr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-					continue
-				}
-			}
-			return fmt.Errorf("workspace: %w", err)
-		}
+	if err := root.MkdirAll(dir, dirPerm); err != nil {
+		return rootError(err)
 	}
 	return nil
 }
@@ -627,26 +622,26 @@ func mkdirChain(root, dir string) error {
 // createFile writes a new file without ever replacing an existing one:
 // O_EXCL makes the create atomic, and a late appearance of the
 // destination is reported instead of overwritten.
-func createFile(abs string, content []byte) error {
-	f, err := os.OpenFile(abs, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+func createFile(root *os.Root, rel string, content []byte) error {
+	f, err := root.OpenFile(rel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, filePerm)
 	if err != nil {
-		if os.IsExist(err) {
+		if errors.Is(err, os.ErrExist) {
 			return ErrDestinationChanged
 		}
-		return fmt.Errorf("workspace: %w", err)
+		return rootError(err)
 	}
 	if _, err := f.Write(content); err != nil {
 		f.Close()
-		_ = os.Remove(abs)
+		_ = root.Remove(rel)
 		return fmt.Errorf("workspace: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
-		_ = os.Remove(abs)
+		_ = root.Remove(rel)
 		return fmt.Errorf("workspace: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(abs)
+		_ = root.Remove(rel)
 		return fmt.Errorf("workspace: %w", err)
 	}
 	return nil
@@ -654,21 +649,20 @@ func createFile(abs string, content []byte) error {
 
 // replaceFile writes a temporary file beside the destination and renames
 // it into place. The rename replaces the directory entry rather than
-// following it, so a symbolic link swapped in after the checks cannot
-// redirect the write outside the workspace.
-func replaceFile(abs string, content []byte) error {
-	dir := filepath.Dir(abs)
-	tmp, err := tempName(dir)
+// following it, and the handle keeps both names inside the workspace, so
+// a symbolic link swapped in after the checks cannot redirect the write.
+func replaceFile(root *os.Root, rel string, content []byte) error {
+	tmp, err := tempRel(path.Dir(rel))
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, filePerm)
 	if err != nil {
-		return fmt.Errorf("workspace: %w", err)
+		return rootError(err)
 	}
 	cleanup := func() {
 		f.Close()
-		_ = os.Remove(tmp)
+		_ = root.Remove(tmp)
 	}
 	if _, err := f.Write(content); err != nil {
 		cleanup()
@@ -679,23 +673,135 @@ func replaceFile(abs string, content []byte) error {
 		return fmt.Errorf("workspace: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
+		_ = root.Remove(tmp)
 		return fmt.Errorf("workspace: %w", err)
 	}
-	if err := os.Rename(tmp, abs); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("workspace: %w", err)
+	if err := root.Rename(tmp, rel); err != nil {
+		_ = root.Remove(tmp)
+		return rootError(err)
 	}
 	return nil
 }
 
-// tempName returns an unused temporary path in dir.
-func tempName(dir string) (string, error) {
+// tempRel returns an unused temporary name beside a workspace file. The
+// name is relative to the root, so the file is created inside it.
+func tempRel(dir string) (string, error) {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return "", fmt.Errorf("workspace: %w", err)
 	}
-	return filepath.Join(dir, ".hal-write-"+hex.EncodeToString(buf[:])+".tmp"), nil
+	name := ".hal-write-" + hex.EncodeToString(buf[:]) + ".tmp"
+	if dir == "." || dir == "" {
+		return name, nil
+	}
+	return dir + "/" + name, nil
+}
+
+// List returns the entries directly inside a workspace directory. An empty
+// path lists the workspace root.
+//
+// Listing is a read capability, not an authority: it never leaves the
+// workspace, never follows a symbolic link and never recurses into one.
+func (s *Store) List(rel string) ([]Entry, error) {
+	if s == nil {
+		return nil, ErrClosed
+	}
+	dirName := "."
+	prefix := ""
+	if rel != "" && rel != "." {
+		clean, err := cleanRelPath(rel)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.checkProtected(clean); err != nil {
+			return nil, err
+		}
+		dirName = clean
+		prefix = clean
+	}
+	root, err := s.rootHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	if err := checkDestination(root, dirName, true); err != nil {
+		return nil, err
+	}
+	dir, err := root.Open(dirName)
+	if err != nil {
+		return nil, rootError(err)
+	}
+	defer dir.Close()
+	items, err := dir.ReadDir(-1)
+	if err != nil {
+		return nil, rootError(err)
+	}
+	out := make([]Entry, 0, len(items))
+	for _, item := range items {
+		info, err := item.Info()
+		if err != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			// A link is reported by name, never followed.
+			info, err = root.Lstat(path.Join(prefix, item.Name()))
+			if err != nil {
+				continue
+			}
+		}
+		child := item.Name()
+		if prefix != "" {
+			child = path.Join(prefix, item.Name())
+		}
+		out = append(out, Entry{
+			Path:  child,
+			Dir:   info.IsDir(),
+			Bytes: info.Size(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+// ReadFile returns one workspace file's contents. It is bounded to the
+// same size as a write and refused when it is not text.
+func (s *Store) ReadFile(rel string) ([]byte, error) {
+	if s == nil {
+		return nil, ErrClosed
+	}
+	clean, err := cleanRelPath(rel)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkProtected(clean); err != nil {
+		return nil, err
+	}
+	root, err := s.rootHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	if err := checkDestination(root, clean, false); err != nil {
+		return nil, err
+	}
+	info, err := root.Lstat(clean)
+	if err != nil {
+		return nil, rootError(err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, ErrNotRegular
+	}
+	if info.Size() > MaxBytes {
+		return nil, ErrTooLarge
+	}
+	data, err := root.ReadFile(clean)
+	if err != nil {
+		return nil, rootError(err)
+	}
+	if err := validateContent(data); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 // cleanRelPath validates and normalises a workspace-relative destination.
@@ -812,6 +918,28 @@ func newID() string {
 		return fmt.Sprintf("p-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf[:])
+}
+
+// rootError classifies an error reported by the root handle.
+//
+// The standard library does not export the sentinel it uses for a path
+// that leaves the workspace, so the wording is matched instead. It is the
+// only error text the root produces for that refusal, and it has said so
+// since the root was introduced.
+func rootError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isEscape(err) {
+		return ErrSymlink
+	}
+	return fmt.Errorf("workspace: %w", err)
+}
+
+// isEscape reports whether the root refused a path that left the
+// workspace.
+func isEscape(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "escapes from parent")
 }
 
 // Audit outcome names. They are stable: the trail is read by people.

@@ -3,6 +3,7 @@ package workspace
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,8 +44,14 @@ type Record struct {
 
 // Audit is the bounded JSONL trail under the application data directory.
 // A nil *Audit is safe: Append and Prune do nothing.
+//
+// The trail is reached through a handle on its own directory, like the
+// workspace itself: the file name is resolved inside that directory and
+// can never be redirected by a link planted in its place.
 type Audit struct {
 	path string
+	dir  string
+	base string
 	now  func() time.Time
 
 	mu        sync.Mutex
@@ -58,10 +65,20 @@ func OpenAudit(path string) (*Audit, error) {
 	if path == "" {
 		return nil, fmt.Errorf("workspace: empty audit path")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("workspace: %w", err)
 	}
-	return &Audit{path: path, now: time.Now}, nil
+	return &Audit{path: path, dir: dir, base: filepath.Base(path), now: time.Now}, nil
+}
+
+// handle opens the confined handle on the trail's directory.
+func (a *Audit) handle() (*os.Root, error) {
+	root, err := os.OpenRoot(a.dir)
+	if err != nil {
+		return nil, fmt.Errorf("workspace: %w", err)
+	}
+	return root, nil
 }
 
 // Path reports the trail file, for diagnostics.
@@ -86,7 +103,12 @@ func (a *Audit) Append(r Record) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	f, err := os.OpenFile(a.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	root, err := a.handle()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	f, err := root.OpenFile(a.base, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("workspace: %w", err)
 	}
@@ -162,15 +184,23 @@ func (a *Audit) pruneLocked() error {
 		buf = append(buf, data...)
 		buf = append(buf, '\n')
 	}
-	tmp, err := tempName(filepath.Dir(a.path))
+	// The rewrite is done through a handle on the trail's own directory,
+	// so the temporary file and the rename stay inside it even if the
+	// directory is replaced while the trail is pruned.
+	root, err := a.handle()
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmp, buf, 0o600); err != nil {
+	defer root.Close()
+	tmp, err := tempRel(".")
+	if err != nil {
+		return err
+	}
+	if err := root.WriteFile(tmp, buf, 0o600); err != nil {
 		return fmt.Errorf("workspace: %w", err)
 	}
-	if err := os.Rename(tmp, a.path); err != nil {
-		_ = os.Remove(tmp)
+	if err := root.Rename(tmp, a.base); err != nil {
+		_ = root.Remove(tmp)
 		return fmt.Errorf("workspace: %w", err)
 	}
 	return nil
@@ -179,8 +209,13 @@ func (a *Audit) pruneLocked() error {
 // readAll reads every record, skipping lines that are not valid records
 // (a truncated tail must not hide the rest of the trail).
 func (a *Audit) readAll() ([]Record, error) {
-	f, err := os.Open(a.path)
-	if os.IsNotExist(err) {
+	root, err := a.handle()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	f, err := root.Open(a.base)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
