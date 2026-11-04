@@ -279,9 +279,14 @@ touches the filesystem until the operator approves that one operation.
   file must still be the same file when the write happens.
 - The review shows the destination, whether it creates or **overwrites** a
   file, the size, the SHA-256 digest, the conversation turn and the full
-  contents; `↑`/`↓`/`PgUp`/`PgDn`/`Home`/`End` scroll it.
+  contents. The header and the decisions stay on screen while the document
+  scrolls: `Ctrl+Y Approve · Ctrl+N Reject · ↑/↓ Scroll · Esc Reject` is
+  the last row, at the beginning of a long document and at its end.
+- `↑`/`↓`/`PgUp`/`PgDn`/`Home`/`End` and the wheel scroll the document, and
+  nothing else.
 - `Ctrl+Y` approves, `Ctrl+N` or `Esc` rejects. Only those chords in the
-  review can decide it: typed text, a paste or a model message never can.
+  review can decide it: typed text, a paste, a click or a model message
+  never can.
 - Approval writes once, reports the destination, and returns to 444. A second
   write needs a second approval. A create never replaces a file that appeared
   in the meantime, and a replace fails if the destination changed after the

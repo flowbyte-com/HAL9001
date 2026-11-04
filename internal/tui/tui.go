@@ -2267,17 +2267,22 @@ func (m Model) View() tea.View {
 // layoutRows builds the whole screen as exactly the terminal height, so
 // the frame never scrolls the terminal.
 //
-// Chat: header, rule, conversation, one blank row, an optional command
-// suggestion panel, the bordered composer, footer, notice.
+// Chat: header, conversation, the composer, the hint row, the divider,
+// the footer and the notice.
 // Overlay: header, rule, panel, rule, footer, notice.
+// Approval: the review's own three zones, so the decisions stay on
+// screen while the document scrolls.
 func (m Model) layoutRows() []string {
 	if !m.ready {
 		return []string{"Starting HAL9001…"}
 	}
 	var rows []string
-	if m.view == viewChat {
+	switch m.view {
+	case viewChat:
 		rows = m.chatLayout()
-	} else {
+	case viewApprove:
+		rows, _ = m.approvalLayout()
+	default:
 		rows = m.overlayLayout()
 	}
 	return m.fitToHeight(rows)
@@ -2374,6 +2379,10 @@ func (m Model) overlayLayout() []string {
 }
 
 // activePanel returns the rows of the overlay that is currently open.
+//
+// The approval view is not one of them: it has its own layout, because
+// its header and its decisions must stay on screen while the document
+// scrolls.
 func (m Model) activePanel() []string {
 	switch m.view {
 	case viewOnboard:
@@ -2394,8 +2403,6 @@ func (m Model) activePanel() []string {
 		return m.usageRows()
 	case viewRename:
 		return m.renameRows()
-	case viewApprove:
-		return m.approvalRows()
 	case viewSkills:
 		return m.skillsRows()
 	}
@@ -2580,6 +2587,57 @@ func truncateCells(s string, n int) string {
 	return b.String() + "…"
 }
 
+// truncateMiddle shortens a string to at most n display cells, keeping
+// its head and its tail and marking the cut in the middle.
+//
+// A path is named by both ends — the directory it lives in and the name
+// of the file — so cutting only the tail would hide the file itself.
+func truncateMiddle(s string, n int) string {
+	if n < 1 {
+		return ""
+	}
+	if lipgloss.Width(s) <= n {
+		return s
+	}
+	if n == 1 {
+		return "…"
+	}
+	head := (n - 1) / 2
+	tail := n - 1 - head
+	return headCells(s, head) + "…" + tailCells(s, tail)
+}
+
+// headCells returns the first n display cells of a string.
+func headCells(s string, n int) string {
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := uniseg.StringWidth(string(r))
+		if w+rw > n {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String()
+}
+
+// tailCells returns the last n display cells of a string.
+func tailCells(s string, n int) string {
+	runes := []rune(s)
+	w := 0
+	start := len(runes)
+	for i := len(runes) - 1; i >= 0; i-- {
+		rw := uniseg.StringWidth(string(runes[i]))
+		if w+rw > n {
+			break
+		}
+		w += rw
+		start = i
+	}
+	return string(runes[start:])
+}
+
 // hintRow is the one reserved row below the composer: the keys that act
 // on the draft right now.
 //
@@ -2747,50 +2805,12 @@ func (m Model) footerCandidates(left, usage, right, model string) []footerCandid
 	}
 }
 
-// footerHints is the left-hand shortcut text for the current draft, from
-// longest to shortest. A narrow terminal takes the next one down.
-func (m Model) footerHints() []string {
-	clear := keyName(keyClearDraft)
-	switch {
-	case m.writeState == writeWriting:
-		return []string{m.permissionLabel() + " · " + m.writeStatePath(), m.permissionLabel()}
-	case m.writeState == writeRequested:
-		return []string{
-			"666 REQUESTED · " + keyName(keyApproveWrite) + " approve · " + keyName(keyRejectWrite) + " reject · Esc rejects",
-			"666 REQUESTED · " + keyName(keyApproveWrite) + " approve · " + keyName(keyRejectWrite) + " reject",
-			"666 REQUESTED",
-		}
-	case m.draftActive():
-		return []string{
-			"Enter send · Ctrl+J newline · " + clear + " clear · /help",
-			"Enter send · " + clear + " clear · /help",
-			clear + " clear · /help",
-			clear + " clear",
-			clear,
-		}
-	case m.undoValid:
-		restore := keyName(keyRestoreDraft)
-		return []string{
-			restore + " restore · /help",
-			restore + " restore",
-			restore,
-		}
-	}
-	return []string{m.permissionLabel() + " · /help", m.permissionLabel()}
-}
-
 // writeStatePath is the destination shown beside 666 WRITING.
 func (m Model) writeStatePath() string {
 	if m.write.Path == "" {
 		return "one file"
 	}
 	return m.displayWritePath(m.write)
-}
-
-// footerHint is the shortest legible hint for the current draft.
-func (m Model) footerHint() string {
-	hints := m.footerHints()
-	return hints[len(hints)-1]
 }
 
 // draftActive reports whether the composer holds something Ctrl+U would

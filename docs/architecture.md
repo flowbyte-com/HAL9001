@@ -100,7 +100,10 @@ the model, so it never wraps and never moves the conversation.
 A `chatFrame` resolves that geometry once per size change; on short
 terminals it gives up the suggestion panel, the notice, the hint row, the
 divider and finally the border — never the header, the composer text or
-the footer. Overlays replace the conversation region with their panel.
+the footer. Overlays replace the conversation region with their panel. The
+666 review is the exception: it keeps a fixed header and a fixed footer
+around a panel that scrolls, because the decisions must not scroll out of
+sight.
 
 Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`) with a
 wheel: `View.MouseMode` is on unless `--no-mouse` or
@@ -319,12 +322,26 @@ The transaction is Prepare → Review → Approve/Reject → Execute once →
   size (1 MiB) and requires UTF-8 text. It copies the bytes, hashes them, and
   records whether a regular file would be replaced. It never creates,
   modifies or removes anything.
-- **Review** is a Bubble Tea overlay (`viewApprove`). It renders the exact
-  path, create-versus-overwrite, the size, the digest, the turn, the whole
-  contents (scrollable) and the two decisions. The footer reads
-  `666 REQUESTED`; the interface cannot start a new turn from it.
+- **Review** is a Bubble Tea overlay (`viewApprove`). It has three zones, and
+  only the middle one scrolls:
+
+  - a fixed **header** that names the operation — the destination, whether the
+    write creates or replaces the file, and the size — so the operator always
+    knows what is about to happen;
+  - the **document** itself, wrapped to the terminal and scrolled by `↑`/`↓`,
+    `PgUp`/`PgDn`, `Home`/`End` and the wheel;
+  - a fixed **footer** with the two decisions and the keys that make them:
+    `Ctrl+Y Approve · Ctrl+N Reject · ↑/↓ Scroll · Esc Reject`.
+
+  The header and the footer are drawn from the same blocks every time, so
+  scrolling the document can never carry the instructions out of view. A narrow
+  terminal splits the footer into two rows rather than cutting a key off, and
+  a terminal that is too short drops the decorative rows — the destination and
+  the decisions are the last to go. The footer reads `666 REQUESTED`; the
+  interface cannot start a new turn from it.
 - **Approve** is `Ctrl+Y` in that view, and only there. The command runs the
-  write off the event loop after `666 WRITING` is on screen.
+  write off the event loop after `666 WRITING` is on screen. The pointer never
+  decides: a click in the review is ignored on purpose.
 - **Execute once** re-validates everything, recomputes the digest, creates
   the missing parent directories and then writes: a create uses
   `O_CREATE|O_EXCL`, so a file that appeared after the review is never

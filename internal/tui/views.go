@@ -1060,17 +1060,23 @@ func (m Model) updateDiag(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // scrollPanel moves the active overlay panel by delta rows.
+//
+// The approval view scrolls its document preview and nothing else: the
+// header that names the operation and the row that carries the
+// decisions stay where they are.
 func (m *Model) scrollPanel(delta int) {
-	var total int
+	var total, n int
 	switch m.view {
 	case viewDiag:
 		total = len(m.diagRows())
+		n = contentHeight(m.height)
 	case viewApprove:
-		total = len(m.approvalRows())
+		total = len(m.approvalPreviewRows())
+		n = m.approvalPreviewHeight()
 	default:
 		total = len(m.helpRows())
+		n = contentHeight(m.height)
 	}
-	n := contentHeight(m.height)
 	m.panelOffset += delta
 	if m.panelOffset > total-n {
 		m.panelOffset = total - n

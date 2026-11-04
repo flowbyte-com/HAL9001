@@ -25,6 +25,10 @@ SAVE_BODY = (
     "The operator\n"
 )
 
+# A long body, for the checks that scroll the review. A path with
+# "long" in it is answered with this document.
+LONG_SAVE_BODY = "\n".join("document line %03d" % i for i in range(1, 61))
+
 SAVE_RE = re.compile(r"\[\[save\s+([^\]]+)\]\]")
 
 # SKILL_RE finds the skill name in a composed system instruction.
@@ -93,7 +97,8 @@ class Handler(BaseHTTPRequestHandler):
         The arguments are split across chunks on purpose: the adapter
         must reassemble them, exactly as a real provider sends them.
         """
-        arguments = json.dumps({"path": path, "content": SAVE_BODY})
+        body = LONG_SAVE_BODY if "long" in path else SAVE_BODY
+        arguments = json.dumps({"path": path, "content": body})
         time.sleep(0.1)
         self.event({"choices": [{"delta": {"content": "I've prepared that for you."}, "index": 0}]})
         time.sleep(0.1)

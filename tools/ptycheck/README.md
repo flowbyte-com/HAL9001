@@ -72,12 +72,13 @@ something fails.
   the reviewed bytes and returns to 444; `Ctrl+N` and `Esc` reject; typed
   text never decides it; paths outside the workspace are refused; overwrites
   are shown as such; and a second write needs its own approval.
-- A `[[save PATH]]` prompt makes the stub propose a write: the review shows
-  the destination, create-versus-overwrite, size, digest and contents, and
-  `666 REQUESTED`; nothing is written before approval. `Ctrl+Y` saves exactly
-  the reviewed bytes and returns to 444; `Ctrl+N` and `Esc` reject; typed
-  text never decides it; paths outside the workspace are refused; overwrites
-  are shown as such; and a second write needs its own approval.
+- The review keeps its three zones at 80x24, 120x30 and 170x38: the header
+  names the operation, the document scrolls, and the decisions
+  (`Ctrl+Y Approve · Ctrl+N Reject · ↑/↓ Scroll · Esc Reject`) are on screen
+  at the beginning of a long document, in the middle of it and at its end.
+  The wheel scrolls the document and leaves the decisions alone, a resize
+  keeps all three zones, and a long document is approved byte for byte or
+  rejected without a byte written.
 - The skill checks run against a temporary MPM workspace holding the two
   shipped skills, so they never depend on the operator's own store. The stub
   names the skill it finds in the system instruction, so the checks can see
@@ -106,6 +107,15 @@ something fails.
   unless a flag has already decided.
 - The wheel over the composer scrolls the draft and leaves the caret
   where it was; the conversation does not move.
+
+## A note on resizes
+
+A terminal that *shrinks* during a run is replayed faithfully. A terminal
+that *grows* is not: the renderer keeps the scrolling region of the old
+height, so the emulator scrolls the frame when the taller frame is
+written. The application is not at fault — the chat view behaves the same
+way — so the checks resize downwards, and a growing terminal is verified
+by hand in a real terminal.
 
 ## Files
 

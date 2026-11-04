@@ -44,6 +44,32 @@ go build -o /tmp/hal9001 ./cmd/hal9001
 - [ ] The 666 approval screen itself is unchanged: `Ctrl+Y` approves,
       `Ctrl+N` and `Esc` reject.
 
+## The 666 review
+
+Ask HAL to save a file, so it asks for the write. The review has three
+zones, and only the middle one moves.
+
+- [ ] The header names the operation: `destination`, `operation` and
+      `size`, on their own rows, and they stay there.
+- [ ] The row under the header shows the SHA-256 of the exact bytes.
+- [ ] The document is shown between two rules, with a `│` in front of
+      every line.
+- [ ] The last row reads
+      `Ctrl+Y Approve · Ctrl+N Reject · ↑/↓ Scroll · Esc Reject`.
+- [ ] That row is still there at the beginning of a long document, after
+      scrolling to the middle of it, and at its very end. The header is
+      there too.
+- [ ] `↑`/`↓`, `PgUp`/`PgDn`, `Home`/`End` and the wheel move the
+      document, and nothing else.
+- [ ] A narrow terminal splits the row in two
+      (`Ctrl+Y Approve · Ctrl+N Reject` over `↑/↓ Scroll · Esc Reject`)
+      instead of cutting a key off.
+- [ ] Clicking anywhere in the review does nothing: only a chord
+      decides.
+- [ ] `Ctrl+Y` writes exactly the bytes that were reviewed, and the
+      footer returns to `444 READ ONLY`.
+- [ ] `Ctrl+N` and `Esc` write nothing and say so.
+
 ## The skill credit
 
 - [ ] Ask for an email. The reply's metadata line ends with
@@ -94,3 +120,6 @@ Resize the terminal while HAL is running, or start it at another size.
       model — `444 READ ONLY` is the last thing to go.
 - [ ] The reading position survives a resize: the same paragraph stays
       in view.
+- [ ] A resize during a 666 review keeps the three zones: the header,
+      the document and the decisions. The document may wrap differently,
+      but nothing is lost.

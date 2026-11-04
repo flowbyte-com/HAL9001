@@ -78,6 +78,34 @@ func requestApproval(t *testing.T, m Model) Model {
 	return m
 }
 
+// approvalControlsText is the row that carries the decisions. It has to
+// be on screen at every position in the document: the operator must
+// never have to scroll to find out how to decide.
+const approvalControlsText = "Ctrl+Y Approve · Ctrl+N Reject · ↑/↓ Scroll · Esc Reject"
+
+// approvalScreen renders the review as plain text.
+func approvalScreen(m Model) string {
+	return stripANSI(strings.Join(m.layoutRows(), "\n"))
+}
+
+// scrollReview moves the document preview by n rows with the arrow keys.
+func scrollReview(m Model, n int) Model {
+	for i := 0; i < n; i++ {
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		m = updated.(Model)
+	}
+	return m
+}
+
+// longDocument is a document long enough to scroll in any terminal.
+func longDocument(lines int) string {
+	rows := make([]string, 0, lines)
+	for i := 1; i <= lines; i++ {
+		rows = append(rows, fmt.Sprintf("document line %03d", i))
+	}
+	return strings.Join(rows, "\n")
+}
+
 // TestDefaultIs444 checks the normal state: read-only, nothing pending.
 func TestDefaultIs444(t *testing.T) {
 	m := testModel()
@@ -109,7 +137,7 @@ func TestProposalOpensTheReviewWithoutWriting(t *testing.T) {
 		t.Errorf("pending = %#v", pending)
 	}
 	rows := strings.Join(m.layoutRows(), "\n")
-	for _, want := range []string{"666", "hosting-letter.md", "create", "sha256:", "Dear hosting provider", "approve", "reject"} {
+	for _, want := range []string{"666", "hosting-letter.md", "create", "sha256:", "Dear hosting provider", "Approve", "Reject"} {
 		if !strings.Contains(rows, want) {
 			t.Errorf("the review is missing %q:\n%s", want, stripANSI(rows))
 		}
@@ -225,18 +253,13 @@ func TestReviewScrollsToTheWholeContent(t *testing.T) {
 	}
 	m, _, _, _ := writeFixture(t, "long.md", strings.Join(lines, "\n"))
 	m = requestApproval(t, m)
-	top := stripANSI(strings.Join(m.approvalRows(), "\n"))
+	top := stripANSI(strings.Join(m.approvalPreviewRows(), "\n"))
 	if !strings.Contains(top, "row 01 marker") {
 		t.Errorf("the first line is missing:\n%s", top)
 	}
-	if strings.Contains(top, "row 60 marker") {
-		// Fine: a short panel may already show it. The scroll check
-		// below is the one that matters.
-		t.Log("the panel already shows the end")
-	}
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 	m = updated.(Model)
-	panel := stripANSI(strings.Join(m.panelRows(m.approvalRows(), contentHeight(m.height)), "\n"))
+	panel := approvalScreen(m)
 	if !strings.Contains(panel, "row 60 marker") {
 		t.Errorf("the end of the content is not reachable:\n%s", panel)
 	}
@@ -370,7 +393,7 @@ func TestOverwriteReviewChecksTheReplacementIsShown(t *testing.T) {
 	m.SetWorkspace(store)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = requestApproval(t, updated.(Model))
-	rows := stripANSI(strings.Join(m.approvalRows(), "\n"))
+	rows := approvalScreen(m)
 	if !strings.Contains(rows, "OVERWRITE") {
 		t.Errorf("the review does not name the overwrite:\n%s", rows)
 	}
@@ -429,5 +452,179 @@ func TestWriteCancelledByStreamError(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "letter.md")); !os.IsNotExist(err) {
 		t.Error("a failed turn wrote a file")
+	}
+}
+
+// TestApprovalHeaderNamesTheOperation checks the fixed header: the
+// destination, the operation and the size are on screen before anything
+// is read.
+func TestApprovalHeaderNamesTheOperation(t *testing.T) {
+	m, _, _, _ := writeFixture(t, "notes/letter.md", "hello\n")
+	m = requestApproval(t, m)
+	screen := approvalScreen(m)
+	for _, want := range []string{"destination", "notes/letter.md", "operation", "create", "size", "6 bytes"} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("the header is missing %q:\n%s", want, screen)
+		}
+	}
+}
+
+// TestApprovalControlsStayVisibleWhileScrolling is the regression test
+// for the usability fix: the decisions are on screen at the beginning of
+// a long document, in the middle of it and at its end.
+func TestApprovalControlsStayVisibleWhileScrolling(t *testing.T) {
+	m, _, _, _ := writeFixture(t, "long.md", longDocument(200))
+	m = requestApproval(t, m)
+
+	// The beginning of the document.
+	start := approvalScreen(m)
+	if !strings.Contains(start, "document line 001") {
+		t.Errorf("the document does not start at its first line:\n%s", start)
+	}
+
+	// The middle of the document.
+	middle := scrollReview(m, 100)
+	middleScreen := approvalScreen(middle)
+	if !strings.Contains(middleScreen, "document line 101") {
+		t.Errorf("the middle of the document is not shown:\n%s", middleScreen)
+	}
+
+	// The end of the document.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	end := updated.(Model)
+	endScreen := approvalScreen(end)
+	if !strings.Contains(endScreen, "document line 200") {
+		t.Errorf("the end of the document is not shown:\n%s", endScreen)
+	}
+
+	// The three positions are three different views of the document.
+	if start == middleScreen || middleScreen == endScreen {
+		t.Error("the document did not scroll")
+	}
+
+	// And at every one of them the header and the decisions are there.
+	for name, screen := range map[string]string{
+		"start":  start,
+		"middle": middleScreen,
+		"end":    endScreen,
+	} {
+		if !strings.Contains(screen, approvalControlsText) {
+			t.Errorf("%s: the decisions are not on screen:\n%s", name, screen)
+		}
+		for _, want := range []string{"destination", "long.md", "size", "666 REQUESTED"} {
+			if !strings.Contains(screen, want) {
+				t.Errorf("%s: the header is missing %q:\n%s", name, want, screen)
+			}
+		}
+	}
+}
+
+// TestApprovalWheelScrollsTheDocumentOnly checks that the wheel moves
+// the document and leaves the header and the decisions alone.
+func TestApprovalWheelScrollsTheDocumentOnly(t *testing.T) {
+	m, _, _, _ := writeFixture(t, "long.md", longDocument(200))
+	m = requestApproval(t, m)
+	before := approvalScreen(m)
+	updated, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown, X: 10, Y: 10})
+	m = updated.(Model)
+	after := approvalScreen(m)
+	if before == after {
+		t.Errorf("the wheel did not scroll the document:\n%s", after)
+	}
+	if !strings.Contains(after, approvalControlsText) {
+		t.Errorf("the wheel took the decisions away:\n%s", after)
+	}
+	if !strings.Contains(after, "destination") {
+		t.Errorf("the wheel took the header away:\n%s", after)
+	}
+	if m.WriteState() != writeRequested {
+		t.Error("the wheel decided the request")
+	}
+}
+
+// TestApprovalSurvivesAResize checks that the three zones survive a
+// resize at the sizes the operator uses.
+func TestApprovalSurvivesAResize(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {120, 30}, {170, 38}} {
+		m, _, _, _ := writeFixture(t, "long.md", longDocument(200))
+		m = requestApproval(t, m)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		m = updated.(Model)
+		screen := approvalScreen(m)
+		if !strings.Contains(screen, approvalControlsText) {
+			t.Errorf("%dx%d: the decisions are not on screen:\n%s", size[0], size[1], screen)
+		}
+		for _, want := range []string{"destination", "long.md", "size"} {
+			if !strings.Contains(screen, want) {
+				t.Errorf("%dx%d: the header is missing %q:\n%s", size[0], size[1], want, screen)
+			}
+		}
+		lines := strings.Split(screen, "\n")
+		if len(lines) != size[1] {
+			t.Errorf("%dx%d: the frame has %d rows", size[0], size[1], len(lines))
+		}
+		// The preview is still there: the document has room of its own.
+		if !strings.Contains(screen, "document line 001") {
+			t.Errorf("%dx%d: the document is not shown:\n%s", size[0], size[1], screen)
+		}
+	}
+}
+
+// TestApprovalNarrowTerminalKeepsTheDecisions checks that a narrow
+// terminal splits the row instead of cutting a key off.
+func TestApprovalNarrowTerminalKeepsTheDecisions(t *testing.T) {
+	m, _, _, _ := writeFixture(t, "long.md", longDocument(200))
+	m = requestApproval(t, m)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 50, Height: 20})
+	m = updated.(Model)
+	screen := approvalScreen(m)
+	for _, want := range []string{"Ctrl+Y", "Ctrl+N", "Esc"} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("the narrow review is missing %q:\n%s", want, screen)
+		}
+	}
+	if !strings.Contains(screen, "destination") {
+		t.Errorf("the narrow review lost its header:\n%s", screen)
+	}
+}
+
+// TestApprovalClickDoesNotDecide checks that the pointer never decides
+// a write: only a chord does.
+func TestApprovalClickDoesNotDecide(t *testing.T) {
+	m, _, root, _ := writeFixture(t, "letter.md", "hello")
+	m = requestApproval(t, m)
+	updated, _ := m.Update(tea.MouseClickMsg{X: 10, Y: 10, Button: tea.MouseLeft})
+	m = updated.(Model)
+	if m.view != viewApprove || m.WriteState() != writeRequested {
+		t.Errorf("a click decided the request: view %d state %d", m.view, m.WriteState())
+	}
+	if _, err := os.Stat(filepath.Join(root, "letter.md")); !os.IsNotExist(err) {
+		t.Error("a click wrote the file")
+	}
+}
+
+// TestApprovalKeepsThePermissionLabels checks that the state names are
+// unchanged: 666 while the request is pending, 666 while the write runs,
+// and 444 once it is done.
+func TestApprovalKeepsThePermissionLabels(t *testing.T) {
+	m, _, root, _ := writeFixture(t, "letter.md", "hello")
+	m = requestApproval(t, m)
+	if !strings.Contains(approvalScreen(m), "666 REQUESTED") {
+		t.Errorf("the pending review does not say 666 REQUESTED:\n%s", approvalScreen(m))
+	}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if !strings.Contains(approvalScreen(m), "666 WRITING") {
+		t.Errorf("the running write does not say 666 WRITING:\n%s", approvalScreen(m))
+	}
+	m = drain(m, cmd)
+	if !strings.Contains(approvalScreen(m), "444 READ ONLY") {
+		t.Errorf("the finished write does not say 444 READ ONLY:\n%s", approvalScreen(m))
+	}
+	if strings.Contains(approvalScreen(m), "666") {
+		t.Errorf("666 is left behind:\n%s", approvalScreen(m))
+	}
+	if _, err := os.Stat(filepath.Join(root, "letter.md")); err != nil {
+		t.Errorf("the file was not written: %v", err)
 	}
 }

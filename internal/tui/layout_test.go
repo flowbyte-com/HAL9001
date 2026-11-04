@@ -230,3 +230,32 @@ func TestTheDiagnosticsCarryTheSessionIdentity(t *testing.T) {
 		t.Errorf("the diagnostics do not carry the session identity:\n%s", rows)
 	}
 }
+
+// TestTruncateMiddleKeepsBothEnds checks that a long path is shortened
+// in the middle: the directory it lives in and the name of the file are
+// both still readable.
+func TestTruncateMiddleKeepsBothEnds(t *testing.T) {
+	path := "/home/operator/projects/hal/notes/letter.md"
+	got := truncateMiddle(path, 24)
+	if lipgloss.Width(got) != 24 {
+		t.Errorf("width = %d, want 24 (%q)", lipgloss.Width(got), got)
+	}
+	if !strings.HasPrefix(got, "/home") {
+		t.Errorf("%q does not keep the head", got)
+	}
+	if !strings.HasSuffix(got, "letter.md") {
+		t.Errorf("%q does not keep the tail", got)
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("%q does not mark the cut", got)
+	}
+	// A string that fits is left alone.
+	if got := truncateMiddle("short.md", 24); got != "short.md" {
+		t.Errorf("got %q, want the string unchanged", got)
+	}
+	// Wide characters are never cut in half.
+	got = truncateMiddle("日本語のファイル.md", 10)
+	if lipgloss.Width(got) > 10 {
+		t.Errorf("width = %d, want at most 10 (%q)", lipgloss.Width(got), got)
+	}
+}

@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pty_drive
-from fake_provider import SAVE_BODY
+from fake_provider import LONG_SAVE_BODY, SAVE_BODY
 from pty_drive import HOME, run
 from termsim import render
 
@@ -1007,6 +1007,130 @@ def approval_checks():
             shutil.rmtree(workspace_dir)
 
 
+def approval_layout_checks():
+    """666: the review keeps its header and its decisions on screen while
+    the document scrolls.
+
+    The document is long enough to scroll at every terminal size, and the
+    decisions have to be there at the beginning of it, in the middle and
+    at its end: the operator must never have to scroll to find out how
+    to decide.
+    """
+    import shutil
+
+    workspace_dir = os.path.join(os.path.dirname(HOME.rstrip("/")), "halworkspace")
+    previous = os.environ.get("HAL9001_WORKSPACE")
+    os.environ["HAL9001_WORKSPACE"] = workspace_dir
+    controls = "Ctrl+Y Approve · Ctrl+N Reject · ↑/↓ Scroll · Esc Reject"
+
+    def reset():
+        if os.path.isdir(workspace_dir):
+            shutil.rmtree(workspace_dir)
+        os.makedirs(workspace_dir, exist_ok=True)
+
+    def saved(rel):
+        try:
+            with open(os.path.join(workspace_dir, rel), "rb") as fh:
+                return fh.read()
+        except OSError:
+            return None
+
+    def review(cols, rows, extra=(), rel="notes/long.md", timeout=7.0,
+               final=None):
+        script = [(1.5, ("Please [[save %s]] this.\r" % rel).encode())]
+        script.extend(extra)
+        raw = run(script, cols=cols, rows=rows, timeout=timeout,
+                  fresh=True, session="writecheck")
+        return render(raw, *(final or (cols, rows))).text()
+
+    try:
+        for cols, rows in [(80, 24), (120, 30), (170, 38)]:
+            size = "%dx%d" % (cols, rows)
+
+            # The beginning of the document.
+            reset()
+            text = review(cols, rows)
+            check("review: %s shows the decisions" % size,
+                  controls in text, text)
+            check("review: %s names the destination" % size,
+                  "notes/long.md" in text, text)
+            check("review: %s names the operation" % size,
+                  "create" in text, text)
+            check("review: %s shows the size" % size,
+                  "size" in text, text)
+            check("review: %s shows the first line of the document" % size,
+                  "document line 001" in text, text)
+            check("review: %s keeps 666 REQUESTED" % size,
+                  "666 REQUESTED" in text, text)
+
+            # The end of the document: the decisions are still on screen.
+            reset()
+            ended = review(cols, rows, [(0.8, b"\x1b[F")])
+            check("review: %s keeps the decisions at the end" % size,
+                  controls in ended, ended)
+            check("review: %s reaches the end of the document" % size,
+                  "document line 060" in ended, ended)
+            check("review: %s keeps the header at the end" % size,
+                  "notes/long.md" in ended, ended)
+
+            # The middle of the document.
+            reset()
+            middle = review(cols, rows, [(0.6, b"\x1b[B" * 20)])
+            check("review: %s keeps the decisions in the middle" % size,
+                  controls in middle, middle)
+            check("review: %s scrolls into the document" % size,
+                  "document line 021" in middle, middle)
+
+        # The wheel scrolls the document, not the decisions.
+        reset()
+        wheeled = review(80, 24, [(0.6, b"\x1b[<65;40;10M" * 3)])
+        check("review: the wheel scrolls the document",
+              "document line 010" in wheeled, wheeled)
+        check("review: the wheel keeps the decisions",
+              controls in wheeled, wheeled)
+
+        # A resize keeps the three zones. The terminal shrinks here: a
+        # growing terminal repaints through the renderer's scroll
+        # optimisation, which the emulator cannot show faithfully.
+        reset()
+        resized = review(120, 30, [(0.8, ("resize", 80, 24)), (0.8, b"")],
+                         final=(80, 24))
+        check("review: a resize keeps the decisions",
+              controls in resized, resized)
+        check("review: a resize keeps the header",
+              "notes/long.md" in resized, resized)
+        check("review: a resize keeps the document",
+              "document line 001" in resized, resized)
+        check("review: a resize keeps 666 REQUESTED",
+              "666 REQUESTED" in resized, resized)
+
+        # A long document is still approved exactly once, and exactly as
+        # it was reviewed.
+        reset()
+        approved = review(80, 24, [(0.8, b"\x19"), (1.0, b"")], timeout=6.0)
+        body = saved("notes/long.md")
+        check("review: approval saves the whole document",
+              body is not None and body.decode() == LONG_SAVE_BODY,
+              repr(body)[:200] if body else "nothing saved")
+        check("review: the interface returns to 444",
+              "444 READ ONLY" in approved, approved)
+
+        # And a long document is rejected without a byte written.
+        reset()
+        rejected = review(80, 24, [(0.8, b"\x0e"), (0.6, b"")], timeout=6.0)
+        check("review: rejection writes nothing",
+              saved("notes/long.md") is None, repr(saved("notes/long.md")))
+        check("review: rejection returns to 444",
+              "444 READ ONLY" in rejected and "666" not in rejected, rejected)
+    finally:
+        if previous is None:
+            os.environ.pop("HAL9001_WORKSPACE", None)
+        else:
+            os.environ["HAL9001_WORKSPACE"] = previous
+        if os.path.isdir(workspace_dir):
+            shutil.rmtree(workspace_dir, ignore_errors=True)
+
+
 def skills_checks():
     """Skills: routing, the catalogue and the operator's override.
 
@@ -1323,6 +1447,7 @@ def main():
     layout_checks()
     jump_checks()
     approval_checks()
+    approval_layout_checks()
     skills_checks()
     composer_mouse_checks()
 
