@@ -150,10 +150,10 @@ The transaction is Prepare → Review → Approve/Reject → Execute once →
 
 - **Prepare** validates the destination (a plain relative path, no `..`, no
   absolute path, no drive letter, no NUL, portable component names), proves
-  containment with `filepath.Rel`, refuses symbolic links on every existing
-  component, bounds the size (1 MiB) and requires UTF-8 text. It copies the
-  bytes, hashes them, and records whether a regular file would be replaced.
-  It never creates, modifies or removes anything.
+  containment, refuses symbolic links on every existing component, bounds the
+  size (1 MiB) and requires UTF-8 text. It copies the bytes, hashes them, and
+  records whether a regular file would be replaced. It never creates,
+  modifies or removes anything.
 - **Review** is a Bubble Tea overlay (`viewApprove`). It renders the exact
   path, create-versus-overwrite, the size, the digest, the turn, the whole
   contents (scrollable) and the two decisions. The footer reads
@@ -161,16 +161,63 @@ The transaction is Prepare → Review → Approve/Reject → Execute once →
 - **Approve** is `Ctrl+Y` in that view, and only there. The command runs the
   write off the event loop after `666 WRITING` is on screen.
 - **Execute once** re-validates everything, recomputes the digest, creates
-  missing parent directories one component at a time (refusing links), and
-  then writes: a create uses `O_CREATE|O_EXCL`, so a file that appeared
-  after the review is never replaced; a replace writes a temporary file
-  beside the destination and renames it, and only after `os.SameFile`
-  proves the destination is still the file that was reviewed. A rename
-  replaces the directory entry, so a link swapped in cannot redirect the
-  write. A replayed proposal fails by construction: the created file exists,
-  and the replaced one is no longer the reviewed inode.
+  the missing parent directories and then writes: a create uses
+  `O_CREATE|O_EXCL`, so a file that appeared after the review is never
+  replaced; a replace writes a temporary file beside the destination and
+  renames it, and only after `os.SameFile` proves the destination is still
+  the file that was reviewed. A replayed proposal fails by construction: the
+  created file exists, and the replaced one is no longer the reviewed inode.
 - **Reject** (`Ctrl+N`, `Esc`), a session change, another pending request and
   quitting without deciding all consume the request. The audit records why.
+
+### The confinement mechanism
+
+Every filesystem operation in the package is resolved through an `os.Root`:
+a handle on the workspace directory that names each file relative to itself
+and refuses any path leaving the tree. The checks above produce the
+operator's error messages; the root is what makes them true.
+
+This is the difference between checking and being safe. A check reads the
+filesystem, decides, and then acts — and between those two steps the
+filesystem can change. A directory on the way to the destination can be
+replaced by a symbolic link, and a name assembled in user space then
+resolves through it:
+
+```go
+// Before: the name is assembled in user space and resolved by the
+// kernel, which follows the link.
+os.OpenFile(filepath.Join(root, "sub", "note.md"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+```
+
+With a root handle the same write is named inside the workspace and cannot
+leave it, whatever the tree looks like at that moment:
+
+```go
+root.OpenFile("sub/note.md", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+// openat sub/note.md: path escapes from parent
+```
+
+The same holds for the other operations: `Root.MkdirAll` creates the parent
+directories inside the workspace, `Root.Rename` moves the temporary file
+into place inside it, and `Root.Lstat`, `Root.ReadFile` and `Root.Open`
+read inside it. The audit trail is reached the same way, through a handle
+on its own directory.
+
+Two things are deliberately stricter than the root requires. The package
+refuses *any* symbolic link on the path, not only the ones that escape, and
+it re-verifies the workspace root itself: the root path must still be the
+plain directory the operator pointed at, and the opened handle must refer to
+that same directory. A link substituted for the workspace is refused rather
+than followed.
+
+`internal/workspace/race_test.go` demonstrates the property. The exchange is
+made deterministic with a hook that fires after every check and immediately
+before the write — the only window in which a check-based executor is
+exposed — and the tests show that an approved write whose parent directory
+is replaced by a link reaches neither the outside directory nor the
+workspace. A companion test performs the very same exchange with an
+absolute path and shows that it *does* redirect the write, so the
+containment tests cannot pass for the wrong reason.
 
 The model reaches this only through the one tool the engine offers
 (`write_file`), and only when a workspace is configured. The provider adapter
@@ -183,7 +230,6 @@ The audit trail (`~/.hal9001/audit.jsonl`, mode 0600) records the timestamp,
 session, operation, workspace-relative path, digest, size, decision and
 outcome — never the document — and is pruned to six days by rewriting the
 file atomically. A failure to write the trail never changes a decision.
-
 Status notices live in one row under the footer that is always part of
 the frame, so a notice appearing or expiring never shifts anything. A new
 notice replaces the old one, and every notice is put on a one-shot timer;

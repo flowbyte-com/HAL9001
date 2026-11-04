@@ -235,6 +235,10 @@ touches the filesystem until the operator approves that one operation.
 - The workspace is `~/HAL` by default (`--workspace` or `HAL9001_WORKSPACE`
   changes it). Proposed writes can never reach `~/.hal9001/`, a system
   directory or anything outside the workspace.
+- Every write is resolved through a handle on the workspace directory, so a
+  directory replaced by a symbolic link between the review and the write
+  cannot redirect it. Symbolic links are refused outright, and the reviewed
+  file must still be the same file when the write happens.
 - The review shows the destination, whether it creates or **overwrites** a
   file, the size, the SHA-256 digest, the conversation turn and the full
   contents; `↑`/`↓`/`PgUp`/`PgDn`/`Home`/`End` scroll it.
