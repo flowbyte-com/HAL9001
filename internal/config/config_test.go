@@ -90,6 +90,41 @@ func TestFileConfigRoundTripWithStrictPermissions(t *testing.T) {
 	}
 }
 
+// TestSaveFileIsAtomic checks that a write never leaves a fragment
+// behind: the configuration is replaced by a rename, so a reader sees the
+// old file or the new one, never half of either.
+func TestSaveFileIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	first := FileConfig{Provider: "openai-compatible", Endpoint: "https://one.example/v1"}
+	if err := SaveFile(path, first); err != nil {
+		t.Fatal(err)
+	}
+	second := FileConfig{Provider: "openai-compatible", Endpoint: "https://two.example/v1"}
+	if err := SaveFile(path, second); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Endpoint != second.Endpoint {
+		t.Errorf("endpoint = %q, want %q", loaded.Endpoint, second.Endpoint)
+	}
+	// The temporary file is gone: only the configuration is left.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.json" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("directory holds %v, want only config.json", names)
+	}
+}
+
 func TestActiveDefaultsToFirst(t *testing.T) {
 	fc := FileConfig{Models: []ModelRecord{{ID: "a"}, {ID: "b"}}}
 	active, ok := fc.Active()

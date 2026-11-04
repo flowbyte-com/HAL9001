@@ -183,15 +183,41 @@ func LoadFile(path string) (FileConfig, error) {
 
 // SaveFile writes the user configuration with restrictive permissions
 // (0600 file, 0700 directory). Secrets live here or in the environment.
+//
+// The write is atomic: the configuration is written to a temporary file
+// beside it and renamed over the old one. A plain write truncates the
+// file first, so an interrupted write — a killed process, a full disk —
+// leaves a half-written configuration behind, and the next launch reads
+// an empty one and asks for the endpoint again. A rename is never
+// half-done: the old configuration or the new one is there, never a
+// fragment.
 func SaveFile(path string, fc FileConfig) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 	data, err := json.MarshalIndent(fc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+	tmp, err := os.CreateTemp(dir, "config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("config: %w", err)
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return fmt.Errorf("config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	if err := os.Rename(name, path); err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 	return nil
