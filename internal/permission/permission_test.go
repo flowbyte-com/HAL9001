@@ -18,6 +18,23 @@ func TestDefaultIsGuarded(t *testing.T) {
 	}
 }
 
+func TestEnableRequiresABoundSession(t *testing.T) {
+	c := New()
+	if err := c.Enable(""); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("Enable(\"\") = %v", err)
+	}
+	if c.Mode() != Guarded {
+		t.Fatal("an unbound enable changed the mode")
+	}
+	c.SetSession("one")
+	if err := c.Enable(""); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("Enable(\"\") on a bound controller = %v", err)
+	}
+	if c.Mode() != Guarded {
+		t.Fatal("an empty session enabled 666")
+	}
+}
+
 func TestEnableIsSessionBound(t *testing.T) {
 	c := New()
 	c.SetSession("one")
@@ -89,7 +106,9 @@ func TestBeginAndDisableDoNotRace(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			ctx, done, err := c.Begin(context.Background(), "read")
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			ctx, done, err := c.Begin(ctx, "read")
 			if err == nil {
 				defer done()
 				<-ctx.Done()
@@ -101,8 +120,10 @@ func TestBeginAndDisableDoNotRace(t *testing.T) {
 			c.Enable("one")
 		}()
 	}
-	wg.Wait()
+	// Disable before waiting: a goroutine may have entered Begin after the
+	// last iteration's own Enable. The final revocation unblocks it.
 	c.Disable()
+	wg.Wait()
 	if c.Active() != 0 {
 		t.Fatalf("active = %d after all operations ended", c.Active())
 	}

@@ -12,7 +12,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/flowbyte-com/HAL9001/internal/agenttools"
+	"github.com/flowbyte-com/HAL9001/internal/capability"
+	"github.com/flowbyte-com/HAL9001/internal/knowledge"
+	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/skills"
@@ -45,7 +50,20 @@ type Engine struct {
 	// skills routes each request to a skill and loads its guidance.
 	// Nil means no skill is ever selected.
 	skills *skills.Selector
+	// permission is the read-only view of the operator's permission
+	// gate. Nil means the conversation is permanently 444.
+	permission permission.Gate
+	// execution performs the four 666 tools. Nil means no privileged tool
+	// is ever offered, even if the gate says 666.
+	execution *agenttools.Executor
+	// knowledge exposes MPM's own knowledge tools. It is available in both
+	// 444 and 666: it mutates MPM records, never arbitrary OS files.
+	knowledge *knowledge.Registry
 }
+
+// maxToolSteps bounds a single provider conversation. It is a safety limit,
+// not a target: ordinary turns use zero or one step.
+const maxToolSteps = 8
 
 // New binds a session store to a provider and model.
 func New(sessions *session.Store, p provider.Provider, model provider.Model) *Engine {
@@ -70,6 +88,37 @@ func (e *Engine) WithSkills(s *skills.Selector) *Engine {
 	return e
 }
 
+// WithPermission attaches the read-only permission gate. The engine can
+// observe and recheck the mode, but it cannot change it.
+func (e *Engine) WithPermission(g permission.Gate) *Engine {
+	e.permission = g
+	return e
+}
+
+// WithExecution attaches the 666 tool executor. The executor still asks the
+// gate at every operation boundary; attaching it grants nothing by itself.
+func (e *Engine) WithExecution(x *agenttools.Executor) *Engine {
+	e.execution = x
+	return e
+}
+
+// WithKnowledge attaches MPM's knowledge tools. They remain available in
+// 444: they are typed knowledge operations, not unrestricted filesystem
+// writes, and MPM still owns validation and confirmation.
+func (e *Engine) WithKnowledge(k *knowledge.Registry) *Engine {
+	e.knowledge = k
+	return e
+}
+
+// permissionMode is the safe snapshot used for the system instruction and
+// the offered-tool list. It never replaces the gate's execution check.
+func (e *Engine) permissionMode() permission.Mode {
+	if e.permission == nil {
+		return permission.Guarded
+	}
+	return e.permission.Mode()
+}
+
 // WithSystemPrompt sets the system instruction prepended to every request.
 // It is never stored in the session: history stays provider-independent
 // and the instruction foundation stays byte-stable across turns.
@@ -92,6 +141,13 @@ func (e *Engine) UseStore(sessions *session.Store) {
 func (e *Engine) requestMessages(history []session.Message, guidance string) []provider.Message {
 	messages := make([]provider.Message, 0, len(history)+1)
 	system := e.systemPrompt
+	if block := permissionBlock(e.permissionMode()); block != "" {
+		if system != "" {
+			system += "\n\n" + block
+		} else {
+			system = block
+		}
+	}
 	if guidance != "" {
 		if system != "" {
 			system += "\n\n" + guidance
@@ -109,6 +165,26 @@ func (e *Engine) requestMessages(history []session.Message, guidance string) []p
 		})
 	}
 	return messages
+}
+
+// permissionBlock tells the model the authority for this request. It is
+// composed into the system instruction for this turn only and never stored.
+// It cannot grant anything: the executor checks the same gate at each
+// operation.
+func permissionBlock(mode permission.Mode) string {
+	if mode == permission.Unrestricted {
+		return "## Current permission: 666 UNRESTRICTED\n\n" +
+			"The operator enabled 666 for this conversation. The read, write, edit and bash tools run with the " +
+			"permissions of the OS user running HAL and are not confined to the HAL workspace. Use them only when " +
+			"the operator's request warrants an action; do not edit files or run commands merely because they are " +
+			"available. You cannot change this mode. Only the operator can return to 444, and a tool result that " +
+			"says the operation was denied or cancelled must be reported honestly."
+	}
+	return "## Current permission: 444 READ ONLY\n\n" +
+		"You may converse, retrieve and update MPM knowledge through its typed tools, and prepare one guarded " +
+		"write proposal for operator approval. You cannot run shell commands or edit OS files. A request for " +
+		"those capabilities is outside your authority; do not claim an operation happened unless a tool result " +
+		"confirms it. You cannot change the permission mode."
 }
 
 // Respond answers without streaming (kept for tests and non-interactive
@@ -143,6 +219,25 @@ type Event struct {
 	// decision. It carries no authority: the interface approves or
 	// rejects it, and only then may the filesystem be touched.
 	Proposal *workspace.Proposal
+	// Tool is one execution-boundary record. It never contains file
+	// contents or command text; the interface uses it for the compact
+	// activity line and the diagnostics panel.
+	Tool *ToolActivity
+}
+
+// ToolActivity is one tool call as the interface and diagnostics see it.
+type ToolActivity struct {
+	CallID    string
+	Name      string
+	Action    string
+	Target    string
+	Status    string
+	Summary   string
+	Duration  time.Duration
+	Bytes     int
+	Truncated bool
+	ExitCode  *int
+	Mode      permission.Mode
 }
 
 // RespondStream answers with live text deltas forwarded to emit (nil
@@ -198,14 +293,7 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 	messages := e.requestMessages(history, skillBlock(loaded))
 	turn := userTurns(history)
 	tools := e.offeredTools()
-	resp, err := e.chat(ctx, messages, tools, emit)
-	if err != nil && len(tools) > 0 && isToolRejection(err) {
-		// A provider that cannot take function definitions must not lose
-		// the conversation: retry the same turn without them and stop
-		// offering tools for this engine.
-		e.toolUnsupported = true
-		resp, err = e.chat(ctx, messages, nil, emit)
-	}
+	resp, reply, proposal, err := e.toolTurn(ctx, messages, tools, turn, emit)
 	if err != nil {
 		// A failed turn still reports its content-free diagnostics: the
 		// elapsed time and the event counts are how a stall is explained.
@@ -222,15 +310,7 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 		}
 		emit(Event{Stats: &stats})
 	}
-	reply := strings.TrimSpace(resp.Content)
-	notes, proposal := e.handleToolCalls(resp.ToolCalls, e.sessionName(), turn)
-	if notes != "" {
-		if reply == "" {
-			reply = notes
-		} else {
-			reply += "\n\n" + notes
-		}
-	}
+	reply = strings.TrimSpace(reply)
 	if reply == "" {
 		// The provider completed without visible answer text. Report it
 		// honestly and store nothing: an explanation is not an assistant
@@ -257,6 +337,177 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 		emit(Event{Proposal: proposal})
 	}
 	return reply, nil
+}
+
+// toolTurn runs the provider/tool loop for one exchange.
+//
+// Text from every provider round is part of the visible answer. A tool call
+// becomes a tool-result message and the model is asked again, so a request
+// such as "read this, fix that, run the test" can take several steps without
+// the interface inventing prose between them. The session still stores one
+// user message and one final answer: tool transcripts belong to the turn, not
+// to the permanent conversation format.
+func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tools []provider.Tool, turn int, emit func(Event)) (provider.Response, string, *workspace.Proposal, error) {
+	current := append([]provider.Message(nil), messages...)
+	var (
+		parts    []string
+		proposal *workspace.Proposal
+		last     provider.Response
+		halted   bool
+	)
+	for step := 0; step < maxToolSteps; step++ {
+		resp, err := e.chat(ctx, current, tools, emit)
+		if err != nil && len(tools) > 0 && isToolRejection(err) {
+			// A provider that cannot take function definitions must not
+			// lose the conversation: retry the same turn without them and
+			// stop offering tools for this engine.
+			e.toolUnsupported = true
+			tools = nil
+			resp, err = e.chat(ctx, current, nil, emit)
+		}
+		if err != nil {
+			return resp, strings.Join(parts, "\n\n"), proposal, err
+		}
+		last = resp
+		if strings.TrimSpace(resp.Content) != "" {
+			parts = append(parts, resp.Content)
+		}
+		if len(resp.ToolCalls) == 0 {
+			break
+		}
+		if ctx.Err() != nil {
+			return resp, strings.Join(parts, "\n\n"), proposal, ctx.Err()
+		}
+		current = append(current, provider.Message{
+			Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
+		})
+		stop := false
+		for i, call := range resp.ToolCalls {
+			if call.ID == "" {
+				call.ID = fmt.Sprintf("call-%d-%d", step, i)
+			}
+			content, activity, prepared, halt := e.executeTool(ctx, call, turn)
+			if emit != nil {
+				a := activity
+				emit(Event{Tool: &a})
+			}
+			// The assistant message above carries the original ID. If
+			// the provider omitted one, the tool result still needs the
+			// same generated identity; patch the last call in place.
+			if resp.ToolCalls[i].ID == "" {
+				resp.ToolCalls[i].ID = call.ID
+				current[len(current)-1].ToolCalls = resp.ToolCalls
+			}
+			current = append(current, provider.Message{
+				Role: "tool", ToolCallID: call.ID, Name: call.Name, Content: content,
+			})
+			switch {
+			case prepared != nil && proposal == nil:
+				proposal = prepared
+				stop = true
+				if activity.Summary != "" {
+					parts = append(parts, activity.Summary)
+				}
+			case prepared != nil:
+				stop = true
+				parts = append(parts, "Only one write can be approved per message; the second proposal was ignored.")
+			case halt:
+				stop = true
+				if activity.Summary != "" {
+					parts = append(parts, activity.Summary)
+				}
+			}
+		}
+		if stop {
+			halted = true
+			break
+		}
+	}
+	if !halted && len(last.ToolCalls) > 0 {
+		parts = append(parts, fmt.Sprintf("Stopped after %d tool steps; ask me to continue if you want the remaining work done.", maxToolSteps))
+	}
+	return last, strings.Join(parts, "\n\n"), proposal, nil
+}
+
+// executeTool resolves one provider call. The permission gate is consulted
+// by the executor at the operation itself; this function never caches a
+// prior decision as authority.
+func (e *Engine) executeTool(ctx context.Context, call provider.ToolCall, turn int) (string, ToolActivity, *workspace.Proposal, bool) {
+	mode := e.permissionMode()
+	activity := ToolActivity{
+		CallID: call.ID, Name: call.Name, Action: call.Name, Mode: mode,
+		Status: "failed", Summary: call.Name + " failed",
+	}
+	switch call.Name {
+	case workspace.ToolName:
+		if e.workspace == nil {
+			activity.Status = "denied"
+			activity.Summary = "I can't save files here: no workspace is configured."
+			return `{"ok":false,"tool":"write_file","error":"no workspace is configured"}`, activity, nil, true
+		}
+		if mode == permission.Unrestricted {
+			// 666 uses the real write tool. A stale write_file call is
+			// still a proposal request, never an execution.
+			activity.Status = "denied"
+			activity.Summary = "The guarded write_file proposal is not used in 666; use the write tool."
+			return `{"ok":false,"tool":"write_file","error":"in 666 use the write tool instead of the guarded write proposal"}`, activity, nil, true
+		}
+		p, err := e.prepareWrite(call, e.sessionName(), turn)
+		if err != nil {
+			activity.Status = "failed"
+			activity.Summary = writeRefusal(err)
+			return errorJSON("write_file", writeRefusal(err)), activity, nil, true
+		}
+		activity.Status = "proposed"
+		activity.Target = p.Path
+		activity.Summary = "Proposed write: " + e.workspace.DisplayPath(p) +
+			" (" + humanBytes(int64(p.Size())) + ") — awaiting your approval."
+		content := `{"ok":true,"tool":"write_file","status":"awaiting_operator_approval","path":` +
+			quoteJSON(e.workspace.DisplayPath(p)) + `}`
+		return content, activity, &p, true
+	case "read", "write", "edit", "bash":
+		if e.execution == nil || mode != permission.Unrestricted {
+			activity.Status = "denied"
+			activity.Summary = fmt.Sprintf("Requested operation %q refused: %s", call.Name, capability.Refusal())
+			return `{"ok":false,"tool":` + quoteJSON(call.Name) + `,"error":` + quoteJSON(capability.Refusal()) + `}`, activity, nil, true
+		}
+		res := e.execution.Execute(ctx, call)
+		activity.Action = res.Action
+		activity.Target = res.Target
+		activity.Status = res.Status
+		activity.Summary = res.Summary
+		activity.Duration = res.Duration
+		activity.Bytes = res.Bytes
+		activity.Truncated = res.Truncated
+		activity.ExitCode = res.ExitCode
+		if res.Status == "denied" {
+			activity.Mode = e.permissionMode()
+			return res.Content, activity, nil, true
+		}
+		return res.Content, activity, nil, false
+	default:
+		if e.knowledge != nil && e.knowledge.Has(call.Name) {
+			res := e.knowledge.Execute(ctx, call)
+			activity.Action = res.Action
+			activity.Target = res.Target
+			activity.Status = res.Status
+			activity.Summary = res.Summary
+			activity.Duration = res.Duration
+			activity.Truncated = res.Truncated
+			activity.Bytes = len(res.Content)
+			return res.Content, activity, nil, false
+		}
+		// The existing 444 boundary, unchanged: nothing the model asks
+		// for can execute, and a call it repeats is refused again.
+		if err := capability.Check(call.Name); err != nil {
+			activity.Status = "denied"
+			activity.Summary = fmt.Sprintf("Requested operation %q refused: %s", call.Name, capability.Refusal())
+			return `{"ok":false,"tool":` + quoteJSON(call.Name) + `,"error":` + quoteJSON(capability.Refusal()) + `}`, activity, nil, true
+		}
+		activity.Status = "denied"
+		activity.Summary = fmt.Sprintf("Operation %q is allowed but not yet implemented in this foundation.", call.Name)
+		return `{"ok":false,"tool":` + quoteJSON(call.Name) + `,"error":"operation is allowed but not implemented"}`, activity, nil, true
+	}
 }
 
 // chat runs one provider turn, offering tools when there are any.

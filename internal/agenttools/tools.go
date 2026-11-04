@@ -285,7 +285,15 @@ func (e *Executor) read(ctx context.Context, call provider.ToolCall) Result {
 		return e.denied("read", err)
 	}
 	defer done()
-	_ = opCtx
+	if err := opCtx.Err(); err != nil {
+		return Result{Action: "read", Target: abs, Status: "cancelled",
+			Content: errorJSON("read", "cancelled before the read")}
+	}
+	// The final permission check sits immediately before the filesystem
+	// call, not at the point where the tool was offered.
+	if e.gate == nil || e.gate.Mode() != permission.Unrestricted {
+		return e.denied("read", permission.ErrDisabled)
+	}
 
 	f, err := os.Open(abs)
 	if err != nil {
@@ -549,6 +557,13 @@ func (e *Executor) bash(ctx context.Context, call provider.ToolCall) Result {
 	defer done()
 	runCtx, cancel := context.WithTimeout(opCtx, timeout)
 	defer cancel()
+	if runCtx.Err() != nil {
+		return Result{Action: "bash", Target: workdir, Status: "cancelled",
+			Content: errorJSON("bash", "cancelled before the command started")}
+	}
+	if e.gate == nil || e.gate.Mode() != permission.Unrestricted {
+		return e.denied("bash", permission.ErrDisabled)
+	}
 
 	cmd := exec.Command("bash", "-c", command)
 	if workdir != "" {

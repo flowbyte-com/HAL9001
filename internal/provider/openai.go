@@ -81,8 +81,11 @@ func (o *OpenAICompatible) client() *http.Client {
 }
 
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Name       string           `json:"name,omitempty"`
 }
 
 // openAITool is the wire form of one offered function.
@@ -174,7 +177,17 @@ func (o *OpenAICompatible) requestBody(messages []Message, model Model, stream b
 func (o *OpenAICompatible) requestBodyTools(messages []Message, model Model, stream bool, tools []Tool) ([]byte, error) {
 	out := openAIRequest{Model: model.ID, Stream: stream}
 	for _, m := range messages {
-		out.Messages = append(out.Messages, openAIMessage{Role: m.Role, Content: m.Content})
+		wire := openAIMessage{Role: m.Role, Content: m.Content,
+			ToolCallID: m.ToolCallID, Name: m.Name}
+		for _, call := range m.ToolCalls {
+			var tc openAIToolCall
+			tc.ID = call.ID
+			tc.Type = "function"
+			tc.Function.Name = call.Name
+			tc.Function.Arguments = call.ArgumentsJSON()
+			wire.ToolCalls = append(wire.ToolCalls, tc)
+		}
+		out.Messages = append(out.Messages, wire)
 	}
 	maxTokens := model.MaxTokens
 	if maxTokens <= 0 {

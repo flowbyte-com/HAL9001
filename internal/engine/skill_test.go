@@ -189,7 +189,8 @@ func TestNoSkillMeansNoGuidance(t *testing.T) {
 		t.Errorf("a skill was read for an ordinary question: %v", store.reads)
 	}
 	system := p.requests[0][0].Content
-	if system != "You are HAL9001." {
+	if !strings.HasPrefix(system, "You are HAL9001.") ||
+		!strings.Contains(system, "444 READ ONLY") {
 		t.Errorf("the system instruction changed:\n%s", system)
 	}
 }
@@ -363,7 +364,8 @@ func TestNoSelectorMeansNoSkills(t *testing.T) {
 	if len(p.requests[0]) != 2 {
 		t.Fatalf("messages = %#v", p.requests[0])
 	}
-	if p.requests[0][0].Content != "You are HAL9001." {
+	if !strings.HasPrefix(p.requests[0][0].Content, "You are HAL9001.") ||
+		!strings.Contains(p.requests[0][0].Content, "444 READ ONLY") {
 		t.Errorf("the system instruction changed:\n%s", p.requests[0][0].Content)
 	}
 }

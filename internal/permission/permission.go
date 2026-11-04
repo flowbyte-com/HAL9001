@@ -45,6 +45,10 @@ var ErrDisabled = errors.New("permission: privileged operation requires 666")
 // ErrSessionChanged reports that the mode was enabled for another conversation.
 var ErrSessionChanged = errors.New("permission: the conversation changed")
 
+// ErrNoSession reports that 666 was requested before a conversation was
+// bound. A mode without a session would not be session-scoped.
+var ErrNoSession = errors.New("permission: no conversation is bound")
+
 // Gate is the narrow, read-only view the engine and tool executors receive.
 // It cannot enable or disable anything.
 type Gate interface {
@@ -118,14 +122,15 @@ func (c *Controller) Enable(session string) error {
 	if c == nil {
 		return ErrDisabled
 	}
+	if session == "" {
+		return ErrNoSession
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.session != "" && session != "" && c.session != session {
+	if c.session != "" && c.session != session {
 		return ErrSessionChanged
 	}
-	if c.session == "" {
-		c.session = session
-	}
+	c.session = session
 	c.mode = Unrestricted
 	// A new enable starts a new authority generation. No operation from a
 	// previous window can continue under the new one.

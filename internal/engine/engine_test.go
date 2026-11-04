@@ -103,7 +103,9 @@ func TestSystemPromptPrependedNotStored(t *testing.T) {
 	if _, err := eng.Respond(context.Background(), "hi"); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].Role != "system" || got[0].Content != "be helpful" {
+	if len(got) != 2 || got[0].Role != "system" ||
+		!strings.HasPrefix(got[0].Content, "be helpful") ||
+		!strings.Contains(got[0].Content, "444 READ ONLY") {
 		t.Fatalf("system prompt must lead the request, got %+v", got)
 	}
 	history, err := st.History()
@@ -211,11 +213,12 @@ func TestHistoryAccumulatesAcrossTurns(t *testing.T) {
 	if _, err := eng.Respond(context.Background(), "second"); err != nil {
 		t.Fatal(err)
 	}
-	// Second request carries both turns: user, assistant, user.
-	if len(got) != 3 {
-		t.Fatalf("second request should carry 3 messages, got %+v", got)
+	// Second request carries the system instruction and both turns:
+	// system, user, assistant, user.
+	if len(got) != 4 || got[0].Role != "system" {
+		t.Fatalf("second request should carry 4 messages, got %+v", got)
 	}
-	if got[0].Content != "first" || got[1].Content != "ok" || got[2].Content != "second" {
+	if got[1].Content != "first" || got[2].Content != "ok" || got[3].Content != "second" {
 		t.Errorf("history wrong: %+v", got)
 	}
 }

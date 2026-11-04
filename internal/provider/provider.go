@@ -12,14 +12,24 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
 
 // Message is one turn of provider input.
+//
+// ToolCalls is set on an assistant message that requested functions, and
+// ToolCallID is set on the tool message that carries their results. The
+// conversation store keeps only visible text; these fields exist inside a
+// single turn's provider transcript so a multi-step tool sequence can be
+// resolved without inventing a second history format.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
 }
 
 // ToolCall is a provider-requested operation. The engine enforces the 444
@@ -30,9 +40,26 @@ type ToolCall struct {
 	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
-// Tool is one function offered to the model. HAL offers exactly one: a
-// proposal to save a file, which carries no authority at all. A call is
-// reviewed and approved by the operator before anything happens.
+// ArgumentsJSON returns the arguments in the wire form the provider expects.
+// An unparseable argument payload is preserved verbatim so the executor can
+// refuse it instead of silently turning it into an empty object.
+func (c ToolCall) ArgumentsJSON() string {
+	if raw, ok := c.Arguments["_invalid"].(string); ok {
+		return raw
+	}
+	if c.Arguments == nil {
+		return "{}"
+	}
+	b, err := json.Marshal(c.Arguments)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// Tool is one function offered to the model. A tool call carries no
+// authority: the engine decides whether the operation may be prepared, and
+// the permission gate is checked again at the operation itself.
 type Tool struct {
 	Name        string
 	Description string

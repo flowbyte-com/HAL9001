@@ -1,11 +1,13 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/flowbyte-com/HAL9001/internal/capability"
+	"github.com/flowbyte-com/HAL9001/internal/agenttools"
+	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
@@ -40,57 +42,26 @@ var writeTool = provider.Tool{
 	}`,
 }
 
-// offeredTools is what the engine offers on a turn: the single write
-// proposal, and only when a workspace is configured.
+// offeredTools is what the engine offers on a turn.
+//
+// In 444 it is the guarded write proposal plus MPM's typed knowledge tools.
+// In 666 the guarded proposal is replaced by the real read/write/edit/bash
+// set; MPM tools remain available because they operate on MPM records, not
+// arbitrary OS files.
 func (e *Engine) offeredTools() []provider.Tool {
-	if e.workspace == nil || e.toolUnsupported {
+	if e.toolUnsupported {
 		return nil
 	}
-	return []provider.Tool{writeTool}
-}
-
-// handleToolCalls reviews every call a model made and returns the text to
-// add to the reply plus, at most, one prepared write.
-//
-// Only the write proposal is ever prepared. Every other name stays
-// outside 444 and is refused exactly as before: nothing the model asks
-// for can execute, and a call it repeats is refused again rather than
-// prompting the operator twice.
-func (e *Engine) handleToolCalls(calls []provider.ToolCall, session string, turn int) (string, *workspace.Proposal) {
-	var (
-		notes    []string
-		proposal *workspace.Proposal
-	)
-	for _, call := range calls {
-		if call.Name != workspace.ToolName {
-			// The existing 444 boundary, unchanged: an unknown name is
-			// refused, and an allowed name still has no executor here.
-			if err := capability.Check(call.Name); err != nil {
-				notes = append(notes, fmt.Sprintf("Requested operation %q refused: %s", call.Name, capability.Refusal()))
-			} else {
-				notes = append(notes, fmt.Sprintf("Operation %q is allowed but not yet implemented in this foundation.", call.Name))
-			}
-			continue
-		}
-		if e.workspace == nil {
-			notes = append(notes, "I can't save files here: no workspace is configured.")
-			continue
-		}
-		if proposal != nil {
-			notes = append(notes, "Only one write can be approved per message; the second proposal was ignored.")
-			continue
-		}
-		p, err := e.prepareWrite(call, session, turn)
-		if err != nil {
-			notes = append(notes, writeRefusal(err))
-			continue
-		}
-		prepared := p
-		proposal = &prepared
-		notes = append(notes, "Proposed write: "+e.workspace.DisplayPath(p)+
-			" ("+humanBytes(int64(p.Size()))+") — awaiting your approval.")
+	var out []provider.Tool
+	if e.permissionMode() == permission.Unrestricted && e.execution != nil {
+		out = append(out, agenttools.Tools()...)
+	} else if e.workspace != nil {
+		out = append(out, writeTool)
 	}
-	return strings.Join(notes, "\n"), proposal
+	if e.knowledge != nil {
+		out = append(out, e.knowledge.Tools()...)
+	}
+	return out
 }
 
 // prepareWrite turns one call into a reviewed proposal. It reads the
@@ -164,6 +135,20 @@ func humanBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%.1f MiB", float64(n)/(1024*1024))
 	}
+}
+
+// quoteJSON renders one string as a JSON value.
+func quoteJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// errorJSON is the compact failure shape returned to the model.
+func errorJSON(tool, message string) string {
+	b, _ := json.Marshal(map[string]any{
+		"ok": false, "tool": tool, "error": message,
+	})
+	return string(b)
 }
 
 // isToolRejection reports a provider that will not accept function

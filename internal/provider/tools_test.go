@@ -163,6 +163,63 @@ func TestToolCallSetMergesByIndex(t *testing.T) {
 	}
 }
 
+func TestRequestCarriesAssistantToolCallsAndToolResults(t *testing.T) {
+	client := &OpenAICompatible{Endpoint: "http://example.test"}
+	body, err := client.requestBodyTools([]Message{
+		{Role: "user", Content: "read it"},
+		{Role: "assistant", Content: "I'll look.", ToolCalls: []ToolCall{{
+			ID: "call_1", Name: "read",
+			Arguments: map[string]any{"path": "/tmp/note"},
+		}}},
+		{Role: "tool", ToolCallID: "call_1", Name: "read", Content: `{"ok":true}`},
+	}, Model{ID: "m"}, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Messages []struct {
+			Role       string `json:"role"`
+			Content    string `json:"content"`
+			ToolCallID string `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Messages) != 3 {
+		t.Fatalf("messages = %d", len(parsed.Messages))
+	}
+	assistant := parsed.Messages[1]
+	if assistant.Role != "assistant" || len(assistant.ToolCalls) != 1 {
+		t.Fatalf("assistant = %#v", assistant)
+	}
+	call := assistant.ToolCalls[0]
+	if call.ID != "call_1" || call.Type != "function" ||
+		call.Function.Name != "read" ||
+		call.Function.Arguments != `{"path":"/tmp/note"}` {
+		t.Errorf("tool call = %#v", call)
+	}
+	result := parsed.Messages[2]
+	if result.Role != "tool" || result.ToolCallID != "call_1" || result.Content != `{"ok":true}` {
+		t.Errorf("tool result = %#v", result)
+	}
+}
+
+func TestInvalidToolArgumentsArePreservedInWireForm(t *testing.T) {
+	raw := ToolCall{Arguments: map[string]any{"_invalid": "not json"}}.ArgumentsJSON()
+	if raw != "not json" {
+		t.Errorf("invalid arguments = %q", raw)
+	}
+}
+
 func TestRequestWithAnInvalidSchemaStillMarshals(t *testing.T) {
 	client := &OpenAICompatible{Endpoint: "http://example.test"}
 	body, err := client.requestBodyTools([]Message{{Role: "user", Content: "x"}}, Model{ID: "m"}, true,

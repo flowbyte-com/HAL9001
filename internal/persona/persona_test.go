@@ -21,7 +21,7 @@ func TestIsHAL(t *testing.T) {
 
 func TestIdentity(t *testing.T) {
 	id := Identity("test", "/tmp/ws")
-	for _, want := range []string{"HAL9001", "/tmp/ws", "Never implement"} {
+	for _, want := range []string{"HAL9001", "/tmp/ws", "Respect the current permission", "Never change your own authority"} {
 		if !strings.Contains(id, want) {
 			t.Errorf("identity missing %q", want)
 		}
