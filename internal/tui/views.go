@@ -680,108 +680,6 @@ func (m *Model) applyRename(title string) {
 	m.notice = "Conversation renamed."
 }
 
-func (m Model) helpRows() []string {
-	keys := [][2]string{
-		{"Enter", "send the message"},
-		{"Ctrl+J", "newline (any terminal)"},
-		{"Alt+Enter", "newline (xterm-style)"},
-		{"Ctrl+S", "send (alternative)"},
-		{"Ctrl+K", "model picker"},
-		{"Ctrl+N", "new conversation"},
-		{"Ctrl+C", "quit"},
-		{"Esc", "cancel stream / close"},
-		{"Ctrl+O", "expand last prompt"},
-		{"PgUp/PgDn", "scroll conversation"},
-		{"Home/End", "jump start / end"},
-		{"Ctrl+U", "clear the draft"},
-		{"Ctrl+Z", "restore the draft"},
-		{"wheel", "scroll history and draft"},
-		{"drag", "select text, copy on release"},
-		{"/", "command suggestions"},
-		{"paste", "inserted, never sent"},
-		{"//", "literal slash message"},
-	}
-	// The command list is generated from the dispatcher's own table, so
-	// help, autocomplete and dispatch cannot disagree.
-	commands := make([][2]string, 0, len(commandTable))
-	for _, c := range commandTable {
-		label := c.usage
-		if label == "" {
-			label = c.name
-		}
-		commands = append(commands, [2]string{label, c.description})
-	}
-
-	var rows []string
-	if m.width >= 78 {
-		rows = m.helpRowsTwoColumns(keys, commands)
-	} else {
-		rows = m.helpRowsOneColumn(keys, commands)
-	}
-	if !m.keyDisambiguation {
-		rows = append(rows,
-			"",
-			"This terminal does not report modifier combinations, so",
-			"Shift+Enter arrives as a plain Enter and sends instead.",
-			"Use Ctrl+J for a newline.",
-		)
-	}
-	return rows
-}
-
-// helpRowsOneColumn stacks the keys and the commands vertically.
-func (m Model) helpRowsOneColumn(keys, commands [][2]string) []string {
-	st := m.theme.styles()
-	rows := []string{"Keys and commands (Esc back):", ""}
-	for _, r := range keys {
-		rows = append(rows, "  "+st.active.Render(r[0])+"  "+r[1])
-	}
-	rows = append(rows, "")
-	for _, r := range commands {
-		rows = append(rows, "  "+st.active.Render(r[0])+"  "+r[1])
-	}
-	return rows
-}
-
-// helpRowsTwoColumns puts the keys and the commands side by side so the
-// whole panel fits a 24-row terminal.
-func (m Model) helpRowsTwoColumns(keys, commands [][2]string) []string {
-	st := m.theme.styles()
-	const label = 13
-	const column = 39
-	left := make([]string, 0, len(keys))
-	for _, r := range keys {
-		left = append(left, "  "+padTo(st.active.Render(r[0]), label)+r[1])
-	}
-	right := make([]string, 0, len(commands))
-	for _, r := range commands {
-		right = append(right, padTo(st.active.Render(r[0]), label)+r[1])
-	}
-	rows := []string{"Keys and commands (Esc back):", ""}
-	count := len(left)
-	if len(right) > count {
-		count = len(right)
-	}
-	for i := 0; i < count; i++ {
-		l, r := "", ""
-		if i < len(left) {
-			l = left[i]
-		}
-		if i < len(right) {
-			r = right[i]
-		}
-		switch {
-		case l != "" && r != "":
-			rows = append(rows, padTo(l, column)+r)
-		case l != "":
-			rows = append(rows, l)
-		default:
-			rows = append(rows, r)
-		}
-	}
-	return rows
-}
-
 // padTo pads a styled string to a visible width.
 func padTo(s string, width int) string {
 	w := lipgloss.Width(s)
@@ -803,6 +701,7 @@ func (m Model) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.ready = true
+		m.clampHelpOffset()
 		return m, nil
 	case tea.KeyPressMsg:
 		switch msg.String() {
@@ -818,10 +717,10 @@ func (m Model) updateHelp(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollPanel(1)
 			return m, nil
 		case "pgup":
-			m.scrollPanel(-contentHeight(m.height))
+			m.scrollPanel(-m.helpBodyHeight())
 			return m, nil
 		case "pgdown":
-			m.scrollPanel(contentHeight(m.height))
+			m.scrollPanel(m.helpBodyHeight())
 			return m, nil
 		}
 	}
@@ -1072,6 +971,9 @@ func (m Model) updateDiag(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) scrollPanel(delta int) {
 	var total, n int
 	switch m.view {
+	case viewHelp:
+		total = len(m.helpRows())
+		n = m.helpBodyHeight()
 	case viewDiag:
 		total = len(m.diagRows())
 		n = contentHeight(m.height)
@@ -1079,7 +981,7 @@ func (m *Model) scrollPanel(delta int) {
 		total = len(m.approvalPreviewRows())
 		n = m.approvalPreviewHeight()
 	default:
-		total = len(m.helpRows())
+		total = len(m.activePanel())
 		n = contentHeight(m.height)
 	}
 	m.panelOffset += delta

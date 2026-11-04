@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
 )
 
 // command is one local slash command. The table below is the single
@@ -288,14 +290,38 @@ func (m *Model) closeSuggestions() {
 	m.resizeFrame()
 }
 
-// suggestRows is how many panel rows the frame should reserve.
+// suggestionGap separates a command from its description.
+const suggestionGap = 2
+
+// suggestionLimit caps the panel so it never takes over the
+// conversation. Eight rows is the most a full-size terminal offers; a
+// short terminal offers a third of its own height instead.
+func (m Model) suggestionLimit() int {
+	limit := maxSuggestions
+	if m.height > 0 {
+		byHeight := m.height / 3
+		if byHeight < 3 {
+			byHeight = 3
+		}
+		if byHeight < limit {
+			limit = byHeight
+		}
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	return limit
+}
+
+// suggestRows is how many panel rows the frame should reserve, including
+// the row that says more matches are available.
 func (m Model) suggestRows() int {
 	if !m.suggestOpen {
 		return 0
 	}
 	n := len(m.suggestItems)
-	if n > maxSuggestions {
-		n = maxSuggestions
+	if limit := m.suggestionLimit(); n > limit {
+		n = limit
 	}
 	if n < 0 {
 		n = 0
@@ -303,50 +329,124 @@ func (m Model) suggestRows() int {
 	return n
 }
 
-// suggestionRows renders the panel: the command and a short description,
-// or only the command when the terminal is narrow.
-func (m Model) suggestionRows(n int) []string {
-	st := m.theme.styles()
-	items := m.suggestItems
-	start := 0
-	if m.suggestCursor >= n && n > 0 {
-		start = m.suggestCursor - n + 1
+// suggestionWindow resolves the visible slice of the list. One of the
+// rows is given to the "more results" indicator when the list overflows,
+// so the indicator never hides the selected command.
+func (m Model) suggestionWindow(rows int) (start, count, above, below int) {
+	total := len(m.suggestItems)
+	if rows < 1 || total == 0 {
+		return 0, 0, 0, total
 	}
-	if start > len(items)-n {
-		start = len(items) - n
+	count = rows
+	if total > rows {
+		if rows >= 2 {
+			count = rows - 1
+		} else {
+			count = 1
+		}
+	}
+	if count > total {
+		count = total
+	}
+	cursor := m.suggestCursor
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= total {
+		cursor = total - 1
+	}
+	if cursor >= count {
+		start = cursor - count + 1
+	}
+	if maxStart := total - count; start > maxStart {
+		start = maxStart
 	}
 	if start < 0 {
 		start = 0
 	}
-	items = items[start:]
-	if len(items) > n {
-		items = items[:n]
-	}
+	above = start
+	below = total - (start + count)
+	return start, count, above, below
+}
+
+// suggestionRows renders the panel: a marker, an aligned command column
+// and a concise description, or only the command when the terminal is
+// narrow. Rows never exceed the terminal width.
+func (m Model) suggestionRows(n int) []string {
+	st := m.theme.styles()
+	items := m.suggestItems
+	start, count, above, below := m.suggestionWindow(n)
+	labelWidth := m.suggestionLabelWidth()
 	rows := make([]string, 0, n)
-	for i, c := range items {
-		label := c.usage
-		if label == "" {
-			label = c.name
+	for i := start; i < start+count && i < len(items); i++ {
+		c := items[i]
+		label := commandLabel(c)
+		marker := "  "
+		if i == m.suggestCursor {
+			marker = st.active.Render("▸ ")
 		}
-		line := "  " + label
+		line := marker
 		if m.width >= 38 {
-			// Keep the description, truncated to whatever is left after
-			// the command column.
-			column := 22
-			if m.width < 60 {
-				column = 20
+			line += padTo(st.active.Render(label), labelWidth)
+			room := m.width - 2 - labelWidth - suggestionGap
+			if room > 0 {
+				line += strings.Repeat(" ", suggestionGap) +
+					st.footer.Render(truncateCells(c.description, room))
 			}
-			line = padTo("  "+st.active.Render(label), column) + c.description
-		}
-		if start+i == m.suggestCursor {
-			line = st.active.Render("▸ " + strings.TrimPrefix(line, "  "))
+		} else {
+			line += st.active.Render(label)
 		}
 		rows = append(rows, m.fitWidth(line, m.width))
+	}
+	if above > 0 || below > 0 {
+		rows = append(rows, m.suggestionMoreRow(above, below))
 	}
 	for len(rows) < n {
 		rows = append(rows, "")
 	}
 	return rows
+}
+
+// suggestionLabelWidth is the command column for the current matches.
+// It is computed from the whole list, not the visible slice, so the
+// column does not jump while scrolling.
+func (m Model) suggestionLabelWidth() int {
+	width := 0
+	for _, c := range m.suggestItems {
+		if w := lipgloss.Width(commandLabel(c)); w > width {
+			width = w
+		}
+	}
+	if max := m.width - 2 - suggestionGap - 12; width > max {
+		width = max
+	}
+	if width < 1 {
+		width = 1
+	}
+	return width
+}
+
+// suggestionMoreRow tells the operator that the list continues, and in
+// which direction.
+func (m Model) suggestionMoreRow(above, below int) string {
+	var text string
+	switch {
+	case above > 0 && below > 0:
+		text = fmt.Sprintf("↑ %d above · ↓ %d below · ↑/↓ scroll", above, below)
+	case below > 0:
+		text = fmt.Sprintf("↓ %d more · ↑/↓ scroll", below)
+	default:
+		text = fmt.Sprintf("↑ %d more above · ↑/↓ scroll", above)
+	}
+	room := m.width - 2
+	if room < 1 {
+		room = 1
+	}
+	text = truncateCells(text, room)
+	if m.color {
+		text = m.theme.styles().footer.Render(text)
+	}
+	return m.fitWidth("  "+text, m.width)
 }
 
 // moveSuggestion moves the selection by delta, clamped to the visible

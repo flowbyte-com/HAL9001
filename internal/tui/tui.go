@@ -259,7 +259,7 @@ type SessionInfo struct {
 const (
 	maxComposerHeight = 5
 	minComposerRows   = 1
-	maxSuggestions    = 11
+	maxSuggestions    = 8
 	// composerPadding is the space on each side of the draft. The
 	// composer has no side borders, so this is all that keeps the text
 	// off the terminal edge.
@@ -1722,7 +1722,24 @@ func (m *Model) restoreAnchor(a scrollAnchor) {
 // contentHeight is the number of rows an overlay panel gets between the
 // header rule and the footer rule.
 func contentHeight(height int) int {
-	n := height - 5
+	n := overlayPanelHeight(height)
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// overlayPanelHeight is the number of rows an overlay gets after the
+// header, the rules and the notice line have been accounted for. It
+// matches overlayLayout exactly, including short windows.
+func overlayPanelHeight(height int) int {
+	n := height - 2
+	if height >= 8 {
+		n -= 2
+	}
+	if height >= 6 {
+		n--
+	}
 	if n < 1 {
 		n = 1
 	}
@@ -2364,15 +2381,12 @@ func (m Model) overlayLayout() []string {
 	if rule {
 		rows = append(rows, m.rule())
 	}
-	n := h - 2 // header + footer
-	if rule {
-		n -= 2 // both rules
-	}
-	if notice {
+	n := overlayPanelHeight(h)
+	// Help keeps its title and exit instruction fixed above the
+	// scrollable reference body.
+	if m.view == viewHelp && n > 1 {
+		rows = append(rows, m.helpTitleRow())
 		n--
-	}
-	if n < 1 {
-		n = 1
 	}
 	rows = append(rows, m.panelRows(m.activePanel(), n)...)
 	if rule {
@@ -2838,6 +2852,20 @@ func keyName(binding string) string {
 			parts[i] = "Alt"
 		case "shift":
 			parts[i] = "Shift"
+		case "enter":
+			parts[i] = "Enter"
+		case "esc":
+			parts[i] = "Esc"
+		case "home":
+			parts[i] = "Home"
+		case "end":
+			parts[i] = "End"
+		case "tab":
+			parts[i] = "Tab"
+		case "pgup":
+			parts[i] = "PgUp"
+		case "pgdn":
+			parts[i] = "PgDn"
 		default:
 			parts[i] = strings.ToUpper(part)
 		}

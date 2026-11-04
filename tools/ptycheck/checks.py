@@ -1488,7 +1488,9 @@ def main():
     # Slash commands run locally.
     text = screen(run([(2.0, b"/help\r")], timeout=5.0)).text()
     check("/help opens on Enter", "Keys and commands" in text, text)
-    check("/help lists the commands", "/copy" in text and "Ctrl+J" in text, text)
+    check("/help lists the commands",
+          "Conversation and editing" in text and "/help" in text and "Ctrl+J" in text,
+          text)
     text = screen(run([(2.0, b"/help\r"), (1.5, b"\x1b")], timeout=6.0)).text()
     check("Esc closes the help panel", "Keys and commands" not in text, text)
 

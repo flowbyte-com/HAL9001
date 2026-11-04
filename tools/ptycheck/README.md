@@ -31,6 +31,15 @@ python3 tools/ptycheck/checks.py
 Every check prints `ok` or `FAIL`; the exit status is non-zero when
 something fails.
 
+The help and suggestion checks own every path they use and can run
+beside another suite without sharing fixtures:
+
+```sh
+go build -o /tmp/opencode/hal9001 ./cmd/hal9001
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/help_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -40,6 +49,12 @@ something fails.
 - `Enter` sends, `Ctrl+J` and `Alt+Enter` break the line, `Ctrl+S`
   still sends, `Ctrl+K` opens the model picker, `/help` opens on Enter
   and `Esc` closes it.
+- `/help` is grouped into aligned sections, keeps its title and exit
+  instruction fixed while the body scrolls, reaches the 666 reference
+  and its pending-approval keys at 60x20, and does not overflow on any
+  theme. Slash suggestions are capped, aligned, filter as text is typed,
+  and report how many results are above or below the visible window;
+  scrolling reaches `/skills` and `/skill`.
 - A bracketed paste stays in the composer and never submits.
 - A short single-line paste stays one row; a CRLF paste is one line break,
   not two; a pasted line that wraps takes exactly its wrapped rows.
@@ -128,5 +143,6 @@ by hand in a real terminal.
 |---|---|
 | `pty_drive.py` | forks the pty, drives the binary, returns the raw bytes |
 | `termsim.py` | replays the byte stream into a screen buffer |
-| `checks.py` | the assertions |
+| `checks.py` | the shared assertions |
+| `help_checks.py` | isolated help and suggestion checks with their own temporary config, home, store and sessions |
 | `fake_provider.py` | a local OpenAI-compatible streaming stub |
