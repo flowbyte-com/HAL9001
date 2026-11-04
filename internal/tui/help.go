@@ -48,14 +48,15 @@ var helpCommandSection = map[string]string{
 
 	"/copy": "Navigation and clipboard",
 
-	"/new":      "Sessions and preferences",
-	"/rename":   "Sessions and preferences",
-	"/sessions": "Sessions and preferences",
-	"/model":    "Sessions and preferences",
-	"/effort":   "Sessions and preferences",
-	"/theme":    "Sessions and preferences",
-	"/usage":    "Sessions and preferences",
-	"/quit":     "Sessions and preferences",
+	"/new":        "Sessions and preferences",
+	"/rename":     "Sessions and preferences",
+	"/sessions":   "Sessions and preferences",
+	"/permission": "Sessions and preferences",
+	"/model":      "Sessions and preferences",
+	"/effort":     "Sessions and preferences",
+	"/theme":      "Sessions and preferences",
+	"/usage":      "Sessions and preferences",
+	"/quit":       "Sessions and preferences",
 
 	"/skills": "MPM skills and diagnostics",
 	"/skill":  "MPM skills and diagnostics",
@@ -105,17 +106,19 @@ func (m Model) helpSections() []helpSection {
 	}
 	sections[index["Sessions and preferences"]].entries = []helpEntry{
 		{keyName(keyPicker), "open the model picker"},
+		{keyName(keyPermission), "open the 444/666 permission control"},
 		{keyName(keyQuit) + "/" + keyName(keyQuit2), "quit HAL9001"},
 	}
 	sections[index["MPM skills and diagnostics"]].entries = []helpEntry{
 		{"MPM", "read-only: HAL lists and reads skills, never writes them"},
 	}
 	sections[index["Permissions and file writes"]].entries = []helpEntry{
-		{"444", "read-only: no write can run while nothing is pending"},
-		{"666", "one proposed write needs approval — a one-off transaction, not a mode or a command"},
-		{keyName(keyApproveWrite), "approve the reviewed write once (pending 666 only)"},
-		{keyName(keyRejectWrite), "reject the pending 666 request (approval view only)"},
-		{"Esc", "reject the pending 666 request (approval view only)"},
+		{"444", "read-only: conversation, MPM knowledge and one-off write approval"},
+		{"666", "session-scoped unrestricted mode: read, write, edit and bash run with your OS permissions"},
+		{keyName(keyPermission), "open the permission control; only you can enable or disable 666"},
+		{keyName(keyApproveWrite), "enable 666 (permission screen) or approve one reviewed write (approval screen)"},
+		{keyName(keyRejectWrite), "disable 666 (permission screen) or reject the pending one-off write (approval screen)"},
+		{"Esc", "close the permission screen or reject the pending one-off write"},
 	}
 
 	// Commands are appended from the registry, in table order. The

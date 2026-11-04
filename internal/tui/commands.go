@@ -134,6 +134,14 @@ var commandTable = []*command{
 		},
 	},
 	{
+		name:        "/permission",
+		description: "Switch between 444 and session-scoped 666",
+		run: func(m *Model, _ []string) tea.Cmd {
+			m.enterPermission()
+			return nil
+		},
+	},
+	{
 		name:        "/diag",
 		description: "Show provider diagnostics",
 		run: func(m *Model, _ []string) tea.Cmd {

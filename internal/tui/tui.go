@@ -23,6 +23,7 @@ import (
 	"github.com/rivo/uniseg"
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/skills"
@@ -39,12 +40,13 @@ import (
 // Shift+Enter only arrives as its own key on terminals that implement the
 // Kitty keyboard protocol.
 const (
-	keySend   = "ctrl+s"
-	keyQuit   = "ctrl+c"
-	keyQuit2  = "ctrl+q"
-	keyPicker = "ctrl+k"
-	keyNew    = "ctrl+n"
-	keyEnter  = "enter"
+	keySend       = "ctrl+s"
+	keyQuit       = "ctrl+c"
+	keyQuit2      = "ctrl+q"
+	keyPicker     = "ctrl+k"
+	keyNew        = "ctrl+n"
+	keyEnter      = "enter"
+	keyPermission = "ctrl+p"
 )
 
 // The draft keys. The hint row and the clear notice are built from
@@ -182,6 +184,9 @@ type Hooks struct {
 	RenameSession func(title string) (string, error)
 	// SessionTitle reports the display title of the active conversation.
 	SessionTitle func() string
+	// SessionID reports the immutable identity of the active conversation.
+	// It is used to bind the session-scoped 666 permission.
+	SessionID func() string
 	// Copy writes text to the system clipboard (OSC 52). Nil means
 	// clipboard access is unavailable.
 	Copy func(text string) error
@@ -231,6 +236,7 @@ const (
 	viewRename
 	viewApprove
 	viewSkills
+	viewPermission
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -479,6 +485,13 @@ type Model struct {
 	skills *skills.Selector
 	// lastSkill is the routing decision of the latest turn.
 	lastSkill *skills.Decision
+	// permission is the trusted session-scoped 444/666 authority. It is
+	// shared with the engine, which only receives its read-only Gate.
+	permission *permission.Controller
+	// lastTools is the execution-boundary record of the latest turn.
+	lastTools []engine.ToolActivity
+	// permissionNotice is local to the permission overlay.
+	permissionNotice string
 }
 
 // New builds the interface. Color follows ColorEnabled at construction so
@@ -524,6 +537,7 @@ func NewWithHooks(engine Engine, hooks Hooks) Model {
 		theme:           ThemeHALClassic,
 		now:             time.Now,
 		desiredComposer: minComposerRows,
+		permission:      permission.New(),
 	}
 	m.setTheme(ThemeHALClassic)
 	return m
@@ -595,8 +609,44 @@ func (m *Model) SetTitle(title string) { m.title = title }
 //
 // The header shows the human-readable title, which the operator can
 // change; this is the name the conversation is stored under, and it
-// never changes.
-func (m *Model) SetSessionID(id string) { m.sessionID = id }
+// never changes. A change always returns the permission gate to 444.
+func (m *Model) SetSessionID(id string) {
+	if m.sessionID != id {
+		if m.permission != nil {
+			m.permission.Disable()
+			m.permission.SetSession(id)
+		}
+	}
+	m.sessionID = id
+}
+
+// SetPermission attaches the trusted permission controller. It is shared
+// with the engine, which only sees the controller's read-only Gate.
+func (m *Model) SetPermission(c *permission.Controller) {
+	if c == nil {
+		c = permission.New()
+	}
+	m.permission = c
+	if m.sessionID != "" {
+		c.SetSession(m.sessionID)
+	}
+}
+
+// PermissionMode reports the current authority, for tests and diagnostics.
+func (m Model) PermissionMode() permission.Mode {
+	if m.permission == nil {
+		return permission.Guarded
+	}
+	return m.permission.Mode()
+}
+
+// resetPermission returns to 444 without changing which conversation the
+// gate is bound to.
+func (m *Model) resetPermission() {
+	if m.permission != nil {
+		m.permission.Disable()
+	}
+}
 
 // SetHistory replaces the conversation view with stored turns (raw user
 // text, raw assistant Markdown rendered on display).
@@ -606,6 +656,7 @@ func (m *Model) SetSessionID(id string) { m.sessionID = id }
 // perpetuates it.
 func (m *Model) SetHistory(lines []SessionLine) {
 	m.cancelWrite("session changed")
+	m.resetPermission()
 	m.entries = nil
 	m.pending = ""
 	m.clearUndo()
@@ -667,6 +718,10 @@ type streamStatsMsg struct {
 	stats provider.TurnStats
 }
 type streamStartedMsg struct{ id int }
+type streamToolMsg struct {
+	id       int
+	activity engine.ToolActivity
+}
 
 // skillDecisionMsg carries the routing decision of a turn back to the
 // interface, so the diagnostics view can show which skill was used and
@@ -699,6 +754,9 @@ type responseMsg struct {
 	turn string
 	// stats is the telemetry the provider reported for this turn.
 	stats *provider.TurnStats
+	// tools is the execution-boundary record of every tool call in the
+	// turn. It never contains file contents or command text.
+	tools []engine.ToolActivity
 }
 type errorMsg struct {
 	id  int
@@ -731,12 +789,15 @@ func (m Model) runRespond(id int, input string, ctx context.Context) tea.Msg {
 		attribution *session.Attribution
 		turn        string
 		stats       *provider.TurnStats
+		tools       []engine.ToolActivity
 	)
 	reply, err := m.respondEvents(ctx, input, func(ev engine.Event) {
 		switch {
 		case ev.Proposal != nil:
 			p := *ev.Proposal
 			proposal = &p
+		case ev.Tool != nil:
+			tools = append(tools, *ev.Tool)
 		case ev.Skill != nil:
 			d := *ev.Skill
 			decision = &d
@@ -758,6 +819,7 @@ func (m Model) runRespond(id int, input string, ctx context.Context) tea.Msg {
 		attribution: attribution,
 		turn:        turn,
 		stats:       stats,
+		tools:       tools,
 	}
 }
 
@@ -778,6 +840,8 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 		switch {
 		case ev.Stats != nil:
 			m.sender(streamStatsMsg{id: id, stats: *ev.Stats})
+		case ev.Tool != nil:
+			m.sender(streamToolMsg{id: id, activity: *ev.Tool})
 		case ev.Text != "":
 			m.sender(streamDeltaMsg{id: id, text: ev.Text})
 		case ev.Reasoning:
@@ -789,11 +853,15 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 		decision    *skills.Decision
 		attribution *session.Attribution
 		turn        string
+		tools       []engine.ToolActivity
 	)
 	collect := func(ev engine.Event) {
 		if ev.Proposal != nil {
 			p := *ev.Proposal
 			proposal = &p
+		}
+		if ev.Tool != nil {
+			tools = append(tools, *ev.Tool)
 		}
 		if ev.Skill != nil {
 			d := *ev.Skill
@@ -828,6 +896,7 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 		decision:    decision,
 		attribution: attribution,
 		turn:        turn,
+		tools:       tools,
 	})
 }
 
@@ -888,6 +957,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateApprove(msg)
 	case viewSkills:
 		return m.updateSkills(msg)
+	case viewPermission:
+		return m.updatePermission(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -959,6 +1030,9 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case keyNew:
 			m.newSession()
+			return m, nil
+		case keyPermission:
+			m.enterPermission()
 			return m, nil
 		case "esc":
 			if m.selecting {
@@ -1047,6 +1121,13 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reasoningSeen = true
 		m.notice = m.streamingNotice()
 		return m, nil
+	case streamToolMsg:
+		if !m.currentTurn(msg.id) {
+			return m, nil
+		}
+		m.lastTools = mergeToolActivity(m.lastTools, msg.activity)
+		m.notice = toolActivityLine(msg.activity)
+		return m, nil
 	case streamDeltaMsg:
 		if !m.currentTurn(msg.id) {
 			return m, nil
@@ -1100,6 +1181,8 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// message: it can only ever belong to this reply.
 		m.turnAttribution = msg.attribution
 		m.turnID = msg.turn
+		m.lastTools = append([]engine.ToolActivity(nil), msg.tools...)
+		m.appendToolNotes(msg.tools)
 		i := m.appendEntry("assistant", msg.text)
 		// Attach this turn's reported usage directly: the answer on screen
 		// and its metadata stay together even before any refresh.
@@ -1537,6 +1620,7 @@ func turnFromStats(s provider.TurnStats) usage.Turn {
 // exit commands share this path, so there is one shutdown implementation.
 func (m *Model) quit() tea.Cmd {
 	m.cancelWrite("application exit")
+	m.resetPermission()
 	m.stopStream()
 	m.sending = false
 	m.pending = ""
@@ -1858,6 +1942,75 @@ func (m *Model) appendNote(role, text string) {
 	m.renderConversation()
 	if stick {
 		m.viewport.GotoBottom()
+	}
+}
+
+// mergeToolActivity keeps one final record per tool call while allowing a
+// running record to be replaced by its completion.
+func mergeToolActivity(list []engine.ToolActivity, next engine.ToolActivity) []engine.ToolActivity {
+	if next.CallID == "" {
+		return append(list, next)
+	}
+	for i := range list {
+		if list[i].CallID == next.CallID && list[i].Name == next.Name {
+			list[i] = next
+			return list
+		}
+	}
+	return append(list, next)
+}
+
+// toolActivityLine is the compact, content-free line shown in the
+// conversation and diagnostics.
+func toolActivityLine(a engine.ToolActivity) string {
+	line := "⚙ " + a.Name
+	if a.Action != "" && a.Action != a.Name {
+		line += " " + a.Action
+	}
+	if a.Target != "" {
+		line += " " + truncateMiddle(a.Target, 64)
+	}
+	switch a.Status {
+	case "ok":
+		if a.Name == "bash" && a.ExitCode != nil {
+			line += fmt.Sprintf(" · exit %d", *a.ExitCode)
+		} else {
+			line += " · ok"
+		}
+	case "proposed":
+		line += " · awaiting approval"
+	case "denied":
+		line += " · denied"
+	case "cancelled":
+		line += " · cancelled"
+	case "timeout":
+		line += " · timed out"
+	default:
+		if a.Status != "" {
+			line += " · " + a.Status
+		}
+	}
+	if a.Bytes > 0 {
+		line += " · " + humanSize(int64(a.Bytes))
+	}
+	if a.Duration > 0 {
+		line += " · " + a.Duration.Round(10*time.Millisecond).String()
+	}
+	if a.Truncated {
+		line += " · truncated"
+	}
+	return line
+}
+
+// appendToolNotes puts each completed tool activity above the answer. A
+// proposal is already described by the answer itself, and a running record
+// is not final.
+func (m *Model) appendToolNotes(tools []engine.ToolActivity) {
+	for _, a := range tools {
+		if a.Status == "proposed" || a.Status == "running" || a.Status == "" {
+			continue
+		}
+		m.appendNote("assistant", toolActivityLine(a))
 	}
 }
 
@@ -2426,6 +2579,8 @@ func (m Model) activePanel() []string {
 		return m.renameRows()
 	case viewSkills:
 		return m.skillsRows()
+	case viewPermission:
+		return m.permissionRows()
 	}
 	return nil
 }
@@ -2790,9 +2945,12 @@ func (m Model) statusBar() string {
 		return st.footer.Render(s)
 	}
 	// A write that needs the operator is shown prominently; the ordinary
-	// read-only state stays quiet.
+	// read-only state stays quiet. An active 666 window is always red,
+	// because it is the one state that increases HAL's authority.
 	styledLeft := muted(left)
-	if m.writeState != writeIdle {
+	if m.PermissionMode() == permission.Unrestricted {
+		styledLeft = st.danger.Render(left)
+	} else if m.writeState != writeIdle {
 		styledLeft = st.active.Render(left)
 	}
 	for _, c := range m.footerCandidates(styledLeft, muted(m.usageLabel()), muted(right), muted(model)) {
@@ -2804,6 +2962,9 @@ func (m Model) statusBar() string {
 	bar := m.permissionLabel()
 	if m.width > 0 {
 		bar = truncateCells(bar, m.width)
+	}
+	if m.PermissionMode() == permission.Unrestricted {
+		return st.danger.Render(bar)
 	}
 	return muted(bar)
 }

@@ -57,6 +57,9 @@ type styles struct {
 	footer lipgloss.Style
 	active lipgloss.Style
 	notice lipgloss.Style
+	// danger is the persistent 666 indicator. It is red on every theme
+	// because it marks an authority increase, not a decorative accent.
+	danger lipgloss.Style
 }
 
 // composerStyles maps the palette onto the composer's textarea.
@@ -98,6 +101,7 @@ func (t Theme) styles() styles {
 		footer: lipgloss.NewStyle().Foreground(fg(t.Muted)),
 		active: lipgloss.NewStyle().Bold(true).Foreground(fg(t.Accent)),
 		notice: lipgloss.NewStyle().Foreground(fg(t.Muted)),
+		danger: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF3B30")),
 	}
 }
 

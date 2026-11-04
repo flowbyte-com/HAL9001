@@ -498,7 +498,7 @@ func (m Model) themeRows() []string {
 	rows = append(rows, st.header.Render("● HAL9001"))
 	rows = append(rows, st.user.Render("You > ")+"preview message")
 	rows = append(rows, st.hal.Render("HAL > ")+"preview reply")
-	rows = append(rows, st.footer.Render("444 READ ONLY · "+m.modelNameOr("model")))
+	rows = append(rows, st.footer.Render(m.permissionLabel()+" · "+m.modelNameOr("model")))
 	if !m.color {
 		rows = append(rows, "", "Colour is disabled (NO_COLOR), so themes cannot be previewed.")
 		rows = append(rows, "The selection is still saved and used when colour is enabled.")
@@ -746,7 +746,14 @@ func (m Model) diagRows() []string {
 	if m.sessionID != "" {
 		// The header shows the title, which the operator can rename.
 		// The identity the conversation is stored under is here.
-		rows = append(rows, "  "+padTo(st.active.Render("session"), 16)+m.sessionID)
+		rows = append(rows, "  "+padTo(st.active.Render("session"), 16)+
+			m.sessionID+" · "+m.permissionLabel())
+	}
+	if len(m.lastTools) > 0 {
+		rows = append(rows, "  "+padTo(st.active.Render("last tools"), 16))
+		for _, a := range m.lastTools {
+			rows = append(rows, "    "+toolActivityLine(a))
+		}
 	}
 	if d, ok := m.lastRouting(); ok {
 		composer("skill", skillSummary(d))
@@ -1010,6 +1017,8 @@ func (m *Model) clearConversation() {
 func (m *Model) startFreshConversation(notice string) {
 	// A pending write belongs to the conversation it was prepared for.
 	m.cancelWrite("conversation changed")
+	// 666 is never inherited by a new conversation.
+	m.resetPermission()
 	m.closeSuggestions()
 	if m.sending {
 		m.stopStream()
@@ -1030,6 +1039,9 @@ func (m *Model) startFreshConversation(notice string) {
 	}
 	if eng != nil {
 		m.engine = eng
+	}
+	if m.hooks.SessionID != nil {
+		m.SetSessionID(m.hooks.SessionID())
 	}
 	m.entries = nil
 	m.pending = ""

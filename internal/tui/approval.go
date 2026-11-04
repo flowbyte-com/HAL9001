@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
+	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
 
@@ -567,7 +568,14 @@ func (m Model) displayWritePath(p workspace.Proposal) string {
 }
 
 // permissionLabel is the capability state HAL is in right now.
+//
+// 666 UNRESTRICTED is the operator-enabled session mode. 666 REQUESTED and
+// 666 WRITING are the existing one-off guarded write transaction inside
+// 444; they are deliberately distinct labels.
 func (m Model) permissionLabel() string {
+	if m.PermissionMode() == permission.Unrestricted {
+		return "666 UNRESTRICTED"
+	}
 	switch m.writeState {
 	case writeRequested:
 		return "666 REQUESTED"

@@ -17,9 +17,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flowbyte-com/HAL9001/internal/agenttools"
 	"github.com/flowbyte-com/HAL9001/internal/clipboard"
 	"github.com/flowbyte-com/HAL9001/internal/config"
 	"github.com/flowbyte-com/HAL9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/knowledge"
+	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/persona"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
@@ -79,7 +82,9 @@ func run(args []string) error {
 	// The audit trail is trusted bookkeeping under HAL's own data
 	// directory; a failure to open it leaves the workspace working
 	// without a trail rather than blocking the conversation.
-	if audit, err := workspace.OpenAudit(filepath.Join(config.ConfigDir(), "audit.jsonl")); err == nil {
+	var audit *workspace.Audit
+	if opened, err := workspace.OpenAudit(filepath.Join(config.ConfigDir(), "audit.jsonl")); err == nil {
+		audit = opened
 		ws.WithAudit(audit)
 	}
 	// Defence in depth: even a misconfigured workspace can never reach
@@ -90,6 +95,16 @@ func run(args []string) error {
 	// it: the catalogue is fetched once at startup and refreshed on
 	// demand. A missing store is not a reason to refuse to start.
 	app.skills = skills.NewSelector(&skills.Client{})
+	// The permission controller is the only object that can enter 666.
+	// The engine receives it as a read-only Gate and the interface holds
+	// the controller; the tool executor and MPM registry record activity
+	// without being able to change the mode.
+	app.permission = permission.New()
+	app.tools = agenttools.New(app.permission, audit).
+		WithSession(func() string { return app.session })
+	app.knowledge = knowledge.NewRegistry(&knowledge.Client{}).
+		WithAudit(audit, func() string { return app.session }).
+		WithMode(app.permission.Mode)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := app.skills.Refresh(ctx); err != nil {
@@ -144,6 +159,13 @@ type app struct {
 	// skills is the MPM skill store, shared by the engine (which routes
 	// each turn) and the interface (which lists and pins skills).
 	skills *skills.Selector
+	// permission is the trusted session-scoped 444/666 control, shared
+	// with the interface. The engine only sees its Gate.
+	permission *permission.Controller
+	// tools performs the 666 read/write/edit/bash set.
+	tools *agenttools.Executor
+	// knowledge exposes MPM's own typed knowledge tools in both modes.
+	knowledge *knowledge.Registry
 }
 
 // defaultSessionName is the conversation used when nothing has been
@@ -218,6 +240,9 @@ func (a *app) openSession() error {
 	a.store = store
 	a.session = name
 	a.sessionTitle = a.displayTitle(name)
+	if a.permission != nil {
+		a.permission.SetSession(name)
+	}
 	// Best effort on startup: a read-only configuration must not stop the
 	// conversation from starting.
 	_ = a.persistActiveSession(name)
@@ -250,6 +275,7 @@ func (a *app) run() error {
 		RecordFailed:   a.recordFailed,
 		RenameSession:  a.renameSession,
 		SessionTitle:   func() string { return a.sessionTitle },
+		SessionID:      func() string { return a.session },
 	}
 	m := tui.NewWithHooks(a.eng, hooks)
 	m.SetModelName(a.activeModelID())
@@ -258,6 +284,7 @@ func (a *app) run() error {
 	m.SetMouse(a.cfg.Mouse)
 	m.SetWorkspace(a.workspace)
 	m.SetSkills(a.skills)
+	m.SetPermission(a.permission)
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
 	// The header shows the human-readable title; the immutable session
 	// identity stays in the diagnostics.
@@ -373,7 +400,10 @@ func (a *app) rebuildEngine() {
 	a.eng = engine.New(a.store, p, a.modelFor()).
 		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir)).
 		WithWorkspace(a.workspace).
-		WithSkills(a.skills)
+		WithSkills(a.skills).
+		WithPermission(a.permission).
+		WithExecution(a.tools).
+		WithKnowledge(a.knowledge)
 }
 
 func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
@@ -506,6 +536,9 @@ func (a *app) newSession() (tui.Engine, error) {
 	}
 	a.store = store
 	a.session = name
+	if a.permission != nil {
+		a.permission.SetSession(name)
+	}
 	// A fresh conversation gets a date/time display title and a creation
 	// timestamp; the ID stays immutable.
 	now := time.Now().UTC()
@@ -648,6 +681,9 @@ func (a *app) switchSession(name string) (tui.Engine, []tui.SessionLine, error) 
 	a.store = store
 	a.session = name
 	a.sessionTitle = a.displayTitle(name)
+	if a.permission != nil {
+		a.permission.SetSession(name)
+	}
 	a.rebuildEngine()
 	return a.eng, sessionLines(history), nil
 }

@@ -324,14 +324,32 @@ func TestHelpScrollReachesEverySectionAtNarrowSize(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
 	m = updated.(Model)
 	m = openHelp(t, m)
-	total := len(m.helpRows())
+	rows := m.helpRows()
 	body := m.helpBodyHeight()
-	// One row above the absolute end keeps the section heading in view
-	// while still proving that the tail is reachable.
-	m.panelOffset = total - body - 1
+	heading := -1
+	for i, row := range rows {
+		if strings.Contains(stripANSI(row), "Permissions and file writes") {
+			heading = i
+			break
+		}
+	}
+	if heading < 0 {
+		t.Fatal("help has no permissions section")
+	}
+	m.panelOffset = heading
+	if m.panelOffset > len(rows)-body {
+		m.panelOffset = len(rows) - body
+	}
 	m.clampHelpOffset()
 	plain := stripANSI(strings.Join(m.layoutRows(), "\n"))
-	for _, want := range []string{"Permissions and file writes", "666", "Ctrl+Y", "Ctrl+N", "Esc close"} {
+	if !strings.Contains(plain, "Permissions and file writes") {
+		t.Errorf("the permissions heading is not reachable:\n%s", plain)
+	}
+	// The tail carries the controls, even if the heading has scrolled off.
+	m.panelOffset = len(rows) - body
+	m.clampHelpOffset()
+	plain = stripANSI(strings.Join(m.layoutRows(), "\n"))
+	for _, want := range []string{"666", "Ctrl+Y", "Ctrl+N", "Esc close"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("the bottom of narrow help is missing %q:\n%s", want, plain)
 		}
