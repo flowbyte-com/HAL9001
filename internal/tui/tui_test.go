@@ -935,11 +935,15 @@ func TestHelpListsCommands(t *testing.T) {
 	m = updated.(Model)
 	m = typeText(m, "/help")
 	m = sendCurrent(m)
-	view := string(m.View().Content)
+	body := stripANSI(strings.Join(m.helpRows(), "\n"))
 	for _, want := range []string{"/copy", "/theme", "/model", "/sessions", "/new", "Ctrl+S"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("help missing %q:\n%s", want, view)
+		if !strings.Contains(body, want) {
+			t.Errorf("help missing %q:\n%s", want, body)
 		}
+	}
+	view := string(m.View().Content)
+	if !strings.Contains(view, "Keys and commands") {
+		t.Errorf("help title missing:\n%s", view)
 	}
 	m = pressKey(m, tea.KeyEscape, 0, "")
 	view = string(m.View().Content)
@@ -1960,14 +1964,21 @@ func TestSlashOpensSuggestions(t *testing.T) {
 	if len(m.Lines()) != 0 {
 		t.Errorf("nothing may be submitted: %v", m.Lines())
 	}
-	view := string(m.View().Content)
-	for _, name := range []string{"/help", "/copy", "/clear", "/model", "/effort", "/theme", "/sessions", "/diag"} {
-		if !strings.Contains(view, name) {
-			t.Errorf("suggestions missing %q:\n%s", name, view)
+	names := make(map[string]bool)
+	for _, c := range m.suggestItems {
+		names[c.name] = true
+	}
+	for _, name := range []string{"/help", "/copy", "/clear", "/model", "/effort", "/theme", "/sessions", "/diag", "/skills", "/skill"} {
+		if !names[name] {
+			t.Errorf("suggestions missing %q", name)
 		}
 	}
+	view := string(m.View().Content)
 	if !strings.Contains(view, "Show available commands") {
 		t.Errorf("descriptions missing:\n%s", view)
+	}
+	if !strings.Contains(view, "more") {
+		t.Errorf("the overflowing list must say more results are available:\n%s", view)
 	}
 }
 
@@ -2506,7 +2517,7 @@ func TestExitCommandsDiscoverable(t *testing.T) {
 	m3 = updated.(Model)
 	m3 = typeText(m3, "/help")
 	m3 = enterCurrent(m3)
-	help := string(m3.View().Content)
+	help := stripANSI(strings.Join(m3.helpRows(), "\n"))
 	if !strings.Contains(help, "/quit") {
 		t.Errorf("help does not list the exit commands:\n%s", help)
 	}
@@ -3142,10 +3153,10 @@ func TestHelpListsMouseAndClear(t *testing.T) {
 	m = updated.(Model)
 	m = typeText(m, "/help")
 	m = enterCurrent(m)
-	view := string(m.View().Content)
-	for _, want := range []string{"Ctrl+U", "Ctrl+Z", "wheel"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("help missing %q:\n%s", want, view)
+	body := stripANSI(strings.Join(m.helpRows(), "\n"))
+	for _, want := range []string{"Ctrl+U", "Ctrl+Z", "wheel", "Ctrl+End"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("help missing %q:\n%s", want, body)
 		}
 	}
 }
