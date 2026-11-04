@@ -55,7 +55,10 @@ func (m Model) skillsRows() []string {
 	}
 	rows = append(rows, "  "+st.active.Render("available"))
 	for _, e := range catalogue.Entries {
-		rows = append(rows, "    "+padTo(st.footer.Render(e.Name), 24)+e.Version)
+		// The name is padded to a column, but a name longer than the
+		// column keeps a space of its own so the version never runs
+		// into it.
+		rows = append(rows, "    "+padTo(st.footer.Render(e.Name), 28)+e.Version)
 		if e.WhenToUse != "" {
 			rows = append(rows, "      "+st.footer.Render(truncate(e.WhenToUse, 72)))
 		}
