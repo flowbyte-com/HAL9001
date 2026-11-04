@@ -338,6 +338,9 @@ type Model struct {
 	cancel    context.CancelFunc
 	model     string
 	title     string
+	// sessionID is the immutable identity of the conversation. The
+	// header shows the title, which can be renamed; this stays.
+	sessionID string
 	// frame is the resolved vertical geometry. It is recomputed on every
 	// resize so the frame always fits the terminal exactly.
 	frame chatFrame
@@ -575,7 +578,18 @@ func (m *Model) SetEffort(level string, supported bool) {
 }
 
 // SetTitle sets the conversation title shown next to the header.
+//
+// The title is the human-readable name of the conversation. The
+// immutable session identity is set separately and stays in the
+// diagnostics.
 func (m *Model) SetTitle(title string) { m.title = title }
+
+// SetSessionID sets the immutable identity of the conversation.
+//
+// The header shows the human-readable title, which the operator can
+// change; this is the name the conversation is stored under, and it
+// never changes.
+func (m *Model) SetSessionID(id string) { m.sessionID = id }
 
 // SetHistory replaces the conversation view with stored turns (raw user
 // text, raw assistant Markdown rendered on display).

@@ -259,7 +259,10 @@ func (a *app) run() error {
 	m.SetWorkspace(a.workspace)
 	m.SetSkills(a.skills)
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
-	m.SetTitle(a.session)
+	// The header shows the human-readable title; the immutable session
+	// identity stays in the diagnostics.
+	m.SetTitle(a.displayTitle(a.session))
+	m.SetSessionID(a.session)
 	if history, err := a.store.History(); err == nil {
 		m.SetHistory(sessionLines(history))
 	}

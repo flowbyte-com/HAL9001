@@ -210,3 +210,23 @@ func TestTheSessionTitleIsInTheHeader(t *testing.T) {
 		t.Errorf("header = %q, want the session title", header)
 	}
 }
+
+// TestTheDiagnosticsCarryTheSessionIdentity checks that the immutable
+// identity of the conversation is reachable: the header shows the title,
+// which can be renamed, and the diagnostics keep the name it is stored
+// under.
+func TestTheDiagnosticsCarryTheSessionIdentity(t *testing.T) {
+	m := testModel()
+	m.SetTitle("the quarterly review")
+	m.SetSessionID("cli-20261104-1208")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	header := stripANSI(m.headerRow())
+	if !strings.Contains(header, "the quarterly review") {
+		t.Errorf("header = %q, want the title", header)
+	}
+	rows := stripANSI(strings.Join(m.diagRows(), "\n"))
+	if !strings.Contains(rows, "cli-20261104-1208") {
+		t.Errorf("the diagnostics do not carry the session identity:\n%s", rows)
+	}
+}

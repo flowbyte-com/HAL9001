@@ -567,6 +567,7 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.title == "" {
 				m.title = item.ID
 			}
+			m.SetSessionID(item.ID)
 			m.refreshUsage()
 			m.view = viewChat
 			m.notice = "Resumed: " + m.title
@@ -838,6 +839,11 @@ func (m Model) diagRows() []string {
 		m.ComposerRows(), m.draftRows(), m.draftOffset))
 	composer("textarea", fmt.Sprintf("%d×%d · scrolled %d",
 		m.Composer().Width(), m.Composer().Height(), m.Composer().ScrollYOffset()))
+	if m.sessionID != "" {
+		// The header shows the title, which the operator can rename.
+		// The identity the conversation is stored under is here.
+		rows = append(rows, "  "+padTo(st.active.Render("session"), 16)+m.sessionID)
+	}
 	if d, ok := m.lastRouting(); ok {
 		composer("skill", skillSummary(d))
 		// The routing record is broken out, because the four states are
