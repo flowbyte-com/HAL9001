@@ -23,6 +23,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/persona"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
+	"github.com/flowbyte-com/HAL9001/internal/skills"
 	"github.com/flowbyte-com/HAL9001/internal/tui"
 	"github.com/flowbyte-com/HAL9001/internal/usage"
 	"github.com/flowbyte-com/HAL9001/internal/workspace"
@@ -85,6 +86,15 @@ func run(args []string) error {
 	// HAL's own configuration and session data.
 	ws.Protect(config.ConfigDir())
 	app.workspace = ws
+	// The MPM skill store. HAL reads skills from it and never writes to
+	// it: the catalogue is fetched once at startup and refreshed on
+	// demand. A missing store is not a reason to refuse to start.
+	app.skills = skills.NewSelector(&skills.Client{})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := app.skills.Refresh(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "hal9001: skills unavailable:", err)
+	}
 	return app.run()
 }
 
@@ -131,6 +141,9 @@ type app struct {
 	// workspace is the single write capability shared by the engine
 	// (which prepares proposals) and the interface (which approves them).
 	workspace *workspace.Store
+	// skills is the MPM skill store, shared by the engine (which routes
+	// each turn) and the interface (which lists and pins skills).
+	skills *skills.Selector
 }
 
 // defaultSessionName is the conversation used when nothing has been
@@ -244,6 +257,7 @@ func (a *app) run() error {
 	m.SetUsage(a.currentUsage())
 	m.SetMouse(a.cfg.Mouse)
 	m.SetWorkspace(a.workspace)
+	m.SetSkills(a.skills)
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
 	m.SetTitle(a.session)
 	if history, err := a.store.History(); err == nil {
@@ -363,7 +377,8 @@ func (a *app) rebuildEngine() {
 	}
 	a.eng = engine.New(a.store, p, a.modelFor()).
 		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir)).
-		WithWorkspace(a.workspace)
+		WithWorkspace(a.workspace).
+		WithSkills(a.skills)
 }
 
 func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
