@@ -70,12 +70,13 @@ python3 tools/ptycheck/help_checks.py
 - `Enter` sends, `Ctrl+J` and `Alt+Enter` break the line, `Ctrl+S`
   still sends, `Ctrl+K` opens the model picker, `/help` opens on Enter
   and `Esc` closes it.
-- `/help` is grouped into aligned sections, keeps its title and exit
-  instruction fixed while the body scrolls, reaches the 666 reference
-  and its pending-approval keys at 60x20, and does not overflow on any
-  theme. Slash suggestions are capped, aligned, filter as text is typed,
-  and report how many results are above or below the visible window;
-  scrolling reaches `/skills` and `/skill`.
+- `/help` is one vertical, grouped reference with fixed label and
+  description columns, keeps its title and exit instruction fixed while
+  the body scrolls, reaches the 666 reference and its pending-approval
+  keys at 60x20, and does not overflow on any theme. Slash suggestions are
+  capped, aligned, filter as text is typed, shorten a long syntax inside
+  its label column, and report how many results are above or below the
+  visible window; scrolling reaches `/skills` and `/skill`.
 - A bracketed paste stays in the composer and never submits.
 - A short single-line paste stays one row; a CRLF paste is one line break,
   not two; a pasted line that wraps takes exactly its wrapped rows.

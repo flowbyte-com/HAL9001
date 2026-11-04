@@ -387,6 +387,11 @@ func (m Model) suggestionRows(n int) []string {
 		}
 		line := marker
 		if m.width >= 38 {
+			// The label column is fixed for the whole list, and a long
+			// syntax is shortened rather than allowed to push the
+			// description out of its column. Dispatch still receives the
+			// real command name and arguments.
+			label = truncateCells(label, labelWidth)
 			line += padTo(st.active.Render(label), labelWidth)
 			room := m.width - 2 - labelWidth - suggestionGap
 			if room > 0 {
@@ -394,6 +399,7 @@ func (m Model) suggestionRows(n int) []string {
 					st.footer.Render(truncateCells(c.description, room))
 			}
 		} else {
+			label = truncateCells(label, m.width-2)
 			line += st.active.Render(label)
 		}
 		rows = append(rows, m.fitWidth(line, m.width))

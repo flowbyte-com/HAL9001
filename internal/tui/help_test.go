@@ -36,6 +36,18 @@ func rowWidthsFit(t *testing.T, rows []string, width int) {
 	}
 }
 
+// displayColumn is the zero-based terminal cell where fragment starts in
+// row, after removing styling. It measures display width, not bytes, so a
+// wide character or a colour code cannot disguise a collision.
+func displayColumn(row, fragment string) int {
+	plain := stripANSI(row)
+	at := strings.Index(plain, fragment)
+	if at < 0 {
+		return -1
+	}
+	return lipgloss.Width(plain[:at])
+}
+
 // TestHelpLayoutMatrix is the responsive matrix: every section, every
 // registered command and every documented shortcut is present at the
 // four reference sizes, on every theme, without a row overflowing.
@@ -109,7 +121,7 @@ func TestHelpColumnsDoNotCollide(t *testing.T) {
 	for _, row := range rows {
 		plain := stripANSI(row)
 		for _, fragment := range []string{"alpha", "short"} {
-			at := strings.Index(plain, fragment)
+			at := displayColumn(plain, fragment)
 			if at < 0 {
 				continue
 			}
@@ -134,43 +146,98 @@ func TestHelpColumnsDoNotCollide(t *testing.T) {
 	}
 }
 
-// TestHelpTwoColumnsStayIndependent checks that the optional second
-// column is only used when both description columns are readable, and
-// that the gutter really separates them.
-func TestHelpTwoColumnsStayIndependent(t *testing.T) {
-	m := testModel()
-	sections := []helpSection{
-		{title: "Left", entries: []helpEntry{{"L", "left description"}}},
-		{title: "Right", entries: []helpEntry{{"R", "right description"}}},
-	}
-	rows, ok := m.helpTwoColumnRows(sections, 120)
-	if !ok {
-		t.Fatal("120 cells must fit two readable columns")
-	}
-	labelWidth := helpLabelWidth(sections)
-	base := labelWidth + helpColumnGap
-	available := 120 - helpIndent - helpColumnGutter
-	leftWidth := base + (available-2*base)/2
-	rightAt := helpIndent + leftWidth + helpColumnGutter + labelWidth + helpColumnGap
-	joined := stripANSI(strings.Join(rows, "\n"))
-	rows = strings.Split(joined, "\n")
-	found := false
-	for _, row := range rows {
-		if !strings.Contains(row, "left description") || !strings.Contains(row, "right description") {
-			continue
-		}
-		found = true
-		if at := strings.Index(row, "right description"); at != rightAt {
-			t.Errorf("right description starts at %d, want %d: %q", at, rightAt, row)
-		}
-	}
-	if !found {
-		t.Fatalf("the two columns were not rendered side by side:\n%s", joined)
-	}
-	rowWidthsFit(t, rows, 120)
+// TestHelpStaysOneColumnAndAligned is the display-cell contract: the
+// reference is one vertical list at every width, each label starts at the
+// same column, each description starts at the same later column, and no
+// content starts in a second column.
+func TestHelpStaysOneColumnAndAligned(t *testing.T) {
+	sizes := [][2]int{{60, 20}, {80, 24}, {120, 30}, {170, 38}}
+	for _, size := range sizes {
+		t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
+			m := testModel()
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+			m = updated.(Model)
+			m = openHelp(t, m)
 
-	if _, ok := m.helpTwoColumnRows(sections, 50); ok {
-		t.Error("50 cells must not squeeze help into two columns")
+			sections := m.helpSections()
+			labelWidth := helpLabelWidth(sections)
+			descAt := helpIndent + labelWidth + helpColumnGap
+			rows := m.helpRows()
+			rowWidthsFit(t, rows, size[0])
+			plainRows := make([]string, len(rows))
+			for i, row := range rows {
+				plainRows[i] = stripANSI(row)
+			}
+
+			// Sections are a vertical sequence, one heading per row.
+			last := -1
+			for _, title := range helpSectionTitles {
+				found := -1
+				for i, row := range plainRows {
+					if strings.Contains(row, title) {
+						if col := displayColumn(row, title); col != helpIndent {
+							t.Errorf("%q starts at cell %d, want %d: %q",
+								title, col, helpIndent, row)
+						}
+						if found < 0 {
+							found = i
+						}
+					}
+				}
+				if found < 0 {
+					t.Errorf("missing section %q", title)
+					continue
+				}
+				if found <= last {
+					t.Errorf("section %q appears before the previous section", title)
+				}
+				last = found
+				count := 0
+				for _, row := range plainRows {
+					if strings.Contains(row, title) {
+						count++
+					}
+				}
+				if count != 1 {
+					t.Errorf("section %q appears on %d rows, want 1", title, count)
+				}
+			}
+
+			// A content row starts either with a label at helpIndent or
+			// with a wrapped description at descAt. Anything starting in
+			// a second column is a collision.
+			for i, row := range plainRows {
+				trimmed := strings.TrimLeft(row, " ")
+				if trimmed == "" {
+					continue
+				}
+				col := lipgloss.Width(row[:len(row)-len(trimmed)])
+				if col != helpIndent && col != descAt {
+					t.Errorf("row %d starts at cell %d, want %d or %d: %q",
+						i, col, helpIndent, descAt, row)
+				}
+			}
+
+			// Every registered command is in the one label column.
+			for _, c := range commandTable {
+				label := commandLabel(c)
+				found := false
+				for _, row := range plainRows {
+					trimmed := strings.TrimLeft(row, " ")
+					if strings.HasPrefix(trimmed, label+" ") || trimmed == label {
+						if col := displayColumn(row, label); col != helpIndent {
+							t.Errorf("%q starts at cell %d, want %d: %q",
+								label, col, helpIndent, row)
+						}
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("command %q is not in the label column", label)
+				}
+			}
+		})
 	}
 }
 

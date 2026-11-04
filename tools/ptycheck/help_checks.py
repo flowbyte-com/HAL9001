@@ -51,6 +51,14 @@ def cell_width(text):
     return width
 
 
+def cell_column(text, fragment):
+    """The display cell where fragment starts, or -1."""
+    at = text.find(fragment)
+    if at < 0:
+        return -1
+    return cell_width(text[:at])
+
+
 def make_temp_home():
     base = os.environ.get("HAL9001_PTY_TMPDIR", "/tmp/opencode")
     os.makedirs(base, exist_ok=True)
@@ -197,6 +205,36 @@ def main():
             check("%dx%d: no row overflows" % (cols, rows),
                   no_overflow(s, cols), text)
 
+        # The sectioned reference is one vertical list at every width,
+        # and labels and descriptions occupy fixed display columns.
+        section_titles = ["Conversation and editing", "Navigation and clipboard",
+                          "Sessions and preferences", "MPM skills and diagnostics",
+                          "Permissions and file writes"]
+        for cols, rows in ((120, 30), (170, 38)):
+            text = capture([(2.0, b"/help\r")], cols, rows, **common).text()
+            lines = text.split("\n")
+            title_cells = []
+            shared_row = False
+            for title in section_titles:
+                hits = [line for line in lines if title in line]
+                for line in hits:
+                    title_cells.append(cell_column(line, title))
+            for line in lines:
+                if sum(1 for title in section_titles if title in line) > 1:
+                    shared_row = True
+            check("%dx%d: help keeps sections in one vertical list" % (cols, rows),
+                  len(title_cells) >= 2 and all(col == 2 for col in title_cells)
+                  and not shared_row,
+                  text)
+            desc_cells = []
+            for fragment in ("Show available commands", "Start a fresh conversation"):
+                line = next((l for l in lines if fragment in l), "")
+                if line:
+                    desc_cells.append(cell_column(line, fragment))
+            check("%dx%d: help descriptions share one display column" % (cols, rows),
+                  len(desc_cells) >= 2 and len(set(desc_cells)) == 1,
+                  text)
+
         # The body scrolls while the title and exit instruction stay put.
         s = capture([(2.0, b"/help\r"), (0.5, b"\x1b[B" * 60), (0.5, b"")],
                     60, 20, **common)
@@ -240,6 +278,14 @@ def main():
               and "Pin a skill" in text, text)
         check("suggestions: a narrow list stays inside the terminal",
               no_overflow(filtered, 60), text)
+        lines = text.split("\n")
+        skills_line = next((l for l in lines if "List the available skills" in l), "")
+        skill_line = next((l for l in lines if "Pin a skill" in l), "")
+        check("suggestions: long syntax and descriptions share one column",
+              bool(skills_line) and bool(skill_line)
+              and cell_column(skills_line, "List the available skills") ==
+              cell_column(skill_line, "Pin a skill"),
+              text)
 
         completed = capture([(2.0, b"/sk"), (0.5, b"\x1b[B"), (0.5, b"\t")],
                             60, 20, **common)

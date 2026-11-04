@@ -128,6 +128,84 @@ func TestSuggestionCancelKeepsDraft(t *testing.T) {
 	}
 }
 
+// TestSuggestionColumnsUseDisplayCells checks that the label column and
+// every description start at fixed terminal cells, including the long
+// /skill syntax, rather than merely fitting somewhere on the row.
+func TestSuggestionColumnsUseDisplayCells(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/sk")
+
+	labelWidth := m.suggestionLabelWidth()
+	descAt := 2 + labelWidth + suggestionGap
+	rows := m.suggestionRows(m.suggestRows())
+	for _, description := range []string{"List the available skills", "Pin a skill"} {
+		found := false
+		for _, row := range rows {
+			if col := displayColumn(row, description); col >= 0 {
+				if col != descAt {
+					t.Errorf("%q starts at cell %d, want %d: %q",
+						description, col, descAt, stripANSI(row))
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("description %q is not visible", description)
+		}
+	}
+
+	selected := m.suggestItems[m.suggestCursor]
+	for _, row := range rows {
+		if displayColumn(row, commandLabel(selected)) >= 0 {
+			if col := displayColumn(row, "▸"); col != 0 {
+				t.Errorf("selection marker starts at cell %d, want 0: %q",
+					col, stripANSI(row))
+			}
+			if col := displayColumn(row, commandLabel(selected)); col != 2 {
+				t.Errorf("selected label starts at cell %d, want 2: %q",
+					col, stripANSI(row))
+			}
+			break
+		}
+	}
+}
+
+// TestSuggestionLongLabelIsShortened checks that a syntax wider than the
+// label column is shortened instead of pushing the description into a
+// collision. Dispatch still receives the real command name.
+func TestSuggestionLongLabelIsShortened(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 38, Height: 20})
+	m = updated.(Model)
+	m.SetColor(false)
+	m.suggestOpen = true
+	m.suggestCursor = 0
+	m.suggestItems = []*command{{
+		name:        "/long",
+		usage:       "/" + strings.Repeat("long", 20) + " [argument]",
+		description: "A description that must also fit",
+	}}
+
+	labelWidth := m.suggestionLabelWidth()
+	descAt := 2 + labelWidth + suggestionGap
+	rows := m.suggestionRows(3)
+	if len(rows) != 3 {
+		t.Fatalf("suggestion window has %d rows, want 3", len(rows))
+	}
+	if got := lipgloss.Width(rows[0]); got > 38 {
+		t.Errorf("suggestion row is %d cells wide, terminal is 38", got)
+	}
+	if col := displayColumn(rows[0], "A descript"); col != descAt {
+		t.Errorf("description starts at cell %d, want %d: %q",
+			col, descAt, stripANSI(rows[0]))
+	}
+	if col := displayColumn(rows[0], "▸"); col != 0 {
+		t.Errorf("selection marker starts at cell %d, want 0", col)
+	}
+}
+
 // TestSuggestionNarrowTerminalsFit checks that the panel drops the
 // description rather than overflowing when there is no room for two
 // columns.

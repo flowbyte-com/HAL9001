@@ -31,14 +31,9 @@ const (
 	helpIndent = 2
 	// helpColumnGap separates a label from its description.
 	helpColumnGap = 2
-	// helpColumnGutter separates the two columns on a wide terminal.
-	helpColumnGutter = 4
 	// helpMinDescription is the narrowest description that still reads
 	// as a sentence rather than a stack of single words.
 	helpMinDescription = 8
-	// helpTwoColumnDescription is the narrowest description that earns
-	// a second column on a wide terminal.
-	helpTwoColumnDescription = 24
 )
 
 // helpCommandSection assigns every command in commandTable to one
@@ -165,12 +160,11 @@ func (m Model) helpRows() []string {
 	}
 	sections := m.helpSections()
 
-	var rows []string
-	if twoColumn, ok := m.helpTwoColumnRows(sections, width); ok {
-		rows = twoColumn
-	} else {
-		rows = m.helpOneColumnRows(sections, width)
-	}
+	// One column at every width: the command and key reference is a
+	// single vertical list, so sections never interleave across the
+	// terminal and a description can never be mistaken for belonging to
+	// a label in another column.
+	rows := m.helpOneColumnRows(sections, width)
 
 	// The terminal note is part of the reference, not decoration.
 	if note := m.helpTerminalNote(); note != "" {
@@ -247,74 +241,6 @@ func (m Model) helpStackedRows(sections []helpSection, width int) []string {
 		}
 	}
 	return rows
-}
-
-// helpTwoColumnRows lays two independent groups side by side. It only
-// reports success when both description columns are wide enough to be
-// readable; otherwise the caller falls back to one column rather than
-// squeezing text into a collision.
-func (m Model) helpTwoColumnRows(sections []helpSection, width int) ([]string, bool) {
-	if len(sections) < 2 {
-		return nil, false
-	}
-	labelWidth := helpLabelWidth(sections)
-	base := labelWidth + helpColumnGap
-	available := width - helpIndent - helpColumnGutter
-	if available < 2*(base+helpTwoColumnDescription) {
-		return nil, false
-	}
-	descTotal := available - 2*base
-	leftDesc := descTotal / 2
-	rightDesc := descTotal - leftDesc
-	if leftDesc < helpTwoColumnDescription || rightDesc < helpTwoColumnDescription {
-		return nil, false
-	}
-
-	// Split the sections where the two rendered columns are most even.
-	// Section order is preserved, so the reading order stays the same.
-	bestSplit, bestHeight := 1, -1
-	for split := 1; split < len(sections); split++ {
-		left := m.helpBlockRows(sections[:split], labelWidth, leftDesc, 0)
-		right := m.helpBlockRows(sections[split:], labelWidth, rightDesc, 0)
-		height := len(left)
-		if len(right) > height {
-			height = len(right)
-		}
-		if bestHeight < 0 || height < bestHeight {
-			bestSplit, bestHeight = split, height
-		}
-	}
-
-	left := m.helpBlockRows(sections[:bestSplit], labelWidth, leftDesc, 0)
-	right := m.helpBlockRows(sections[bestSplit:], labelWidth, rightDesc, 0)
-	leftWidth := base + leftDesc
-	rows := make([]string, 0, len(left))
-	count := len(left)
-	if len(right) > count {
-		count = len(right)
-	}
-	for i := 0; i < count; i++ {
-		var l, r string
-		if i < len(left) {
-			l = left[i]
-		}
-		if i < len(right) {
-			r = right[i]
-		}
-		switch {
-		case l != "" && r != "":
-			rows = append(rows, strings.Repeat(" ", helpIndent)+
-				padTo(l, leftWidth)+strings.Repeat(" ", helpColumnGutter)+r)
-		case l != "":
-			rows = append(rows, strings.Repeat(" ", helpIndent)+l)
-		case r != "":
-			rows = append(rows, strings.Repeat(" ", helpIndent)+
-				strings.Repeat(" ", leftWidth+helpColumnGutter)+r)
-		default:
-			rows = append(rows, "")
-		}
-	}
-	return rows, true
 }
 
 // helpBlockRows renders sections at a fixed label and description width.
