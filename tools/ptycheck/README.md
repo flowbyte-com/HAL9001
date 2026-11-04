@@ -31,6 +31,27 @@ python3 tools/ptycheck/checks.py
 Every check prints `ok` or `FAIL`; the exit status is non-zero when
 something fails.
 
+## Child process lifecycle
+
+Every `run()` owns exactly the child that `pty.fork()` returned. On every
+path — the app exiting, a script timeout, a failed action or a raised
+exception — cleanup closes the pty descriptor, sends `SIGTERM` to that
+child (and to its own process group when it is the group leader), waits a
+bounded grace period, escalates to `SIGKILL` only if needed, and then
+reaps the child with `waitpid()`.
+Cleanup never scans for processes by name, so a concurrent harness and
+the operator's interactive HAL session are never signalled.
+
+The lifecycle regression suite uses a temporary fake HAL and temporary
+home/store directories. It records the direct children and open
+descriptors of the test runner before and after each scenario: normal
+exit, assertion failure, exception, timeout, interrupted test, forced
+termination, an unrelated session and two concurrent harnesses.
+
+```sh
+python3 tools/ptycheck/lifecycle_check.py -v
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -127,6 +148,7 @@ by hand in a real terminal.
 | File | Purpose |
 |---|---|
 | `pty_drive.py` | forks the pty, drives the binary, returns the raw bytes |
+| `lifecycle_check.py` | process-lifecycle regression checks for the driver |
 | `termsim.py` | replays the byte stream into a screen buffer |
 | `checks.py` | the assertions |
 | `fake_provider.py` | a local OpenAI-compatible streaming stub |
