@@ -291,6 +291,12 @@ that fits the request, without being told which to use.
 - `/skills` lists what is available, `/skill <name>` pins one for the
   writing task ahead, `/skill auto` restores automatic routing, and
   `/diag` names the skill of the latest request and where it came from.
+- Each reply carries a **skill credit** on its metadata line, naming the
+  skills whose instructions actually reached the model. The credit is
+  stored with the answer, with the version and the content hash that
+  were supplied, so it stays true after the skill is updated in MPM. It
+  is interface metadata: it is never part of the answer, the clipboard
+  or a selection, and the model's own text can never produce one.
 
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;

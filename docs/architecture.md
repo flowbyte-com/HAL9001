@@ -222,6 +222,41 @@ authority of the application that reads it. The line states the
 precedence; the 444 capability boundary and the absence of any write
 tool are what enforce it.
 
+### Attribution
+
+A reply is credited with the skills whose instructions were actually
+supplied to the model. The credit is recorded in the session, beside
+the answer and never inside it:
+
+```json
+{"role":"assistant","content":"Dear landlord,","ts":"...","turn_id":"turn-9f3c...",
+ "attribution":{"turn_id":"turn-9f3c...","source":"auto",
+   "skills":[{"id":"skill:humanize-text-v1.0.1","name":"humanize-text","source":"auto",
+              "version":"1.0.1","content_hash":"sha256:4f1d..."}]}}
+```
+
+Four properties make the credit trustworthy.
+
+- **It is historical.** The version and the content hash are the ones
+  that were supplied, recorded at the time. A later update of the skill
+  in MPM cannot change what an earlier answer is credited with.
+- **It is bound to an identity, not a position.** Every exchange has a
+  turn identity, and the credit repeats it. Reopening a conversation
+  restores each credit with its own answer.
+- **It is earned.** Only a skill whose instructions were read is
+  credited. A skill that was selected but could not be loaded never
+  reached the model, so it is recorded as a failure in the diagnostics
+  and never as a use.
+- **It cannot be forged.** The credit comes from the routing decision,
+  never from the model's text. It is rendered on the reply's metadata
+  line, which is marked as decoration: `/copy`, a mouse selection and
+  the transcript all leave it out.
+
+The diagnostics keep the four states apart: the **candidates** the
+router considered, the **selected** skill, the **activated** skills
+whose instructions were read, and the **used** skills that shaped the
+answer.
+
 ### Cost
 
 The two shipped skills load 4,690 bytes (system-prompt-writer) and 3,792
