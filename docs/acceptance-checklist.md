@@ -1,0 +1,96 @@
+# HAL9001 — manual acceptance checklist
+
+For the operator's own terminal (Ghostty, GNOME Terminal, or anything
+else with a true colour terminal). The automated suites cover the
+behaviour; this list covers what only a human can see.
+
+Build and run:
+
+```sh
+cd ~/projects/hal
+go build -o /tmp/hal9001 ./cmd/hal9001
+/tmp/hal9001
+```
+
+## The frame
+
+- [ ] The header shows `● HAL9001` in the theme's accent colour — red in
+      *HAL Classic* — and the session title beside it.
+- [ ] A long title is shortened with an ellipsis instead of wrapping.
+      `/diag` still shows the immutable session name.
+- [ ] The conversation sits between the header and the composer.
+- [ ] The composer is a bordered box with one text row and one cell of
+      padding inside the border.
+- [ ] A long paste grows the composer to five rows and no further.
+- [ ] One row under the composer shows `Enter send · Ctrl+J newline · /help`.
+- [ ] A thin divider sits above the footer.
+- [ ] The footer shows `444 READ ONLY` on the left, the session's token
+      usage in the middle and the model with its reasoning effort on the
+      right.
+- [ ] The notification line is under the footer, in a muted colour, and
+      the composer and footer do not move when it appears or expires.
+
+## The footer and the hints
+
+- [ ] `444 READ ONLY` stays visible while you type.
+- [ ] Typing changes the hint row to
+      `Enter send · Ctrl+J newline · Ctrl+U clear · /help`.
+- [ ] `Ctrl+U` clears the draft and the hint row becomes
+      `Draft cleared · Ctrl+Z restore`.
+- [ ] `Ctrl+Z` puts the draft back and the hint row offers the clear key
+      again.
+- [ ] A write request shows `666 REQUESTED` in the footer, in the accent
+      colour, and the keyboard hints do not change.
+- [ ] The 666 approval screen itself is unchanged: `Ctrl+Y` approves,
+      `Ctrl+N` and `Esc` reject.
+
+## The skill credit
+
+- [ ] Ask for an email. The reply's metadata line ends with
+      `skill: humanize-text`.
+- [ ] Ask an ordinary question. There is no skill label at all.
+- [ ] `/diag` separates the candidates, the selected skill, the activated
+      skill and the used skill.
+- [ ] Quit, reopen the same conversation, and the credit is still on the
+      same answer.
+- [ ] `/copy` copies the answer alone — no skill label, no hash.
+- [ ] Dragging over the reply with the mouse copies the answer alone.
+
+## The way back
+
+- [ ] Scroll up with the wheel: a small `↓ Jump to latest message ·
+      Ctrl+End` appears over the bottom of the conversation.
+- [ ] Click it: the conversation returns to the latest message and the
+      control disappears.
+- [ ] `Ctrl+End` does the same, with the mouse switched off
+      (`--no-mouse`).
+- [ ] The wheel moves about eight rows a notch, in both directions, and
+      stops exactly at the top and the bottom.
+- [ ] The wheel over the composer scrolls the draft window, not the
+      conversation.
+- [ ] A drag that reaches the edge of the conversation still scrolls one
+      row at a time.
+- [ ] A drag that passes over the jump control does not jump.
+
+## Every theme
+
+Run `/theme` and walk through all five. For each one:
+
+- [ ] The frame has the same shape: the same rows, the same places.
+- [ ] The header, the hint row, the divider and the footer are legible.
+- [ ] The jump control is legible and centred.
+- [ ] The composer's text is legible, including the caret on a light
+      theme.
+
+## Every size
+
+Resize the terminal while HAL is running, or start it at another size.
+
+- [ ] 80×24: the conversation keeps its rows, the hint row and the
+      divider are present, nothing overlaps.
+- [ ] 120×30 and 170×38: the same frame, with more conversation.
+- [ ] A narrow terminal (40 columns): the hint row shortens instead of
+      clipping, and the footer drops the effort, then the usage, then the
+      model — `444 READ ONLY` is the last thing to go.
+- [ ] The reading position survives a resize: the same paragraph stays
+      in view.
