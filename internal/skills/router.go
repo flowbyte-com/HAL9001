@@ -35,6 +35,14 @@ type Decision struct {
 	// Applied lists the skills whose guidance was actually loaded. It is
 	// empty when the selected skill could not be read.
 	Applied []string
+	// Loaded carries the loaded skills themselves: the identity, the
+	// version and the content hash of what was supplied to the model.
+	// It is the evidence behind an attribution.
+	Loaded []Skill
+	// Failure reports why a selected skill could not be loaded. It is a
+	// diagnostic, never an attribution: a skill that was not supplied
+	// cannot be credited with shaping the answer.
+	Failure string
 }
 
 // Selected reports whether a skill was chosen.

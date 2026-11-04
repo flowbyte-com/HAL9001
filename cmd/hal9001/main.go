@@ -261,15 +261,7 @@ func (a *app) run() error {
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
 	m.SetTitle(a.session)
 	if history, err := a.store.History(); err == nil {
-		lines := make([]tui.SessionLine, 0, len(history))
-		for _, msg := range history {
-			role := "assistant"
-			if msg.Role == session.RoleUser {
-				role = "user"
-			}
-			lines = append(lines, tui.SessionLine{Role: role, Text: msg.Content})
-		}
-		m.SetHistory(lines)
+		m.SetHistory(sessionLines(history))
 	}
 	if !a.hasConfig() {
 		m.EnterOnboarding()
@@ -654,15 +646,28 @@ func (a *app) switchSession(name string) (tui.Engine, []tui.SessionLine, error) 
 	a.session = name
 	a.sessionTitle = a.displayTitle(name)
 	a.rebuildEngine()
+	return a.eng, sessionLines(history), nil
+}
+
+// sessionLines turns stored messages into the interface's own lines.
+//
+// The attribution of a turn travels with its answer: it is what the
+// stored record says shaped that answer, and it is shown beside the
+// reply's metadata. It never becomes part of the text.
+func sessionLines(history []session.Message) []tui.SessionLine {
 	lines := make([]tui.SessionLine, 0, len(history))
 	for _, msg := range history {
 		role := "assistant"
 		if msg.Role == session.RoleUser {
 			role = "user"
 		}
-		lines = append(lines, tui.SessionLine{Role: role, Text: msg.Content})
+		lines = append(lines, tui.SessionLine{
+			Role:        role,
+			Text:        msg.Content,
+			Attribution: msg.Attribution,
+		})
 	}
-	return a.eng, lines, nil
+	return lines
 }
 
 func (a *app) copyText(text string) error {

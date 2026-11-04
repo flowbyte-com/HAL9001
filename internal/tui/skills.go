@@ -6,8 +6,57 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/skills"
 )
+
+// attributionLabel is the compact skill credit on a reply's metadata
+// line.
+//
+// It names the skills whose instructions were actually supplied to the
+// model, and nothing else. A skill that was selected but could not be
+// read is not named: it never reached the model, so it cannot have
+// shaped the answer.
+func attributionLabel(a *session.Attribution) string {
+	if a == nil || len(a.Skills) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(a.Skills))
+	for _, s := range a.Skills {
+		name := strings.TrimSpace(s.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return "skill: " + names[0]
+	default:
+		return "skills: " + strings.Join(names, ", ")
+	}
+}
+
+// skillCredit is the full record of what shaped an answer: the identity,
+// the version and the content hash that were supplied. It is what the
+// diagnostics show, so an attribution can be checked rather than taken
+// on trust.
+func skillCredit(a *session.Attribution) string {
+	if a == nil || len(a.Skills) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(a.Skills))
+	for _, s := range a.Skills {
+		part := s.Name
+		if s.Version != "" {
+			part += " v" + s.Version
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ", ")
+}
 
 // The skills panel is deliberately small: it is a place to look, not a
 // place to live. HAL shows no skill badge in the conversation and no
@@ -73,21 +122,87 @@ func (m Model) skillsRows() []string {
 	if m.lastSkill != nil {
 		d := m.lastSkill
 		rows = append(rows, "  "+st.active.Render("last turn"))
-		if len(d.Applied) > 0 {
-			rows = append(rows, "    skill   "+strings.Join(d.Applied, ", "))
-		} else if len(d.Skills) > 0 {
-			rows = append(rows, "    skill   "+strings.Join(d.Skills, ", ")+" (not loaded)")
-		} else {
-			rows = append(rows, "    skill   none")
-		}
-		rows = append(rows, "    source  "+d.Source)
-		if d.Reason != "" {
-			rows = append(rows, "    reason  "+d.Reason)
+		for _, fact := range skillFacts(*d, m.turnAttribution) {
+			rows = append(rows, "    "+padTo(fact.Label, 12)+fact.Value)
 		}
 	}
 	rows = append(rows, "")
 	rows = append(rows, "  "+st.footer.Render("/skill <name> pins a skill · /skill auto restores routing"))
 	return rows
+}
+
+// skillFact is one labelled fact of the routing record.
+type skillFact struct {
+	Label string
+	Value string
+}
+
+// skillFacts renders the routing decision as distinct, labelled facts.
+//
+// The four states are kept apart on purpose. A candidate is a skill the
+// router considered; a selected skill is the one it chose; an activated
+// skill is one whose instructions were actually read from the store; and
+// a used skill is one that really shaped the answer. A failure is shown
+// as a failure and never as a use: a skill that did not reach the model
+// cannot have shaped what the model wrote.
+func skillFacts(d skills.Decision, a *session.Attribution) []skillFact {
+	candidates := make([]string, 0, len(d.Candidates))
+	for _, c := range d.Candidates {
+		candidates = append(candidates, fmt.Sprintf("%s (%d)", c.Name, c.Score))
+	}
+	if len(candidates) == 0 {
+		candidates = append(candidates, "none")
+	}
+	selected := "none"
+	if len(d.Skills) > 0 {
+		selected = strings.Join(d.Skills, ", ")
+	}
+	source := d.Source
+	if source == "" {
+		source = "none"
+	}
+	activated := "none"
+	if len(d.Loaded) > 0 {
+		names := make([]string, 0, len(d.Loaded))
+		for _, s := range d.Loaded {
+			name := s.Name
+			if s.Version != "" {
+				name += " v" + s.Version
+			}
+			names = append(names, name)
+		}
+		activated = strings.Join(names, ", ")
+	}
+	used := "none"
+	hash := ""
+	if a != nil && len(a.Skills) > 0 {
+		used = skillCredit(a)
+		for _, s := range a.Skills {
+			if s.ContentHash != "" {
+				hash = s.ContentHash
+				break
+			}
+		}
+	}
+	facts := []skillFact{
+		{"candidates", strings.Join(candidates, " · ")},
+		{"selected", selected},
+		{"source", source},
+	}
+	if d.Reason != "" {
+		facts = append(facts, skillFact{"reason", d.Reason})
+	}
+	facts = append(facts,
+		skillFact{"activated", activated},
+		skillFact{"used", used},
+	)
+	if hash != "" {
+		facts = append(facts, skillFact{"hash", hash})
+	}
+	if d.Failure != "" {
+		facts = append(facts, skillFact{"failure", d.Failure})
+	}
+	return facts
 }
 
 // skillCmd handles /skill.

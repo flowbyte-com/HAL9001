@@ -130,6 +130,15 @@ type Event struct {
 	// selected, why, and which one was actually loaded. It is set on
 	// every turn, including the ones that selected nothing.
 	Skill *skills.Decision
+	// Attribution is what was actually supplied to the model for this
+	// turn: the skills whose instructions went into the request, with
+	// the version and the content hash that were used. It is nil when
+	// no skill shaped the turn.
+	Attribution *session.Attribution
+	// TurnID is the identity of the exchange this event belongs to. It
+	// is the same identity the session stores, so an attribution can
+	// never be attached to the wrong answer.
+	TurnID string
 	// Proposal is one prepared workspace write, awaiting the operator's
 	// decision. It carries no authority: the interface approves or
 	// rejects it, and only then may the filesystem be touched.
@@ -162,7 +171,11 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("engine: empty input")
 	}
-	if _, err := e.sessions.Append(session.RoleUser, input); err != nil {
+	// The exchange gets its identity before anything else happens, so
+	// the operator's message, the answer and the attribution of that
+	// answer all carry the same name in the session.
+	turnID := session.NewTurnID()
+	if _, err := e.sessions.AppendTurn(session.RoleUser, input, session.Turn{ID: turnID}); err != nil {
 		return "", err
 	}
 	if e.provider == nil {
@@ -177,9 +190,10 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 	// afterwards. The guidance belongs to this request: it is composed
 	// into the system instruction here and never enters the session.
 	decision, loaded := e.prepareSkill(ctx, input)
+	attribution := attributionOf(turnID, decision)
 	if emit != nil && decision.Source != "" {
 		d := decision
-		emit(Event{Skill: &d})
+		emit(Event{Skill: &d, Attribution: attribution, TurnID: turnID})
 	}
 	messages := e.requestMessages(history, skillBlock(loaded))
 	turn := userTurns(history)
@@ -231,7 +245,10 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 		}
 		return "", fmt.Errorf("%w (finish_reason %s)", ErrNoVisibleAnswer, finish)
 	}
-	if _, err := e.sessions.Append(session.RoleAssistant, reply); err != nil {
+	if _, err := e.sessions.AppendTurn(session.RoleAssistant, reply, session.Turn{
+		ID:          turnID,
+		Attribution: attribution,
+	}); err != nil {
 		return "", err
 	}
 	if proposal != nil && emit != nil {

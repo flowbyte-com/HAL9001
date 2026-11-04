@@ -968,12 +968,36 @@ def skills_checks():
                           timeout=3.6, fresh=True, session="skillcheck")).text()
         check("skills: /skill pins a skill", "humanize-text" in text, text)
 
-        # The diagnostics show the selection.
+        # The reply carries no routing instruction.
         text = render(run([(1.6, b"Write an email to my landlord.\r"), (2.0, b"")],
                           timeout=12.0, fresh=True, session="skillcheck")).text()
         check("skills: the reply carries no routing instruction",
               "Task guidance" not in text and "does not change what you are allowed" not in text,
               text)
+
+        # The reply is credited with the skill that shaped it.
+        text = render(run([(1.6, b"Write an email to my landlord.\r"), (2.0, b"")],
+                          timeout=12.0, fresh=True, session="skillcheck")).text()
+        check("skills: the reply is credited with the skill",
+              "skill: humanize-text" in text, text)
+        meta = [l for l in text.split("\n") if "skill:" in l and "in /" in l and "out" in l]
+        check("skills: the credit sits on the metadata line",
+              len(meta) == 1, repr(meta))
+
+        # An ordinary question is credited with nothing.
+        text = render(run([(1.6, b"What is the capital of Iceland?\r"), (2.0, b"")],
+                          timeout=12.0, fresh=True, session="skillcheck")).text()
+        check("skills: an ordinary answer carries no credit",
+              "skill:" not in text, text)
+
+        # The credit survives reopening the conversation: it is read from
+        # the stored record, not looked up again.
+        render(run([(1.6, b"Write an email to my landlord.\r"), (2.0, b"")],
+                   timeout=12.0, fresh=True, session="skillreopen"))
+        text = render(run([(1.8, b""), (0.6, b"")],
+                          timeout=7.0, fresh=False, session="skillreopen")).text()
+        check("skills: a reopened conversation keeps the credit",
+              "skill: humanize-text" in text, text)
     finally:
         if previous is None:
             os.environ.pop("MPM_WORKSPACE", None)

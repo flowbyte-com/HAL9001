@@ -23,6 +23,7 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/skills"
 	"github.com/flowbyte-com/HAL9001/internal/usage"
 	"github.com/flowbyte-com/HAL9001/internal/workspace"
@@ -230,6 +231,10 @@ const (
 type SessionLine struct {
 	Role string
 	Text string
+	// Attribution names the skills that shaped this answer, when the
+	// stored turn recorded any. It is presentation metadata and never
+	// part of Text.
+	Attribution *session.Attribution
 }
 
 // SessionInfo describes one stored conversation for the browser. The ID is
@@ -288,7 +293,11 @@ type entry struct {
 	note     bool
 	meta     usage.Turn
 	hasMeta  bool
-	rows     []string
+	// attribution names the skills that shaped this answer. It is
+	// presentation metadata about the turn: it is never part of the
+	// text, and it never reaches the model.
+	attribution *session.Attribution
+	rows        []string
 	// deco marks the rows that are interface decoration rather than
 	// message text: the collapse hint and the answer's metadata line.
 	// They stay on screen, but a selection never copies them.
@@ -389,6 +398,13 @@ type Model struct {
 	reasoningSeen bool
 	// lastStats is the content-free telemetry of the last finished turn.
 	lastStats *provider.TurnStats
+	// turnAttribution is the credit of the last finished turn: the
+	// skills whose instructions were supplied to the model. It is
+	// cleared when a new turn starts.
+	turnAttribution *session.Attribution
+	// turnID is the identity of the last turn, as the session records
+	// it.
+	turnID string
 	// effort is the active reasoning level and effortSupported reports
 	// whether the active model exposes effort control at all.
 	effort          string
@@ -568,7 +584,12 @@ func (m *Model) SetHistory(lines []SessionLine) {
 	m.clearUndo()
 	m.clearSelection()
 	for _, line := range lines {
-		m.entries = append(m.entries, entry{role: line.Role, text: line.Text, collapse: collapseShown})
+		m.entries = append(m.entries, entry{
+			role:        line.Role,
+			text:        line.Text,
+			collapse:    collapseShown,
+			attribution: line.Attribution,
+		})
 	}
 	m.attachHistoryMeta()
 	m.rewrap()
@@ -621,9 +642,18 @@ type streamStatsMsg struct {
 type streamStartedMsg struct{ id int }
 
 // skillDecisionMsg carries the routing decision of a turn back to the
-// interface, so the diagnostics view can show which skill was used.
+// interface, so the diagnostics view can show which skill was used and
+// the reply can be credited with the one that actually reached the
+// model.
+//
+// The attribution is bound to the turn it belongs to: id is the
+// interface's own turn number, and turn is the identity the session
+// stores. A decision that arrives for an older turn is ignored.
 type skillDecisionMsg struct {
-	decision skills.Decision
+	id          int
+	turn        string
+	decision    skills.Decision
+	attribution *session.Attribution
 }
 
 type responseMsg struct {
@@ -631,6 +661,17 @@ type responseMsg struct {
 	text string
 	// proposal is one prepared write awaiting the operator's decision.
 	proposal *workspace.Proposal
+	// decision is the routing decision of this turn, when the engine
+	// reported one.
+	decision *skills.Decision
+	// attribution is the credit for this answer: the skills whose
+	// instructions were supplied to the model. It travels with the
+	// answer, so it cannot be attached to a different one.
+	attribution *session.Attribution
+	// turn is the identity of this exchange, as the session records it.
+	turn string
+	// stats is the telemetry the provider reported for this turn.
+	stats *provider.TurnStats
 }
 type errorMsg struct {
 	id  int
@@ -657,17 +698,40 @@ func (m Model) sendCmd(id int, input string, ctx context.Context) tea.Cmd {
 }
 
 func (m Model) runRespond(id int, input string, ctx context.Context) tea.Msg {
-	var proposal *workspace.Proposal
+	var (
+		proposal    *workspace.Proposal
+		decision    *skills.Decision
+		attribution *session.Attribution
+		turn        string
+		stats       *provider.TurnStats
+	)
 	reply, err := m.respondEvents(ctx, input, func(ev engine.Event) {
-		if ev.Proposal != nil {
+		switch {
+		case ev.Proposal != nil:
 			p := *ev.Proposal
 			proposal = &p
+		case ev.Skill != nil:
+			d := *ev.Skill
+			decision = &d
+			attribution = ev.Attribution
+			turn = ev.TurnID
+		case ev.Stats != nil:
+			s := *ev.Stats
+			stats = &s
 		}
 	})
 	if err != nil {
 		return errorMsg{id: id, err: err}
 	}
-	return responseMsg{id: id, text: reply, proposal: proposal}
+	return responseMsg{
+		id:          id,
+		text:        reply,
+		proposal:    proposal,
+		decision:    decision,
+		attribution: attribution,
+		turn:        turn,
+		stats:       stats,
+	}
 }
 
 // respondEvents runs one turn and forwards its events. Engines without
@@ -693,14 +757,25 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 			m.sender(streamThinkingMsg{id: id})
 		}
 	}
-	var proposal *workspace.Proposal
+	var (
+		proposal    *workspace.Proposal
+		decision    *skills.Decision
+		attribution *session.Attribution
+		turn        string
+	)
 	collect := func(ev engine.Event) {
 		if ev.Proposal != nil {
 			p := *ev.Proposal
 			proposal = &p
 		}
 		if ev.Skill != nil {
-			m.sender(skillDecisionMsg{decision: *ev.Skill})
+			d := *ev.Skill
+			decision = &d
+			attribution = ev.Attribution
+			turn = ev.TurnID
+			// The diagnostics learn the selection while the turn is
+			// still running.
+			m.sender(skillDecisionMsg{id: id, turn: ev.TurnID, decision: d})
 		}
 		emit(ev)
 	}
@@ -719,7 +794,14 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 		m.sender(errorMsg{id: id, err: err})
 		return
 	}
-	m.sender(responseMsg{id: id, text: reply, proposal: proposal})
+	m.sender(responseMsg{
+		id:          id,
+		text:        reply,
+		proposal:    proposal,
+		decision:    decision,
+		attribution: attribution,
+		turn:        turn,
+	})
 }
 
 // Update implements tea.Model.
@@ -968,19 +1050,31 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending = ""
 		m.reasoningSeen = false
 		m.lastResponse = msg.text
-		reported := m.turnStats
+		reported := msg.stats
+		if reported == nil {
+			reported = m.turnStats
+		}
 		m.recordTurn()
 		if m.lastStats != nil && m.lastStats.OutputLimitHit {
 			m.notice = "output limit reached — the reply was cut at max_tokens"
 		} else {
 			m.notice = ""
 		}
+		if msg.decision != nil {
+			d := *msg.decision
+			m.lastSkill = &d
+		}
+		// The credit for the answer arrives with the answer, in the same
+		// message: it can only ever belong to this reply.
+		m.turnAttribution = msg.attribution
+		m.turnID = msg.turn
 		i := m.appendEntry("assistant", msg.text)
 		// Attach this turn's reported usage directly: the answer on screen
 		// and its metadata stay together even before any refresh.
 		if reported != nil && reported.HasUsage {
 			m.attachMeta(i, turnFromStats(*reported))
 		}
+		m.attachAttribution(i)
 		// The prompt was collapsed to make room for the answer. Now
 		// that the answer is here, the prompt opens again.
 		m.expandAfterTurn()
@@ -993,6 +1087,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case skillDecisionMsg:
 		d := msg.decision
 		m.lastSkill = &d
+		m.turnID = msg.turn
 		return m, nil
 	case writeResultMsg:
 		return m.updateWrite(msg)
@@ -1105,6 +1200,9 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.fitComposer()
 	m.streamID++
 	id := m.streamID
+	// A new turn starts with no attribution: whatever the previous turn
+	// used says nothing about this one.
+	m.turnAttribution = nil
 	i := m.appendEntry("user", input)
 	// A long prompt is collapsed while HAL answers: the answer is what
 	// the operator wants to read. The collapse is temporary and the
@@ -1731,8 +1829,8 @@ func (m *Model) renderEntry(i int) {
 			rows = append(rows, indent+line)
 		}
 		e.deco = nil
-		if e.hasMeta {
-			rows = append(rows, m.metaLine(e.meta))
+		if e.hasMeta || e.attribution != nil {
+			rows = append(rows, m.metaLine(e.meta, e.attribution))
 			// The metadata line is interface, not answer: it stays on
 			// screen but is never part of a selection.
 			e.deco = decorationRows(len(rows))
@@ -1802,14 +1900,41 @@ func (e entry) isDecoration(row int) bool {
 }
 
 // metaLine renders one assistant turn's completion metadata: wall-clock
-// duration and provider-reported counts. It is display only — the entry
-// text, and therefore /copy and the model context, never contains it.
-func (m Model) metaLine(t usage.Turn) string {
-	line := formatDuration(t.Duration) + " · " + compactTokens(t.Input) + " in / " + compactTokens(t.Output) + " out"
+// duration, provider-reported counts and the skill credit.
+//
+// It is display only — the entry text, and therefore /copy, the mouse
+// selection and the model context, never contains it.
+func (m Model) metaLine(t usage.Turn, a *session.Attribution) string {
+	var parts []string
+	if t.Reported {
+		parts = append(parts, formatDuration(t.Duration)+" · "+
+			compactTokens(t.Input)+" in / "+compactTokens(t.Output)+" out")
+	}
+	if label := attributionLabel(a); label != "" {
+		parts = append(parts, label)
+	}
+	line := strings.Join(parts, " · ")
 	if !m.color {
 		return line
 	}
 	return m.theme.styles().footer.Render(line)
+}
+
+// attachAttribution credits the answer with the skills that shaped it.
+//
+// The credit arrived with the answer, so it belongs to this reply and to
+// no other: a turn that was cancelled, a turn that failed and an answer
+// from an earlier exchange all leave the reply uncredited.
+func (m *Model) attachAttribution(i int) {
+	if m.turnAttribution == nil {
+		return
+	}
+	if i < 0 || i >= len(m.entries) {
+		return
+	}
+	m.entries[i].attribution = m.turnAttribution
+	m.renderEntry(i)
+	m.renderConversation()
 }
 
 // collapseHint renders the collapsed/expanded affordance aligned with the

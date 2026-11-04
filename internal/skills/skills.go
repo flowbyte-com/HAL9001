@@ -15,6 +15,8 @@ package skills
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +42,12 @@ const DefaultTimeout = 10 * time.Second
 // inventory query: it carries the activation guidance but not the
 // instructions themselves.
 type Entry struct {
+	// ID is the store's own identifier for the skill, such as
+	// "skill:humanize-text-v1.0.1". It is stable for the lifetime of
+	// that version.
+	ID string
+	// Name is the skill's name. A skill is always read by name, so the
+	// name is the identity that survives an update.
 	Name      string
 	Version   string
 	WhenToUse string
@@ -50,12 +58,44 @@ type Entry struct {
 // Skill is one loaded skill: the instructions and the hard constraints
 // that come with them.
 type Skill struct {
-	Name        string
-	Version     string
+	// ID is the store's identifier for the exact version that was read.
+	ID string
+	// Name is the skill's name.
+	Name string
+	// Version is the version that was read.
+	Version string
+	// Hash is the content hash of the instructions that were supplied.
+	// It is what makes an attribution historical: a later update of the
+	// skill in the store cannot change what an earlier turn used.
+	Hash        string
 	Domain      string
 	WhenToUse   string
 	Body        string
 	Constraints []string
+}
+
+// ContentHash is the hash of the exact instructions of a skill.
+//
+// It covers the body and the hard constraints, which are the whole of
+// what the store supplied. The hash is taken over the bytes that went
+// into the request, so an attribution recorded against it stays true
+// after the skill is updated in the store.
+func ContentHash(body string, constraints []string) string {
+	h := sha256.New()
+	h.Write([]byte(body))
+	for _, c := range constraints {
+		h.Write([]byte{0})
+		h.Write([]byte(c))
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// Hash is the content hash of this skill's instructions.
+func (s Skill) ContentHash() string {
+	if s.Hash != "" {
+		return s.Hash
+	}
+	return ContentHash(s.Body, s.Constraints)
 }
 
 // Catalogue is the set of skills MPM offers.
@@ -163,6 +203,7 @@ func (c *Client) List(ctx context.Context) ([]Entry, error) {
 			continue
 		}
 		out = append(out, Entry{
+			ID:        s.ID,
 			Name:      name,
 			Version:   s.Version,
 			WhenToUse: s.WhenToUse,
@@ -197,8 +238,10 @@ func (c *Client) Read(ctx context.Context, name string) (Skill, error) {
 		return Skill{}, fmt.Errorf("skills: %q could not be read: %s", name, env.Error)
 	}
 	return Skill{
+		ID:          env.ID,
 		Name:        env.Name,
 		Version:     env.Version,
+		Hash:        ContentHash(env.Body, env.Constraints),
 		Domain:      env.Domain,
 		WhenToUse:   env.WhenToUse,
 		Body:        env.Body,

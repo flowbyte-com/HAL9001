@@ -7,10 +7,13 @@ package session
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +33,72 @@ type Message struct {
 	Role      Role      `json:"role"`
 	Content   string    `json:"content"`
 	Timestamp time.Time `json:"ts"`
+	// TurnID identifies the exchange this message belongs to. It is
+	// minted once, when the exchange starts, and never changes: it is
+	// what an attribution binds to, so the attribution of an answer
+	// stays with that answer across reopening.
+	TurnID string `json:"turn_id,omitempty"`
+	// Attribution names the skills whose instructions shaped this
+	// answer. It is metadata about the turn, never part of Content:
+	// the content is exactly what the model produced.
+	Attribution *Attribution `json:"attribution,omitempty"`
+}
+
+// Attribution records which skills shaped one assistant answer.
+//
+// It is written once, at the end of the turn, with the version and the
+// content hash of the instructions that were actually supplied to the
+// model. A later update of a skill in the store therefore cannot change
+// what an earlier answer is credited with.
+type Attribution struct {
+	// TurnID is the exchange the attribution belongs to. It repeats the
+	// message's own turn id so a mismatch is detectable rather than
+	// silent.
+	TurnID string `json:"turn_id"`
+	// Skills are the skills whose instructions were loaded into the
+	// request that produced the answer. A skill that failed to load is
+	// not here: it never reached the model.
+	Skills []AttributedSkill `json:"skills,omitempty"`
+	// Source says how the skill was chosen.
+	Source string `json:"source,omitempty"`
+}
+
+// AttributedSkill is one skill credited with shaping an answer.
+type AttributedSkill struct {
+	// ID is the store's identifier for the exact version that was read.
+	ID string `json:"id,omitempty"`
+	// Name is the skill's name.
+	Name string `json:"name"`
+	// Source says how it was chosen: automatic, explicit or continued.
+	Source string `json:"source,omitempty"`
+	// Version is the version that was supplied.
+	Version string `json:"version,omitempty"`
+	// ContentHash is the hash of the instructions that were supplied.
+	ContentHash string `json:"content_hash,omitempty"`
+}
+
+// Turn identifies one exchange: the operator's message, the answer and
+// the metadata that belongs to them.
+type Turn struct {
+	// ID is the stable identity of the exchange.
+	ID string
+	// Attribution is the record of the skills that shaped the answer.
+	// It is nil for an exchange that used none.
+	Attribution *Attribution
+}
+
+// NewTurnID mints a fresh, opaque turn identity.
+//
+// The identity is opaque on purpose: it names an exchange, it says
+// nothing about what was said in it.
+func NewTurnID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// A turn identity that cannot be random is still better than
+		// none: the clock is unique enough within one session.
+		return "turn-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "turn-" + hex.EncodeToString(b[:])
 }
 
 // Store persists one session's messages.
@@ -192,6 +261,17 @@ func Open(dir, session string) (*Store, error) {
 // Append records one message. Empty content is rejected: the store keeps
 // the conversation, not padding.
 func (s *Store) Append(role Role, content string) (Message, error) {
+	return s.AppendTurn(role, content, Turn{})
+}
+
+// AppendTurn records one message together with the exchange it belongs
+// to.
+//
+// The turn identity and the attribution are stored beside the content,
+// never inside it: the content stays exactly what the model produced, so
+// a transcript of the conversation carries no interface metadata inside
+// the messages themselves.
+func (s *Store) AppendTurn(role Role, content string, turn Turn) (Message, error) {
 	if strings.TrimSpace(content) == "" {
 		return Message{}, fmt.Errorf("session: refusing to store empty content")
 	}
@@ -200,7 +280,21 @@ func (s *Store) Append(role Role, content string) (Message, error) {
 	default:
 		return Message{}, fmt.Errorf("session: unknown role %q", role)
 	}
-	msg := Message{Role: role, Content: content, Timestamp: time.Now().UTC()}
+	msg := Message{
+		Role:      role,
+		Content:   content,
+		Timestamp: time.Now().UTC(),
+		TurnID:    turn.ID,
+	}
+	if turn.Attribution != nil {
+		// The attribution repeats the turn identity it belongs to, so a
+		// record that was moved by mistake is detectable.
+		a := *turn.Attribution
+		if a.TurnID == "" {
+			a.TurnID = turn.ID
+		}
+		msg.Attribution = &a
+	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return Message{}, fmt.Errorf("session: %w", err)

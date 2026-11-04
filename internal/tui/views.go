@@ -840,6 +840,12 @@ func (m Model) diagRows() []string {
 		m.Composer().Width(), m.Composer().Height(), m.Composer().ScrollYOffset()))
 	if d, ok := m.lastRouting(); ok {
 		composer("skill", skillSummary(d))
+		// The routing record is broken out, because the four states are
+		// different facts: what was considered, what was chosen, what
+		// was read, and what really shaped the answer.
+		for _, fact := range skillFacts(d, m.turnAttribution) {
+			rows = append(rows, "  "+padTo(st.active.Render(fact.Label), 16)+fact.Value)
+		}
 	}
 	s := m.lastStats
 	if s == nil {
