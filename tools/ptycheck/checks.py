@@ -896,6 +896,92 @@ def approval_checks():
             shutil.rmtree(workspace_dir)
 
 
+def skills_checks():
+    """Skills: routing, the catalogue and the operator's override.
+
+    The checks run against a temporary MPM workspace holding the two
+    shipped skills, so they never depend on the operator's own store.
+    """
+    import shutil
+    import tempfile
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    source = os.path.join(root, "skills")
+    if not os.path.isdir(source):
+        check("skills: the skill sources are present", False, source)
+        return
+    if shutil.which("mpm") is None:
+        check("skills: mpm is available", False, "mpm was not found")
+        return
+
+    workspace = tempfile.mkdtemp(prefix="hal-mpm-")
+    previous = os.environ.get("MPM_WORKSPACE")
+    os.environ["MPM_WORKSPACE"] = workspace
+    try:
+        for name in ("system-prompt-writer", "humanize-text"):
+            path = os.path.join(source, name + ".md")
+            result = subprocess.run(
+                ["mpm", "save-skill", "--file", path],
+                capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                check("skills: %s is installed" % name, False, result.stderr[-300:])
+                return
+        check("skills: the two skills are installed", True)
+
+        # The catalogue is reachable through the command line.
+        listing = subprocess.run(
+            ["mpm", "call", "mpm_skills", "--payload",
+             '{"action":"list","params":{"scope":"all"}}'],
+            capture_output=True, text=True, timeout=120)
+        check("skills: the catalogue lists them",
+              "system-prompt-writer" in listing.stdout and
+              "humanize-text" in listing.stdout, listing.stdout[-300:])
+
+        # /skills lists what is available.
+        text = render(run([(1.6, b"/skills\r"), (1.0, b"")],
+                          timeout=9.0, fresh=True, session="skillcheck")).text()
+        check("skills: /skills lists the skills",
+              "system-prompt-writer" in text and "humanize-text" in text, text)
+        check("skills: /skills shows the routing mode", "routing" in text, text)
+
+        # A human-directed request uses the humanize skill.
+        text = render(run([(1.6, b"Write an email to my landlord.\r"), (2.0, b"")],
+                          timeout=11.0, fresh=True, session="skillcheck")).text()
+        check("skills: an email request uses humanize-text",
+              "humanize-text" in text, text)
+
+        # An ordinary question uses none.
+        text = render(run([(1.6, b"What is the capital of Iceland?\r"), (2.0, b"")],
+                          timeout=11.0, fresh=True, session="skillcheck")).text()
+        check("skills: an ordinary question uses no skill",
+              "skill:" not in text, text)
+
+        # An agent-directed request uses the other skill.
+        text = render(run([(1.6, b"Write a system prompt for a coding agent.\r"), (2.0, b"")],
+                          timeout=11.0, fresh=True, session="skillcheck")).text()
+        check("skills: an agent prompt uses system-prompt-writer",
+              "system-prompt-writer" in text, text)
+
+        # The operator can pin a skill. The capture is short so the
+        # transient notice is still on screen.
+        text = render(run([(1.6, b"/skill humanize-text\r"), (0.4, b"")],
+                          timeout=3.6, fresh=True, session="skillcheck")).text()
+        check("skills: /skill pins a skill", "humanize-text" in text, text)
+
+        # The diagnostics show the selection.
+        text = render(run([(1.6, b"Write an email to my landlord.\r"), (2.0, b"")],
+                          timeout=12.0, fresh=True, session="skillcheck")).text()
+        check("skills: the reply carries no routing instruction",
+              "Task guidance" not in text and "does not change what you are allowed" not in text,
+              text)
+    finally:
+        if previous is None:
+            os.environ.pop("MPM_WORKSPACE", None)
+        else:
+            os.environ["MPM_WORKSPACE"] = previous
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 def composer_mouse_checks():
     """The wheel over the composer scrolls the draft instead of the
     conversation, and the caret stays where it was."""
@@ -1100,6 +1186,7 @@ def main():
     draft_notice_checks()
     footer_hint_checks()
     approval_checks()
+    skills_checks()
     composer_mouse_checks()
 
     # Common terminal sizes keep the frame the right size.

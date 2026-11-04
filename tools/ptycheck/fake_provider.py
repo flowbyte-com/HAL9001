@@ -27,6 +27,20 @@ SAVE_BODY = (
 
 SAVE_RE = re.compile(r"\[\[save\s+([^\]]+)\]\]")
 
+# SKILL_RE finds the skill name in a composed system instruction.
+SKILL_RE = re.compile(r"MPM skill: ([A-Za-z0-9_.-]+)")
+
+
+def applied_skill(request):
+    """Return the name of the skill loaded into the request, if any."""
+    for message in request.get("messages", []):
+        if message.get("role") != "system":
+            continue
+        found = SKILL_RE.search(message.get("content", ""))
+        if found:
+            return found.group(1)
+    return ""
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -56,10 +70,18 @@ class Handler(BaseHTTPRequestHandler):
             self.propose_write(save.group(1))
             return
 
+        # A skill in the system instruction means the guidance was loaded
+        # for this request. The reply names it, so the checks can see
+        # which skill the interface actually used.
+        applied = applied_skill(request)
+
         # A prompt that asks the provider to hold the line is answered
         # slowly, so the interface can be watched while it is working.
         hold = "hold the line" in last
-        for i, chunk in enumerate(["I read ", "your message: ", last[:40], "."]):
+        chunks = ["I read ", "your message: ", last[:40], "."]
+        if applied:
+            chunks.append(" [skill: " + applied + "]")
+        for i, chunk in enumerate(chunks):
             time.sleep(1.2 if hold and i == 0 else (0.4 if hold else 0.05))
             self.event({"choices": [{"delta": {"content": chunk}, "index": 0}]})
         self.event({"choices": [{"delta": {}, "finish_reason": "stop"}]})
