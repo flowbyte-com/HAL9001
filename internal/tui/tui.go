@@ -20,6 +20,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/rivo/uniseg"
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
@@ -46,12 +47,17 @@ const (
 	keyEnter  = "enter"
 )
 
-// The draft keys. The footer hint and the clear notice are built from
+// The draft keys. The hint row and the clear notice are built from
 // these, so a rebound key can never leave a stale hint on screen.
 const (
 	keyClearDraft   = "ctrl+u"
 	keyRestoreDraft = "ctrl+z"
 )
+
+// keyNewline is the chord the hint row offers for a line break. It is
+// the reliable one: alt+enter and shift+enter depend on what the
+// terminal reports, ctrl+j does not.
+const keyNewline = "ctrl+j"
 
 // The approval keys. Chords on purpose: a stray letter, typed text or a
 // paste can never decide a write request, only a deliberate chord in the
@@ -66,7 +72,7 @@ const (
 // CR on xterm-compatible terminals; shift+enter requires the Kitty
 // keyboard protocol and is simply a plain Enter elsewhere.
 var newlineKeys = map[string]bool{
-	"ctrl+j":      true,
+	keyNewline:    true,
 	"alt+enter":   true,
 	"shift+enter": true,
 }
@@ -1502,7 +1508,8 @@ func (m *Model) sizePanes() bool {
 	m.composer.SetHeight(max(m.draftRows(), m.frame.composer))
 	m.viewport.SetWidth(m.width)
 	m.viewport.SetHeight(m.frame.viewport)
-	w := m.width - 2
+	// The composer text sits one cell inside its border on each side.
+	w := m.width - 4
 	if w < 1 {
 		w = 1
 	}
@@ -1677,23 +1684,28 @@ type chatFrame struct {
 	viewport int
 	composer int
 	suggest  int
-	blank    bool
 	border   bool
-	rule     bool
+	divider  bool
+	hint     bool
 	notice   bool
 }
 
 // chrome counts every row that is neither the viewport nor the composer
-// text: header, rule, footer, notice, separator, suggestions, borders.
+// text: header, rule, footer, notice, hint, divider, suggestions,
+// borders.
+//
+// The hint row and the divider are reserved: they exist whether or not
+// they have anything to say, so the composer and the footer never move
+// when their contents change.
 func (f chatFrame) chrome() int {
 	n := 2 // header + footer
-	if f.rule {
-		n++
-	}
 	if f.notice {
 		n++
 	}
-	if f.blank {
+	if f.hint {
+		n++
+	}
+	if f.divider {
 		n++
 	}
 	n += f.suggest
@@ -1706,15 +1718,16 @@ func (f chatFrame) chrome() int {
 func (f chatFrame) total() int { return f.chrome() + f.composer + f.viewport }
 
 // computeChatFrame fits the frame to the terminal. When space runs out it
-// gives up the suggestion panel, the separator, the notice, the rules and
-// finally the border — never the header, the composer text or the footer.
+// gives up the suggestion panel, the notice, the hint row, the divider,
+// the rule and finally the border — never the header, the composer text
+// or the footer.
 func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
 	f := chatFrame{
 		composer: desiredComposer,
 		suggest:  suggestions,
-		blank:    true,
 		border:   true,
-		rule:     true,
+		divider:  true,
+		hint:     true,
 		notice:   true,
 	}
 	if f.composer < 1 {
@@ -1729,12 +1742,12 @@ func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
 			f.composer--
 		case f.suggest > 0:
 			f.suggest = 0
-		case f.blank:
-			f.blank = false
 		case f.notice:
 			f.notice = false
-		case f.rule:
-			f.rule = false
+		case f.hint:
+			f.hint = false
+		case f.divider:
+			f.divider = false
 		case f.border:
 			f.border = false
 		default:
@@ -2226,17 +2239,19 @@ func (m Model) chatLayout() []string {
 	f := m.frame
 	rows := make([]string, 0, m.height)
 	rows = append(rows, m.headerRow())
-	if f.rule {
-		rows = append(rows, m.rule())
-	}
 	rows = append(rows, m.highlightSelection(m.viewportRows(f.viewport))...)
-	if f.blank {
-		rows = append(rows, "")
-	}
 	if f.suggest > 0 {
 		rows = append(rows, m.suggestionRows(f.suggest)...)
 	}
 	rows = append(rows, m.composerBlock(f.composer, f.border)...)
+	// One reserved row of keyboard hints sits immediately below the
+	// composer, and a thin divider separates the frame from the footer.
+	if f.hint {
+		rows = append(rows, m.hintRow())
+	}
+	if f.divider {
+		rows = append(rows, m.rule())
+	}
 	rows = append(rows, m.statusBar())
 	if f.notice {
 		rows = append(rows, m.noticeRow())
@@ -2360,17 +2375,19 @@ func (m Model) fitToHeight(rows []string) []string {
 	return rows
 }
 
-// composerBlock renders the bordered composer. The frame is one cell of
-// theme rule colour; the textarea keeps its own cursor and placeholder
-// styling inside it.
+// composerBlock renders the bordered composer.
+//
+// The border is drawn in the theme's muted rule colour and the text sits
+// one cell inside it, so the draft is not flush against the frame. The
+// textarea keeps its own cursor and placeholder styling inside.
 func (m Model) composerBlock(ch int, border bool) []string {
 	inner := m.composerWindow(ch)
 	if !border {
 		return inner
 	}
 	width := m.width
-	if width < 4 {
-		width = 4
+	if width < 6 {
+		width = 6
 	}
 	edge := strings.Repeat("─", width-2)
 	top := "╭" + edge + "╮"
@@ -2385,7 +2402,7 @@ func (m Model) composerBlock(ch int, border bool) []string {
 	rows := make([]string, 0, ch+2)
 	rows = append(rows, top)
 	for _, line := range inner {
-		rows = append(rows, side+m.fitWidth(line, width-2)+side)
+		rows = append(rows, side+" "+m.fitWidth(line, width-4)+" "+side)
 	}
 	rows = append(rows, bottom)
 	return rows
@@ -2461,20 +2478,121 @@ func (m Model) fitWidth(line string, width int) string {
 
 // headerRow renders the fixed header: the eye and the name, plus the
 // conversation title when one is known.
+//
+// The title is shortened to whatever room the terminal has. The header
+// is one row: a title that wrapped would push the conversation down, and
+// the immutable session identity stays available in the diagnostics.
 func (m Model) headerRow() string {
 	st := m.theme.styles()
 	eye := "●"
+	identity := eye + " HAL9001"
 	title := strings.TrimSpace(m.title)
 	if title == "" {
 		if !m.color {
-			return eye + " HAL9001"
+			return identity
 		}
-		return st.header.Render(eye + " HAL9001")
+		return st.header.Render(identity)
 	}
+	room := m.width - lipgloss.Width(identity) - len(" · ")
+	if room < 4 {
+		room = 4
+	}
+	title = truncateCells(title, room)
 	if !m.color {
-		return eye + " HAL9001 · " + title
+		return identity + " · " + title
 	}
-	return st.header.Render(eye+" HAL9001") + " " + st.footer.Render("· "+title)
+	return st.header.Render(identity) + " " + st.footer.Render("· "+title)
+}
+
+// truncateCells shortens a string to at most n display cells, marking
+// the cut with an ellipsis.
+//
+// The count is in cells, not bytes: a title of wide characters would
+// otherwise be cut in the middle of one.
+func truncateCells(s string, n int) string {
+	if n < 1 {
+		return ""
+	}
+	if lipgloss.Width(s) <= n {
+		return s
+	}
+	if n == 1 {
+		return "…"
+	}
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := uniseg.StringWidth(string(r))
+		if w+rw > n-1 {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
+	}
+	return b.String() + "…"
+}
+
+// hintRow is the one reserved row below the composer: the keys that act
+// on the draft right now.
+//
+// The row is always there. Only its text changes, so the composer and
+// the footer never move when the hint does. The hint is about the
+// composer alone: it never depends on the permission state, so a write
+// request cannot change the keys the operator is being offered.
+func (m Model) hintRow() string {
+	text := m.hintText()
+	if !m.color {
+		return text
+	}
+	return m.theme.styles().footer.Render(text)
+}
+
+// hintText is the contextual hint for the current state of the draft.
+//
+// The three states are the ones the composer can be in: empty, holding
+// a draft, and empty because a draft was cleared and can be restored.
+func (m Model) hintText() string {
+	variants := m.hintVariants()
+	for _, v := range variants {
+		if m.width < 1 || lipgloss.Width(v) <= m.width {
+			return v
+		}
+	}
+	// Even the shortest form is too wide: it is cut, not wrapped.
+	return truncateCells(variants[len(variants)-1], m.width)
+}
+
+// hintVariants lists the hint from longest to shortest.
+//
+// A narrow terminal takes the next one down, so the keys that matter
+// most are never the ones that get cut: the editing key survives, and
+// the help reference is the first thing to go.
+func (m Model) hintVariants() []string {
+	clear, restore := keyName(keyClearDraft), keyName(keyRestoreDraft)
+	send := "Enter send · " + keyName(keyNewline) + " newline"
+	switch {
+	case m.draftActive():
+		return []string{
+			send + " · " + clear + " clear · /help",
+			"Enter send · " + clear + " clear · /help",
+			clear + " clear · /help",
+			clear + " clear",
+			clear,
+		}
+	case m.undoValid:
+		return []string{
+			"Draft cleared · " + restore + " restore",
+			restore + " restore",
+			restore,
+		}
+	default:
+		return []string{
+			send + " · /help",
+			"Enter send · /help",
+			"Enter send",
+			"/help",
+		}
+	}
 }
 
 // noticeRow renders the status line under the footer. The row is always
@@ -2515,6 +2633,14 @@ func (m Model) rule() string {
 	return m.theme.styles().rule.Render(line)
 }
 
+// statusBar renders the footer: the permission state on the left, the
+// session's token usage in the middle and the model with its reasoning
+// effort on the right.
+//
+// The permission state is never given up, and it does not depend on the
+// draft: 444 stays on screen while the operator is typing. Narrow
+// terminals shed detail in a fixed order — the effort, then the token
+// usage, then the model — so the row never wraps and never grows.
 func (m Model) statusBar() string {
 	st := m.theme.styles()
 	model := strings.TrimSpace(m.model)
@@ -2526,28 +2652,33 @@ func (m Model) statusBar() string {
 	if effort != "" {
 		right = strings.TrimSpace(model + " · " + effort)
 	}
-	// The left side is contextual: the keys that act on a draft while
-	// there is one, the undo hint while a cleared draft can be restored,
-	// and the permission line when there is nothing to act on. Narrow
-	// terminals shed detail in this order: effort, then the token usage,
-	// then part of the hint, then the model — the row never wraps and
-	// never grows.
-	for _, c := range m.footerCandidates(right, model) {
+	left := m.permissionLabel()
+	if m.writeState == writeWriting {
+		left = left + " · " + m.writeStatePath()
+	}
+	muted := func(s string) string {
+		if s == "" {
+			return ""
+		}
+		return st.footer.Render(s)
+	}
+	// A write that needs the operator is shown prominently; the ordinary
+	// read-only state stays quiet.
+	styledLeft := muted(left)
+	if m.writeState != writeIdle {
+		styledLeft = st.active.Render(left)
+	}
+	for _, c := range m.footerCandidates(styledLeft, muted(m.usageLabel()), muted(right), muted(model)) {
 		if bar, ok := fitStatusBar(c.left, c.mid, c.right, m.width); ok {
-			if !m.color {
-				return bar
-			}
-			return st.footer.Render(bar)
+			return bar
 		}
 	}
-	bar := m.footerHint()
+	// Nothing fits: the permission state alone, shortened.
+	bar := m.permissionLabel()
 	if m.width > 0 {
-		bar = lipgloss.NewStyle().MaxWidth(m.width).Render(bar)
+		bar = truncateCells(bar, m.width)
 	}
-	if !m.color {
-		return bar
-	}
-	return st.footer.Render(bar)
+	return muted(bar)
 }
 
 // footerCandidate is one way to lay out the footer: a left hint, an
@@ -2556,22 +2687,16 @@ type footerCandidate struct{ left, mid, right string }
 
 // footerCandidates lists the footer layouts from richest to plainest.
 //
-// The order is the order detail is given up: the effort, then the token
-// usage, then part of the hint, and only then the model. The shortest
-// hint is the last thing to go. The empty-draft list is exactly the list
-// the footer has always used.
-func (m Model) footerCandidates(right, model string) []footerCandidate {
-	usage := m.usageLabel()
-	hints := m.footerHints()
-	out := []footerCandidate{
-		{hints[0], usage, right},
-		{hints[0], usage, model},
+// The order is the order detail is given up: the reasoning effort, then
+// the token usage, then the model. The permission state is the last
+// thing to go, and it never goes.
+func (m Model) footerCandidates(left, usage, right, model string) []footerCandidate {
+	return []footerCandidate{
+		{left, usage, right},
+		{left, usage, model},
+		{left, "", model},
+		{left, "", ""},
 	}
-	for _, left := range hints {
-		out = append(out, footerCandidate{left, "", model})
-	}
-	last := hints[len(hints)-1]
-	return append(out, footerCandidate{last, "", ""})
 }
 
 // footerHints is the left-hand shortcut text for the current draft, from
@@ -2661,6 +2786,11 @@ func (m Model) usageLabel() string {
 // fitStatusBar lays out left, an optional middle section and right within
 // width, reporting whether they fit.
 //
+// The middle section is centred in the room between the two ends, so the
+// three parts read as three parts. When there is not enough room for
+// that, the middle section sits next to the left one instead: the row
+// never wraps and never grows.
+//
 // Widths are display cells, not bytes: the separators are multi-byte and
 // a byte count would leave the right section a cell short for each one.
 func fitStatusBar(left, mid, right string, width int) (string, bool) {
@@ -2685,11 +2815,20 @@ func fitStatusBar(left, mid, right string, width int) (string, bool) {
 		}
 		return left + " " + mid, true
 	default:
-		pad := width - l - m - r - 1
-		if pad < 1 {
+		space := width - l - r
+		if space < m+1 {
 			return "", false
 		}
-		return left + " " + mid + strings.Repeat(" ", pad) + right, true
+		leftGap := (space - m) / 2
+		if leftGap < 1 {
+			leftGap = 1
+		}
+		rightGap := space - m - leftGap
+		if rightGap < 1 {
+			return "", false
+		}
+		return left + strings.Repeat(" ", leftGap) + mid +
+			strings.Repeat(" ", rightGap) + right, true
 	}
 }
 

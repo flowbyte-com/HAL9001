@@ -65,20 +65,42 @@ output is hidden while HAL runs and the previous screen is restored on
 exit. The frame is assembled as exactly one row per terminal row, so the
 terminal never scrolls.
 
-Layout: a one-line `● HAL9001` header, a rule, the scrollable Markdown
-conversation, exactly one blank row, an optional command suggestion
-panel, a bordered composer with one text row by default (growing to
-five), a one-line status footer and a notice line. The footer's left
-side follows the draft — the permission line (`444 READ ONLY · /help`)
-when the composer is empty, the editing keys while it holds text, and the
-undo hint while a cleared draft can be restored — and its right side is
-the model and effort. The footer is one row at every width: the layout
-drops the effort, then the token usage, then part of the hint, then the
-model, so it never wraps and never moves the conversation. A `chatFrame`
-resolves that geometry once per size change; on short terminals it gives
-up the suggestion panel, the separator, the notice, the rules and finally
-the border — never the header, the composer text or the footer. Overlays
-replace the conversation region with their panel.
+Layout: a one-line `● HAL9001` header carrying the session title, the
+scrollable Markdown conversation, an optional command suggestion panel, a
+bordered composer with one text row by default (growing to five), one
+reserved row of keyboard hints, a thin divider, a one-line status footer
+and a notice line.
+
+The frame has one rule, and it is above the footer. The header carries
+the identity marker and the title — shortened to whatever room the
+terminal has, because the header is one row and the immutable session
+identity stays in the diagnostics — and the conversation follows it
+directly. Moving the rule rather than adding one is deliberate: the
+conversation keeps the height it had, and the suggestion panel keeps
+its room on short terminals.
+
+The hint row below the composer is about the composer alone. It offers
+the keys that act on the draft right now — the plain keys when the
+composer is empty, the editing keys while it holds text, the undo hint
+while a cleared draft can be restored — and it never depends on the
+permission state, so a write request cannot change the keys the operator
+is being offered. The row is reserved: only its text changes, so the
+composer and the footer never move. A narrow terminal takes the next
+shorter form of the hint rather than clipping the row, so the key that
+matters most is never the one that gets cut.
+
+The footer is split in three: the permission on the left, the session's
+token usage in the middle — only where it is known — and the model with
+its reasoning effort on the right. The permission is never given up:
+`444 READ ONLY` stays on screen while the operator types, and a write
+that needs a decision is shown prominently instead. The footer is one row
+at every width: the layout drops the effort, then the token usage, then
+the model, so it never wraps and never moves the conversation.
+
+A `chatFrame` resolves that geometry once per size change; on short
+terminals it gives up the suggestion panel, the notice, the hint row, the
+divider and finally the border — never the header, the composer text or
+the footer. Overlays replace the conversation region with their panel.
 
 Scrolling is keyboard-driven (`PgUp`/`PgDn`, `Home`/`End`) with an
 wheel: `View.MouseMode` is on unless `--no-mouse` or

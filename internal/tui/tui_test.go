@@ -517,12 +517,10 @@ func TestComposerBorderAndThreeRows(t *testing.T) {
 	if w := lipgloss.Width(rows[top+1]); w != 80 {
 		t.Errorf("composer row width = %d, want 80", w)
 	}
-	// Exactly one blank row between the conversation and the border.
-	if top < 1 || strings.TrimSpace(rows[top-1]) != "" {
-		t.Errorf("expected one blank row above the composer border:\n%s", strings.Join(rows, "\n"))
-	}
-	if top >= 2 && strings.TrimSpace(rows[top-2]) == "" {
-		t.Error("more than one blank row above the composer")
+	// The border follows the conversation directly: the frame has no
+	// filler row, so the conversation keeps its height.
+	if top < 1 || strings.TrimSpace(rows[top-1]) == "" {
+		t.Errorf("expected the conversation above the composer border:\n%s", strings.Join(rows, "\n"))
 	}
 }
 

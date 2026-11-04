@@ -94,8 +94,10 @@ func TestSelectionAutoScrollsUp(t *testing.T) {
 	if m.selFocus.row >= focus.row {
 		t.Errorf("the selection did not grow upwards: row %d -> %d", focus.row, m.selFocus.row)
 	}
-	if m.selFocus.row != 21 {
-		t.Errorf("the focus is on row %d, want 21", m.selFocus.row)
+	// The focus follows the content: three rows up means three rows
+	// earlier in the conversation.
+	if want := focus.row - 3; m.selFocus.row != want {
+		t.Errorf("the focus is on row %d, want %d", m.selFocus.row, want)
 	}
 }
 
@@ -127,8 +129,8 @@ func TestSelectionAutoScrollsDown(t *testing.T) {
 	if m.selFocus.row <= focus.row {
 		t.Errorf("the selection did not grow downwards: row %d -> %d", focus.row, m.selFocus.row)
 	}
-	if m.selFocus.row != 18 {
-		t.Errorf("the focus is on row %d, want 18", m.selFocus.row)
+	if want := focus.row + 3; m.selFocus.row != want {
+		t.Errorf("the focus is on row %d, want %d", m.selFocus.row, want)
 	}
 }
 
@@ -151,9 +153,10 @@ func TestSelectionAutoScrollCopiesOffScreenText(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		m = scrollTick(m)
 	}
+	first := m.selFocus.row
 	m = releasePointer(m, entryPrefixCells, m.viewportTop())
 
-	want := rowsText(m, 21, 30)
+	want := rowsText(m, first, 30)
 	if copied != want {
 		t.Errorf("copied:\n%q\nwant:\n%q", copied, want)
 	}
@@ -189,9 +192,10 @@ func TestSelectionAutoScrollCopiesOffScreenTextDown(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		m = scrollTick(m)
 	}
+	last := m.selFocus.row
 	m = releasePointer(m, textEnd, bottom)
 
-	want := rowsText(m, 5, 18)
+	want := rowsText(m, 5, last)
 	if copied != want {
 		t.Errorf("copied:\n%q\nwant:\n%q", copied, want)
 	}

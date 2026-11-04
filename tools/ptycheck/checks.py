@@ -54,7 +54,7 @@ def write_scroll_fixture(theme=None):
         fh.write(json.dumps({"role": "assistant", "content": body}) + "\n")
 
 
-def first_text(text, skip=2):
+def first_text(text, skip=1):
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     return lines[skip] if len(lines) > skip else ""
 
@@ -453,21 +453,21 @@ def selection_checks():
     it through OSC 52. The copied text must be the reply's own text: no
     interface labels, no colours."""
     write_scroll_fixture()
-    # SGR press and drag over three rows of the stored reply: row 12
-    # holds the "## Section 15" heading, rows 13 to 16 the paragraph
-    # below it.
-    dragging = run([(2.5, b"\x1b[<0;9;12M"), (0.8, b"\x1b[<32;40;15M")],
+    # SGR press and drag over three rows of the stored reply: row 10
+    # holds the "## Section 15" heading, rows 11 to 15 the paragraph
+    # below it. The conversation starts directly under the header.
+    dragging = run([(2.5, b"\x1b[<0;9;11M"), (0.8, b"\x1b[<32;40;14M")],
                    timeout=9.0, fresh=False, session="scrollfixture")
     spans = marked_spans(dragging.decode("utf-8", "replace"))
-    conv = [s for s in spans if 12 <= s[0] <= 16]
+    conv = [s for s in spans if 10 <= s[0] <= 15]
     check("mouse: the selection is highlighted while it is dragged",
           bool(conv), str(spans[:6]))
     check("mouse: the mark never starts in the margin",
           all(s[1] > 1 for s in conv), str(spans[:6]))
     check("mouse: the mark covers the whole styled line",
           any("Section 15" in s[2] for s in conv), str(spans[:6]))
-    raw = run([(2.5, b"\x1b[<0;9;12M"), (0.5, b"\x1b[<32;40;15M"),
-               (0.5, b"\x1b[<0;40;15m")], timeout=9.0,
+    raw = run([(2.5, b"\x1b[<0;9;11M"), (0.5, b"\x1b[<32;40;14M"),
+               (0.5, b"\x1b[<0;40;14m")], timeout=9.0,
               fresh=False, session="scrollfixture")
     text = raw.decode("utf-8", "replace")
     found = re.search(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07", text)
@@ -491,13 +491,13 @@ def autoscroll_checks():
     comes into view."""
     write_scroll_fixture()
 
-    # The conversation starts at row 3 (the header and the rule are
-    # above it) and is sixteen rows tall. The drag ends in its top row,
-    # so the history scrolls up while the pointer rests there.
+    # The conversation starts at row 2 (the header is above it) and is
+    # sixteen rows tall. The drag ends in its top row, so the history
+    # scrolls up while the pointer rests there.
     before = run_fixture_text("scrollfixture")
     visible = set(re.findall(r"## Section (\d+)", before))
-    raw = run([(2.5, b"\x1b[<0;9;16M"), (0.4, b"\x1b[<32;9;3M"),
-               (1.2, b""), (0.3, b"\x1b[<0;9;3m")],
+    raw = run([(2.5, b"\x1b[<0;9;15M"), (0.4, b"\x1b[<32;9;2M"),
+               (1.2, b""), (0.3, b"\x1b[<0;9;2m")],
               timeout=10.0, fresh=False, session="scrollfixture")
     text = raw.decode("utf-8", "replace")
     found = re.search(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07", text)
@@ -520,8 +520,8 @@ def autoscroll_checks():
     # The other edge: the pointer rests in the last row of the
     # conversation and the history scrolls down. The wheel moves the
     # view away from the bottom first.
-    raw = run([(2.5, b"\x1b[<64;40;10M" * 6), (0.4, b"\x1b[<0;9;5M"),
-               (0.4, b"\x1b[<32;9;18M"), (1.2, b""), (0.3, b"\x1b[<0;9;18m")],
+    raw = run([(2.5, b"\x1b[<64;40;10M" * 6), (0.4, b"\x1b[<0;9;4M"),
+               (0.4, b"\x1b[<32;9;16M"), (1.2, b""), (0.3, b"\x1b[<0;9;16m")],
               timeout=11.0, fresh=False, session="scrollfixture")
     text = raw.decode("utf-8", "replace")
     found = re.search(r"\x1b\]52;c;([A-Za-z0-9+/=]+)\x07", text)
@@ -682,8 +682,10 @@ def draft_notice_checks():
           "Draft cleared · Ctrl+Z to restore" in early, early)
     late = render(run([(1.5, b"hi"), (0.5, b"\x15"), (6.5, b"")],
                       timeout=9.0, fresh=True, session="pastecheck")).text()
+    # The hint row keeps saying that the draft can be restored; the
+    # transient notice is the one that says "to restore".
     check("draft: the notice disappears after its interval",
-          "Draft cleared" not in late, late)
+          "Ctrl+Z to restore" not in late, late)
 
     # The composer window scrolls on its own: the wheel over it shows
     # earlier rows without moving the conversation.
@@ -704,47 +706,52 @@ def draft_notice_checks():
 
 
 def footer_hint_checks():
-    """The footer row under the composer is contextual: it offers the keys
-    that act on the draft, then the undo hint, then the minimal line."""
+    """The row below the composer is the contextual hint: it offers the
+    keys that act on the draft, then the undo hint, then the plain keys.
+    The footer below it carries the permission, the usage and the model."""
     def hint(script, cols=100, rows=30, timeout=4.0):
         raw = run(script, cols=cols, rows=rows, timeout=timeout, fresh=True,
                   session="hintcheck")
         return render(raw, cols, rows).text()
 
     empty = hint([(1.5, b"")])
-    check("footer: an empty composer keeps the minimal line",
-          "444 READ ONLY · /help" in empty, empty)
-    check("footer: an empty composer does not offer Ctrl+U",
+    check("hint: an empty composer keeps the plain keys",
+          "Enter send · Ctrl+J newline · /help" in empty, empty)
+    check("hint: an empty composer does not offer Ctrl+U",
           "Ctrl+U" not in empty, empty)
+    check("footer: the permission stays on screen",
+          "444 READ ONLY" in empty, empty)
 
     typed = hint([(1.5, b"hello")])
-    check("footer: typing offers the editing keys",
+    check("hint: typing offers the editing keys",
           "Enter send · Ctrl+J newline · Ctrl+U clear · /help" in typed, typed)
     check("footer: the model stays in the row", "MiniMax-M3.1-Flash" in typed,
           typed)
+    check("footer: the permission stays while typing",
+          "444 READ ONLY" in typed, typed)
 
     cleared = hint([(1.5, b"hello"), (0.6, b"\x15")])
-    check("footer: Ctrl+U offers the bound restore key",
-          "Ctrl+Z restore · /help" in cleared, cleared)
-    check("footer: a cleared draft does not offer Ctrl+U",
+    check("hint: Ctrl+U offers the bound restore key",
+          "Draft cleared · Ctrl+Z restore" in cleared, cleared)
+    check("hint: a cleared draft does not offer Ctrl+U",
           "Ctrl+U" not in cleared, cleared)
 
     restored = hint([(1.5, b"hello"), (0.5, b"\x15"), (0.5, b"\x1a")], timeout=4.5)
-    check("footer: restoring offers the clear key again",
+    check("hint: restoring offers the clear key again",
           "Ctrl+U clear" in restored, restored)
 
     submitted = hint([(1.5, b"hello\r"), (1.5, b"")], timeout=5.5)
-    check("footer: submitting returns the minimal line",
-          "444 READ ONLY · /help" in submitted and "Ctrl+U" not in submitted,
+    check("hint: submitting returns the plain keys",
+          "Enter send · Ctrl+J newline · /help" in submitted and "Ctrl+U" not in submitted,
           submitted)
 
     pasted = hint([(1.5, bracket_paste("alpha\nbravo")), (0.6, b"")])
-    check("footer: a paste offers the editing keys", "Ctrl+U clear" in pasted,
+    check("hint: a paste offers the editing keys", "Ctrl+U clear" in pasted,
           pasted)
 
     # A narrow terminal shortens the hint instead of clipping the row.
     narrow = hint([(1.5, b"hello")], cols=40, rows=20, timeout=3.5)
-    check("footer: a narrow terminal keeps the clear key visible",
+    check("hint: a narrow terminal keeps the clear key visible",
           "Ctrl+U clear" in narrow, narrow)
 
     # The row is legible on every theme.
@@ -753,8 +760,68 @@ def footer_hint_checks():
         for name, _ in THEMES:
             pty_drive.CONFIG = write_theme_config(name, name)
             text = hint([(1.5, b"hello")], timeout=3.5)
-            check("footer: the hint is visible on %s" % name,
+            check("hint: the hint is visible on %s" % name,
                   "Ctrl+U clear" in text, text)
+    finally:
+        pty_drive.CONFIG = original
+
+
+def layout_checks():
+    """The frame of the chat view: the composer, one row of keyboard
+    hints, a thin divider and the footer."""
+    def frame(script, cols=80, rows=24, timeout=4.0, session="demo"):
+        raw = run(script, cols=cols, rows=rows, timeout=timeout, fresh=True,
+                  session=session)
+        return render(raw, cols, rows).text().split("\n")
+
+    lines = frame([(1.5, b"")])
+    check("layout: the frame fills the terminal", len(lines) == 24, str(len(lines)))
+    top = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
+    bottom = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
+    check("layout: the composer has a border", top > 0 and bottom > top,
+          "\n".join(lines[max(0, top - 1):bottom + 2]))
+    check("layout: the hint sits below the composer",
+          bottom + 1 < len(lines) and "Enter send" in lines[bottom + 1],
+          "\n".join(lines[max(0, bottom):bottom + 3]))
+    check("layout: a divider sits above the footer",
+          bottom + 2 < len(lines) and lines[bottom + 2].startswith("─"),
+          "\n".join(lines[max(0, bottom):bottom + 4]))
+    check("layout: the footer carries the permission",
+          bottom + 3 < len(lines) and "444 READ ONLY" in lines[bottom + 3],
+          "\n".join(lines[max(0, bottom):bottom + 4]))
+    check("layout: the footer carries the model",
+          "MiniMax" in lines[bottom + 3], lines[bottom + 3])
+
+    # The permission does not disappear while the operator is typing.
+    lines = frame([(1.5, b"hello")])
+    bottom = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
+    check("layout: the permission stays while typing",
+          "444 READ ONLY" in lines[bottom + 3], lines[bottom + 3])
+    check("layout: the hint offers the editing keys",
+          "Ctrl+U clear" in lines[bottom + 1], lines[bottom + 1])
+
+    # The composer grows to five rows with a long draft, and the hint
+    # row stays one row.
+    body = "\n".join("line %03d of the draft" % i for i in range(1, 21))
+    lines = frame([(1.5, bracket_paste(body)), (0.6, b"")], timeout=5.0,
+                  session="pastecheck")
+    top = next((i for i, l in enumerate(lines) if l.startswith("╭")), -1)
+    bottom = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
+    check("layout: a long draft grows the composer",
+          bottom - top - 1 == 5, "%d" % (bottom - top - 1))
+    check("layout: the hint is still one row",
+          "Enter send" in lines[bottom + 1], lines[bottom + 1])
+
+    # Every theme keeps the same geometry.
+    original = pty_drive.CONFIG
+    try:
+        shapes = set()
+        for name, _ in THEMES:
+            pty_drive.CONFIG = write_theme_config(name, name)
+            lines = frame([(1.5, b"hello")], timeout=3.5, session="hintcheck")
+            shapes.add(tuple(l.strip()[:20] for l in lines))
+        check("layout: every theme has the same shape", len(shapes) == 1,
+              str(len(shapes)))
     finally:
         pty_drive.CONFIG = original
 
@@ -1109,8 +1176,8 @@ def scroll_checks():
     end = next((i for i, l in enumerate(lines) if l.startswith("╰")), -1)
     check("composer: bordered", top > 0 and end > top, bottom)
     check("composer: one text row by default", end - top - 1 == 1, str(end - top - 1))
-    check("composer: one blank row above",
-          top > 0 and lines[top - 1].strip() == "" and lines[top - 2].strip() != "",
+    check("composer: the conversation is right above it",
+          top > 0 and lines[top - 1].strip() != "",
           "\n".join(lines[max(0, top - 3):top + 1]))
 
     top = capture([(2.0, b"\x1b[H")])
@@ -1209,6 +1276,7 @@ def main():
     paste_checks()
     draft_notice_checks()
     footer_hint_checks()
+    layout_checks()
     approval_checks()
     skills_checks()
     composer_mouse_checks()

@@ -264,13 +264,9 @@ func (m Model) copySelection(text string) (tea.Model, tea.Cmd) {
 }
 
 // viewportTop is the screen row where the conversation starts: below the
-// header and the rule.
+// header.
 func (m Model) viewportTop() int {
-	top := 1 // the header
-	if m.frame.rule {
-		top++
-	}
-	return top
+	return 1 // the header
 }
 
 // conversationPad is the number of blank rows above a short

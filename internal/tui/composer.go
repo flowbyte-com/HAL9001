@@ -20,9 +20,6 @@ import (
 // composerTop is the screen row where the composer starts.
 func (m Model) composerTop() int {
 	top := m.viewportTop() + m.frame.viewport
-	if m.frame.blank {
-		top++
-	}
 	top += m.frame.suggest
 	return top
 }

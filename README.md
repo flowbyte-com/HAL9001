@@ -65,9 +65,27 @@ hal9001 --provider openai-compatible \
 
 HAL9001 takes over the terminal with the alternate screen buffer: the
 shell output is hidden while HAL runs and the previous screen comes back
-when it exits. A fixed header (`● HAL9001`) sits at the top, the
-conversation scrolls in the middle, and the composer and the status
-footer stay at the bottom.
+when it exits. A fixed header (`● HAL9001` and the session title) sits at
+the top, the conversation scrolls in the middle, and the composer, one
+row of keyboard hints, a thin divider and the status footer stay at the
+bottom.
+
+```text
+● HAL9001 · the quarterly review
+  the conversation scrolls here
+╭────────────────────────────────────────────╮
+│ Message HAL...                              │
+╰────────────────────────────────────────────╯
+Enter send · Ctrl+J newline · /help
+──────────────────────────────────────────────
+444 READ ONLY    Tokens: 4.2k in / 2.8k out    MiniMax-M3.1-Flash · medium
+```
+
+The footer is split in three: the permission on the left, the session's
+token usage in the middle and the model with its reasoning effort on the
+right. Narrow terminals shed detail in a fixed order — the effort, then
+the usage, then the model — and the permission is never given up: `444`
+stays on screen while you type.
 
 | Key | Action |
 |---|---|
@@ -109,8 +127,10 @@ partial one runs the highlighted suggestion), `Esc` to dismiss it and
 keep the draft. A leading `//` sends a literal slash-prefixed message.
 
 The composer is a single bordered one-line input that grows as you write,
-up to five rows, and shrinks back when you delete. A blank row separates
-it from the conversation. Pasting never submits: multiline pastes keep
+up to five rows, and shrinks back when you delete. One reserved row
+below it offers the keys that act on the draft right now, and it is the
+same row whatever the draft holds: only its text changes, so the
+composer and the footer never move. Pasting never submits: multiline pastes keep
 their line breaks, indentation and code fences in the composer, where
 you can edit them before sending. The composer shows a five-row window
 on the draft — never a cut-down copy: a paste of any size is kept whole,
