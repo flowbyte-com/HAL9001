@@ -15,6 +15,7 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
+	"github.com/flowbyte-com/HAL9001/internal/skills"
 	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
 
@@ -41,6 +42,9 @@ type Engine struct {
 	// toolUnsupported records a provider that refused function
 	// definitions, so the conversation continues without them.
 	toolUnsupported bool
+	// skills routes each request to a skill and loads its guidance.
+	// Nil means no skill is ever selected.
+	skills *skills.Selector
 }
 
 // New binds a session store to a provider and model.
@@ -53,6 +57,16 @@ func New(sessions *session.Store, p provider.Provider, model provider.Model) *En
 // engine offers no tools and every model-requested write is refused.
 func (e *Engine) WithWorkspace(w *workspace.Store) *Engine {
 	e.workspace = w
+	return e
+}
+
+// WithSkills attaches the skill selector.
+//
+// The selector decides which MPM-managed skill applies to a request and
+// loads its guidance. Without one, no skill is ever selected and every
+// turn is exactly the turn it was before.
+func (e *Engine) WithSkills(s *skills.Selector) *Engine {
+	e.skills = s
 	return e
 }
 
@@ -70,10 +84,23 @@ func (e *Engine) UseStore(sessions *session.Store) {
 	e.sessions = sessions
 }
 
-func (e *Engine) requestMessages(history []session.Message) []provider.Message {
+// requestMessages builds the provider request.
+//
+// The guidance belongs to the request, not to the persona and not to the
+// history: it is composed into the system instruction for this turn and
+// nowhere else, so the next turn starts from the same instruction again.
+func (e *Engine) requestMessages(history []session.Message, guidance string) []provider.Message {
 	messages := make([]provider.Message, 0, len(history)+1)
-	if e.systemPrompt != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: e.systemPrompt})
+	system := e.systemPrompt
+	if guidance != "" {
+		if system != "" {
+			system += "\n\n" + guidance
+		} else {
+			system = guidance
+		}
+	}
+	if system != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: system})
 	}
 	for _, msg := range history {
 		messages = append(messages, provider.Message{
@@ -99,6 +126,10 @@ type Event struct {
 	Text      string
 	Reasoning bool
 	Stats     *provider.TurnStats
+	// Skill is the routing decision for this turn: which skill was
+	// selected, why, and which one was actually loaded. It is set on
+	// every turn, including the ones that selected nothing.
+	Skill *skills.Decision
 	// Proposal is one prepared workspace write, awaiting the operator's
 	// decision. It carries no authority: the interface approves or
 	// rejects it, and only then may the filesystem be touched.
@@ -141,7 +172,16 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 	if err != nil {
 		return "", err
 	}
-	messages := e.requestMessages(history)
+	// The skill is chosen and loaded before the provider is called, so
+	// the model writes with the guidance rather than being told about it
+	// afterwards. The guidance belongs to this request: it is composed
+	// into the system instruction here and never enters the session.
+	decision, loaded := e.prepareSkill(ctx, input)
+	if emit != nil && decision.Source != "" {
+		d := decision
+		emit(Event{Skill: &d})
+	}
+	messages := e.requestMessages(history, skillBlock(loaded))
 	turn := userTurns(history)
 	tools := e.offeredTools()
 	resp, err := e.chat(ctx, messages, tools, emit)
