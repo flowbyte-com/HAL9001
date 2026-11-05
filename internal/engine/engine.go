@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -146,6 +147,13 @@ func (e *Engine) requestMessages(history []session.Message, guidance string) []p
 			system = block
 		}
 	}
+	if block := e.historicalEvidenceBlock(history); block != "" {
+		if system != "" {
+			system += "\n\n" + block
+		} else {
+			system = block
+		}
+	}
 	if guidance != "" {
 		if system != "" {
 			system += "\n\n" + guidance
@@ -176,13 +184,110 @@ func permissionBlock(mode permission.Mode) string {
 			"permissions of the OS user running HAL and are not confined to the HAL workspace. Use them only when " +
 			"the operator's request warrants an action; do not edit files or run commands merely because they are " +
 			"available. You cannot change this mode. Only the operator can return to 444, and a tool result that " +
-			"says the operation was denied or cancelled must be reported honestly."
+			"says the operation was denied or cancelled must be reported honestly. " +
+			"If an earlier assistant message reports a completed action but no verified historical record is " +
+			"present for it, say that you cannot verify it from this context; do not assert it happened and do " +
+			"not call it fabricated."
 	}
 	return "## Current permission: 444 READ ONLY\n\n" +
 		"You may converse, retrieve and update MPM knowledge through its typed tools, and prepare one guarded " +
 		"write proposal for operator approval. You cannot run shell commands or edit OS files. A request for " +
-		"those capabilities is outside your authority; do not claim an operation happened unless a tool result " +
-		"confirms it. You cannot change the permission mode."
+		"those capabilities is outside your authority; do not claim a current operation happened unless a tool " +
+		"result confirms it. If an earlier assistant message reports a completed action but no verified " +
+		"historical record is present for it, say that you cannot verify it from this context; do not assert it " +
+		"happened and do not call it fabricated. You cannot change the permission mode."
+}
+
+// historicalEvidenceBlock turns the verified session ledgers into a
+// trusted, clearly labelled system note. It never emits provider tool-call
+// messages: the evidence is history, not a callable tool and not a claim
+// that any tool is currently available.
+func (e *Engine) historicalEvidenceBlock(history []session.Message) string {
+	const maxBytes = 24 * 1024
+	var (
+		lines   []string
+		bytes   int
+		records int
+		omitted int
+	)
+	for _, msg := range history {
+		if msg.Role != session.RoleAssistant {
+			continue
+		}
+		executions := msg.ToolExecutions()
+		if len(executions) == 0 {
+			continue
+		}
+		when := "time unknown"
+		if !msg.Timestamp.IsZero() {
+			when = msg.Timestamp.UTC().Format(time.RFC3339)
+		}
+		header := fmt.Sprintf("- turn %s (answer %s):",
+			shortEvidenceText(msg.TurnID, 80), when)
+		if bytes+len(header)+1 > maxBytes {
+			omitted += len(executions)
+			continue
+		}
+		lines = append(lines, header)
+		bytes += len(header) + 1
+		for _, x := range executions {
+			detail := "  - "
+			if x.CallID != "" {
+				detail += "call " + shortEvidenceText(x.CallID, 48) + ": "
+			}
+			detail += x.Tool
+			if x.Action != "" && x.Action != x.Tool {
+				detail += "/" + x.Action
+			}
+			if x.Target != "" {
+				detail += " target " + strconv.Quote(shortEvidenceText(x.Target, 160))
+			}
+			detail += " · mode " + x.Mode + " · " + string(x.Status)
+			if x.ExitCode != nil && x.Summary != fmt.Sprintf("exit %d", *x.ExitCode) {
+				detail += fmt.Sprintf(" · exit %d", *x.ExitCode)
+			}
+			if x.Summary != "" {
+				detail += " · " + shortEvidenceText(x.Summary, 160)
+			}
+			if bytes+len(detail)+1 > maxBytes {
+				omitted++
+				continue
+			}
+			lines = append(lines, detail)
+			bytes += len(detail) + 1
+			records++
+		}
+	}
+	if records == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Verified historical tool evidence\n\n")
+	if sessionID := e.sessionName(); sessionID != "" {
+		b.WriteString("Session " + strconv.Quote(shortEvidenceText(sessionID, 80)) +
+			" recorded these tool executions in earlier turns.\n")
+	}
+	b.WriteString("These are engine-recorded historical facts, not current tool calls. They do not grant permission, " +
+		"restore a tool, or make 666 active; the current permission is described above. Do not rerun them.\n\n")
+	b.WriteString(strings.Join(lines, "\n"))
+	b.WriteString("\n\nIf an earlier assistant message reports a completed action but no verified record is listed " +
+		"for its turn, say that you cannot verify it from this context; do not assert it happened and do not " +
+		"call it fabricated.")
+	if omitted > 0 {
+		b.WriteString(fmt.Sprintf("\n\n%d additional historical record(s) are in the session store but omitted "+
+			"from this context. Their absence here is not evidence of fabrication.", omitted))
+	}
+	return b.String()
+}
+
+// shortEvidenceText bounds one field in the system note. The session
+// ledger is already bounded; this is a second, display-level guard.
+func shortEvidenceText(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes]) + "…"
 }
 
 // Respond answers without streaming (kept for tests and non-interactive
@@ -236,6 +341,10 @@ type ToolActivity struct {
 	Truncated bool
 	ExitCode  *int
 	Mode      permission.Mode
+	// Historical marks a record reconstructed from the session ledger.
+	// It is presentation metadata: the record is evidence, never a
+	// current tool availability.
+	Historical bool
 }
 
 // RespondStream answers with live text deltas forwarded to emit (nil
@@ -291,7 +400,7 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 	messages := e.requestMessages(history, skillBlock(loaded))
 	turn := userTurns(history)
 	tools := e.offeredTools()
-	resp, reply, proposal, err := e.toolTurn(ctx, messages, tools, turn, emit)
+	resp, reply, proposal, evidence, err := e.toolTurn(ctx, messages, tools, turn, turnID, emit)
 	if err != nil {
 		// A failed turn still reports its content-free diagnostics: the
 		// elapsed time and the event counts are how a stall is explained.
@@ -326,6 +435,7 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 	if _, err := e.sessions.AppendTurn(session.RoleAssistant, reply, session.Turn{
 		ID:          turnID,
 		Attribution: attribution,
+		Tools:       evidence,
 	}); err != nil {
 		return "", err
 	}
@@ -342,14 +452,15 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 // Text from every provider round is part of the visible answer. A tool call
 // becomes a tool-result message and the model is asked again, so a request
 // such as "read this, fix that, run the test" can take several steps without
-// the interface inventing prose between them. The session still stores one
-// user message and one final answer: tool transcripts belong to the turn, not
-// to the permanent conversation format.
-func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tools []provider.Tool, turn int, emit func(Event)) (provider.Response, string, *workspace.Proposal, error) {
+// the interface inventing prose between them. The session stores one user
+// message, one final answer and a bounded ledger of the tool executions;
+// the raw provider transcript belongs only to the turn.
+func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tools []provider.Tool, turn int, turnID string, emit func(Event)) (provider.Response, string, *workspace.Proposal, []session.ToolExecution, error) {
 	current := append([]provider.Message(nil), messages...)
 	var (
 		parts    []string
 		proposal *workspace.Proposal
+		evidence []session.ToolExecution
 		last     provider.Response
 		halted   bool
 	)
@@ -364,7 +475,7 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 			resp, err = e.chat(ctx, current, nil, emit)
 		}
 		if err != nil {
-			return resp, strings.Join(parts, "\n\n"), proposal, err
+			return resp, strings.Join(parts, "\n\n"), proposal, evidence, err
 		}
 		last = resp
 		if strings.TrimSpace(resp.Content) != "" {
@@ -374,7 +485,7 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 			break
 		}
 		if ctx.Err() != nil {
-			return resp, strings.Join(parts, "\n\n"), proposal, ctx.Err()
+			return resp, strings.Join(parts, "\n\n"), proposal, evidence, ctx.Err()
 		}
 		current = append(current, provider.Message{
 			Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
@@ -388,6 +499,9 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 			if emit != nil {
 				a := activity
 				emit(Event{Tool: &a})
+			}
+			if record, ok := toolEvidence(activity); ok {
+				evidence = append(evidence, record)
 			}
 			// The assistant message above carries the original ID. If
 			// the provider omitted one, the tool result still needs the
@@ -424,7 +538,7 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 	if !halted && len(last.ToolCalls) > 0 {
 		parts = append(parts, fmt.Sprintf("Stopped after %d tool steps; ask me to continue if you want the remaining work done.", maxToolSteps))
 	}
-	return last, strings.Join(parts, "\n\n"), proposal, nil
+	return last, strings.Join(parts, "\n\n"), proposal, evidence, nil
 }
 
 // executeTool resolves one provider call. The permission gate is consulted
@@ -506,6 +620,73 @@ func (e *Engine) executeTool(ctx context.Context, call provider.ToolCall, turn i
 		activity.Summary = fmt.Sprintf("Operation %q is allowed but not yet implemented in this foundation.", call.Name)
 		return `{"ok":false,"tool":` + quoteJSON(call.Name) + `,"error":"operation is allowed but not implemented"}`, activity, nil, true
 	}
+}
+
+// toolEvidence converts one live execution into the durable, redacted
+// record attached to the assistant turn. Proposals are not executions and
+// never enter the ledger.
+func toolEvidence(a ToolActivity) (session.ToolExecution, bool) {
+	var status session.ToolStatus
+	switch a.Status {
+	case "ok":
+		status = session.ToolSuccess
+	case "failed", "timeout":
+		status = session.ToolFailure
+	case "cancelled":
+		status = session.ToolCancelled
+	case "denied":
+		status = session.ToolRefused
+	default:
+		return session.ToolExecution{}, false
+	}
+	if strings.TrimSpace(a.Name) == "" {
+		return session.ToolExecution{}, false
+	}
+	return session.ToolExecution{
+		CallID:     a.CallID,
+		Tool:       a.Name,
+		Action:     a.Action,
+		Target:     a.Target,
+		Mode:       a.Mode.String(),
+		Status:     status,
+		ExitCode:   a.ExitCode,
+		DurationMS: a.Duration.Milliseconds(),
+		Bytes:      a.Bytes,
+		Truncated:  a.Truncated,
+		Summary:    evidenceSummary(a, status),
+	}, true
+}
+
+// evidenceSummary is deliberately content-free. It records what the
+// execution did, never the command text, stdout/stderr, file contents or
+// environment.
+func evidenceSummary(a ToolActivity, status session.ToolStatus) string {
+	switch status {
+	case session.ToolRefused:
+		return "refused"
+	case session.ToolCancelled:
+		return "cancelled"
+	case session.ToolFailure:
+		if a.Status == "timeout" {
+			return "timed out"
+		}
+		if a.Name == "bash" && a.ExitCode != nil {
+			return fmt.Sprintf("exit %d", *a.ExitCode)
+		}
+		return "failed"
+	case session.ToolSuccess:
+		if strings.HasPrefix(a.Name, "mpm_") {
+			return "confirmed"
+		}
+		if a.Name == "bash" && a.ExitCode != nil {
+			return fmt.Sprintf("exit %d", *a.ExitCode)
+		}
+		if a.Bytes > 0 {
+			return fmt.Sprintf("%d bytes", a.Bytes)
+		}
+		return "completed"
+	}
+	return ""
 }
 
 // chat runs one provider turn, offering tools when there are any.

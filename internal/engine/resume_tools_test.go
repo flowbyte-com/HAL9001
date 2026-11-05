@@ -19,21 +19,16 @@ import (
 // lifecycle: 444, an operator-enabled 666 turn with a successful write and
 // bash call, back to 444, then a resumed provider request.
 //
-// The key is the marker and the path. The assistant's final visible text
-// deliberately does not contain either: it says only that the note was
-// written and the check completed. If the resumed request contains those
-// values, they can only have come from a persisted tool result, not from
-// assistant prose. The test therefore proves two things at once:
+// The key is the write path and the bash exit status. The assistant's
+// final visible text deliberately does not contain the path or the live
+// output marker: it says only that the note was written and the check
+// completed. The write path and the bash execution record must survive in
+// the ledger, and the resumed context must carry them as a trusted system
+// note rather than as assistant prose or fabricated provider calls.
 //
-//   - a completed tool execution survives the permission change and resume;
-//   - it remains distinguishable from an assistant-generated claim.
+// Run with:
 //
-// The current session format stores no tool records, so the final assertion
-// is a known gap. It is skipped by default to keep the suite green while the
-// architecture is under review. Run with HAL_RESUME_STRICT=1 to make the
-// missing evidence fail the test:
-//
-//	HAL_RESUME_STRICT=1 go test -run TestResumeKeepsToolEvidenceDistinguishable ./internal/engine
+//	go test -run TestResumeKeepsToolEvidenceDistinguishable ./internal/engine
 func TestResumeKeepsToolEvidenceDistinguishable(t *testing.T) {
 	const (
 		bashMarker = "RESUME-TOOL-EVIDENCE-9c1f"
@@ -157,6 +152,21 @@ func TestResumeKeepsToolEvidenceDistinguishable(t *testing.T) {
 	t.Logf("durable bash answer = %q", history[3].Content)
 	t.Logf("audit write record = %s", auditJSON)
 
+	// The assistant's own answers now carry the verified ledger.
+	writeEvidence := history[1].ToolExecutions()
+	bashEvidence := history[3].ToolExecutions()
+	if len(writeEvidence) != 1 || writeEvidence[0].Tool != "write" ||
+		writeEvidence[0].TurnID != history[1].TurnID ||
+		writeEvidence[0].Mode != "666" || writeEvidence[0].Status != session.ToolSuccess {
+		t.Fatalf("write ledger = %#v", writeEvidence)
+	}
+	if len(bashEvidence) != 1 || bashEvidence[0].Tool != "bash" ||
+		bashEvidence[0].TurnID != history[3].TurnID ||
+		bashEvidence[0].Mode != "666" || bashEvidence[0].Status != session.ToolSuccess ||
+		bashEvidence[0].ExitCode == nil || *bashEvidence[0].ExitCode != 0 {
+		t.Fatalf("bash ledger = %#v", bashEvidence)
+	}
+
 	// Return to 444 and resume as a second process would.
 	perm.Disable()
 	st2, err := session.Open(dir, "chat")
@@ -177,31 +187,41 @@ func TestResumeKeepsToolEvidenceDistinguishable(t *testing.T) {
 		t.Fatal("no resumed request captured")
 	}
 	request := spy.requests[0]
-	if !strings.Contains(request[0].Content, "444 READ ONLY") {
-		t.Fatalf("resumed system instruction is not 444:\n%s", request[0].Content)
+	system := request[0].Content
+	if request[0].Role != "system" || !strings.Contains(system, "444 READ ONLY") {
+		t.Fatalf("resumed system instruction is not 444:\n%s", system)
+	}
+	if !strings.Contains(system, "Verified historical tool evidence") ||
+		!strings.Contains(system, "not current tool calls") ||
+		!strings.Contains(system, history[1].TurnID) ||
+		!strings.Contains(system, history[3].TurnID) ||
+		!strings.Contains(system, note) ||
+		!strings.Contains(system, "bash") ||
+		!strings.Contains(system, "mode 666") ||
+		!strings.Contains(system, "success") ||
+		!strings.Contains(system, "exit 0") {
+		t.Fatalf("resumed system note lacks verified evidence:\n%s", system)
+	}
+	if !strings.Contains(system, "do not call it fabricated") {
+		t.Errorf("the missing-evidence instruction is absent:\n%s", system)
 	}
 
-	var evidence []string
+	// Evidence is a system note, not fabricated provider tool calls.
 	for _, message := range request {
-		if message.Role == "assistant" {
-			// Assistant prose is not tool evidence, even when it says an
-			// operation happened.
-			continue
+		if message.Role == "tool" {
+			t.Errorf("resume invented a provider tool message: %#v", message)
 		}
-		if strings.Contains(message.Content, bashMarker) ||
-			strings.Contains(message.Content, note) {
-			evidence = append(evidence, message.Role+": "+message.Content)
+		if len(message.ToolCalls) > 0 {
+			t.Errorf("resume invented provider tool calls: %#v", message.ToolCalls)
 		}
 	}
-	if len(evidence) == 0 {
-		t.Logf("resumed messages = %#v", request)
-		t.Logf("history = %#v", history)
-		if os.Getenv("HAL_RESUME_STRICT") == "1" {
-			t.Fatalf("resumed 444 context has no non-assistant evidence of the completed write/bash; "+
-				"the prior assistant claims are the only record: %#v", request)
-		}
-		t.Skip("known gap: completed tool results are not persisted, so a resumed 444 context cannot " +
-			"distinguish a prior tool execution from an assistant claim; set HAL_RESUME_STRICT=1 to fail")
+	// Historical 666 evidence cannot restore 666 or any privileged tool.
+	if perm.Mode() != permission.Guarded {
+		t.Fatalf("resume permission = %s", perm.Mode())
 	}
-	t.Logf("resumed tool evidence = %#v", evidence)
+	if tools := resume.offeredTools(); hasTool(tools, "read") || hasTool(tools, "write") ||
+		hasTool(tools, "edit") || hasTool(tools, "bash") {
+		t.Fatalf("historical evidence enabled privileged tools: %v", toolNames(tools))
+	}
+	t.Logf("resumed verified evidence = %s", system)
 }
