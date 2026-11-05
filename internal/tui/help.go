@@ -113,7 +113,7 @@ func (m Model) helpSections() []helpSection {
 		{"MPM", "read-only: HAL lists and reads skills, never writes them"},
 	}
 	sections[index["Permissions and file writes"]].entries = []helpEntry{
-		{"444", "read-only: conversation, MPM knowledge, Firecrawl web research and one-off write approval"},
+		{"444", "read-only: conversation, MPM knowledge, web research and one-off write approval"},
 		{"666", "session-scoped unrestricted mode: read, write, edit and bash run with your OS permissions"},
 		{keyName(keyPermission), "open the permission control; only you can enable or disable 666"},
 		{keyName(keyApproveWrite), "enable 666 (permission screen) or approve one reviewed write (approval screen)"},

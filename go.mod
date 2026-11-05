@@ -11,6 +11,7 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0
 	github.com/mattn/go-runewidth v0.0.30
 	github.com/rivo/uniseg v0.4.7
+	golang.org/x/net v0.39.0
 )
 
 require (
@@ -32,7 +33,6 @@ require (
 	github.com/xo/terminfo v1.0.0 // indirect
 	github.com/yuin/goldmark v1.7.8 // indirect
 	github.com/yuin/goldmark-emoji v1.0.5 // indirect
-	golang.org/x/net v0.39.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.24.0 // indirect

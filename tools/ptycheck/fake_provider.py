@@ -8,8 +8,7 @@ must show the approval review, and only an operator key may save it.
 
 A ``[[read PATH]]`` or ``[[bash COMMAND]]`` directive makes the stub
 propose the corresponding real tool. A ``[[fcsearch QUERY]]`` or
-``[[fcscrape URL]]`` directive proposes the corresponding 444 Firecrawl
-tool. On the second provider round, when the tool result is present, it
+``[[fcscrape URL]]`` directive proposes the corresponding 444 web tool. On the second provider round, when the tool result is present, it
 answers with the result instead of asking again. The stub never executes
 anything: the engine and the permission gate decide.
 """
@@ -135,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
 
         search = FCSEARCH_RE.search(last)
         if search:
-            payload = tool_payload(request, "firecrawl_search")
+            payload = tool_payload(request, "web_search")
             if payload is not None:
                 if payload.get("ok"):
                     results = payload.get("results") or []
@@ -145,7 +144,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.answer("SEARCH ERROR: " + str(payload.get("code", "failed")))
             else:
-                self.propose_tool("firecrawl_search", {"query": search.group(1)})
+                self.propose_tool("web_search", {"query": search.group(1)})
             return
 
         page = FCSCRAPE_RE.search(last)

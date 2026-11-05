@@ -5,10 +5,10 @@ coordinates, manages, reviews, reports, records and suggests. By default it
 creates through prompts that other agents implement.
 
 Its default authority is **444: read-only.** HAL may converse, reason,
-retrieve MPM knowledge, research public web pages through Firecrawl and
-prepare documents, but it cannot run commands, edit arbitrary files or act
-on its own. There are no coding profiles and no model-controlled execution
-switches.
+retrieve MPM knowledge, research public web pages through a provider chain
+and prepare documents, but it cannot run commands, edit arbitrary files or
+act on its own. There are no coding profiles and no model-controlled
+execution switches.
 
 There is one exception, and only the human operator can open it: **666**, a
 session-scoped window in which HAL may use real `read`, `write`, `edit` and
@@ -24,13 +24,15 @@ workspace, available in 444. It is not the session mode. See
 
 ## Status
 
-Milestone 006: HAL can research the live web through Firecrawl's v2 API
-in 444. Two typed tools, `firecrawl_search` and `firecrawl_scrape`, return
-ranked sources and main-content Markdown with bounded cost and context,
-source attribution, explicit truncation and an untrusted-content boundary.
-Credentials come only from `FIRECRAWL_API_KEY`; research cannot enable
-666 or write to MPM automatically. See
-[Live web research](#live-web-research-firecrawl-444).
+Milestone 007: one `web_search` interface now backs live web research with
+three independent providers in a fixed order: Firecrawl, Exa and keyless
+DuckDuckGo Lite. Results are normalized with source URL, excerpt,
+publication date, retrieval time, provider and reported credit/cost, and
+`firecrawl_scrape` remains the single-page reader. Fallbacks happen only for
+unavailable credentials, credits, rate limits or provider failures; a valid
+empty result is still a result. Research stays in 444 and cannot enable 666,
+run tools or write to MPM automatically. See
+[Live web research](#live-web-research-444).
 
 Milestone 005: HAL gains an operator-only, session-scoped 666 window with
 real `read`, `write`, `edit` and `bash` tools, alongside the preserved 444
@@ -453,42 +455,65 @@ access.
   records, not arbitrary operating-system files. Their calls and outcomes
   are audited like every other tool, without copying the payload.
 
-**Live web research (Firecrawl, 444).** HAL can search the live web and
-read one public page at a time through Firecrawl's v2 REST API. This is a
-small native Go client; it does not start Node, an MCP bridge or a browser.
+**Live web research (444).** HAL exposes one model-facing `web_search`
+tool backed by independent providers, plus `firecrawl_scrape` for one
+public page at a time. The providers are tried in this fixed order:
 
-- Set `FIRECRAWL_API_KEY` in the environment. The key is sent only in the
-  `Authorization: Bearer` header. It is never written to the config, a
-  session, the audit trail, `/diag`, a tool result or a model message.
-  Missing credentials disable the tools cleanly; `/diag` says why.
-- `firecrawl_search` accepts a focused query and returns ranked titles,
-  source URLs and concise excerpts. It never scrapes the results
-  automatically. The default is five results, with a hard maximum of ten.
+1. **Firecrawl** — primary, with the existing v2 client.
+2. **Exa** — API fallback using `EXA_API_KEY`.
+3. **DuckDuckGo Lite** — keyless emergency fallback, HTML only.
+
+- `web_search` accepts a focused query and returns ranked titles, source
+  URLs and concise excerpts. Every result carries the provider that
+  actually answered, publication date when supplied, retrieval time and
+  reported credit or dollar usage. The default is five results, with a
+  hard maximum of ten. Search never scrapes results automatically.
+- The fallback chain moves on when a provider is missing credentials, out
+  of credits, rate-limited, blocked or temporarily failing. A valid empty
+  result is success and stops the chain. Invalid requests and cancellation
+  stop it too. A cancelled or exhausted per-turn budget is never fanned
+  out across providers.
 - `firecrawl_scrape` accepts one absolute HTTPS URL on a public host,
   refuses credentials, local names and private/special-use addresses, and
   returns main-content Markdown with the source URL, final URL, title,
   description, language, publication date when stated, retrieval time and
-  truncation metadata.
+  truncation metadata. Scraping remains Firecrawl-only in this milestone.
 - The default budget is three searches and two full-page scrapes per
   research turn, with at most 12 KiB of search text, 24 KiB per page and
   64 KiB of returned research text. Content over the limit is explicitly
-  marked truncated. Requests time out after 20 seconds; rate limits and
-  transient server errors get at most two bounded retries.
-- Retrieved pages are **untrusted external data**. Text inside a page
-  cannot enable 666, authorise shell or filesystem operations, change
-  settings, create MPM records or override the system instruction. The
-  tool result carries `"untrusted":true`, and the request guidance says so.
-  If the operator asks to preserve a discovery, HAL uses the existing
-  authorised MPM tools; research never writes to MPM automatically.
-- The compact activity line reports the result count or returned size,
-  failures, rate limits and truncation, and the tool ledger keeps the
-  same content-free record across resume.
-- `FIRECRAWL_API_URL` overrides the base URL for a compatible proxy or a
-  local test server (plain HTTP is allowed only on loopback). The basic
-  limits can be tuned with `HAL9001_FIRECRAWL_SEARCH_LIMIT`,
-  `HAL9001_FIRECRAWL_MAX_SEARCHES`, `HAL9001_FIRECRAWL_MAX_SCRAPES`,
-  `HAL9001_FIRECRAWL_TIMEOUT_SECONDS` and
-  `HAL9001_FIRECRAWL_MAX_TURN_BYTES`.
+  marked truncated. Firecrawl keeps its 20-second request timeout and two
+  bounded retries; Exa and DuckDuckGo fall through instead of retrying in
+  place.
+- DuckDuckGo Lite is best-effort, not an official API. It uses one
+  conservative request at a time (two seconds apart), bounded HTML, no
+  browser, no Node and no CAPTCHA circumvention. It parses organic result
+  rows, ignores sponsored rows and advertisement redirects, validates every
+  returned URL, and reports blocking or an unrecognised layout instead of
+  guessing.
+- Retrieved pages are **untrusted external data**. Text inside a page or a
+  search result cannot enable 666, authorise shell or filesystem
+  operations, change settings, create MPM records or override the system
+  instruction. Tool results carry `"untrusted":true`, and the request
+  guidance says so. If the operator asks to preserve a discovery, HAL uses
+  the existing authorised MPM tools; research never writes to MPM
+  automatically.
+- The compact activity line reports the result count and provider
+  (`⚙ web_search · completed · 5 results · exa · fallback · 444`), or the
+  returned size for a scrape, plus failures, rate limits and truncation.
+  The tool ledger keeps the same content-free record across resume.
+- `FIRECRAWL_API_KEY`, `EXA_API_KEY` and optional `FIRECRAWL_API_URL` /
+  `EXA_API_URL` are read from the environment. Keys are sent only in
+  `Authorization: Bearer` headers and never written to config, sessions, the
+  audit trail, `/diag`, a tool result or a model message. Missing keys
+  simply remove that provider from the chain.
+- The unified limits use `HAL9001_WEB_SEARCH_LIMIT`,
+  `HAL9001_WEB_MAX_SEARCHES`, `HAL9001_WEB_MAX_SCRAPES` and
+  `HAL9001_WEB_MAX_TURN_BYTES`. The phase-1 `HAL9001_FIRECRAWL_*` names
+  remain compatible. Firecrawl, Exa and DuckDuckGo timeouts can be tuned
+  with `HAL9001_FIRECRAWL_TIMEOUT_SECONDS`,
+  `HAL9001_EXA_TIMEOUT_SECONDS` and `HAL9001_DDG_TIMEOUT_SECONDS`;
+  `HAL9001_DDG_URL` and `HAL9001_DDG_MIN_INTERVAL_MS` exist for a
+  compatible endpoint and test isolation.
 
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;
@@ -604,7 +629,7 @@ immediately.
   credentials; it is skipped by default and reported separately.
 - No memory write-back outside MPM, no Prompt Workshop, no review
   workflow, no delegation and no scheduled tasks. Web research is limited
-  to Firecrawl search and single-page scrape; crawl, batch, browser
+  to unified search and Firecrawl single-page scrape; crawl, batch, browser
   interaction, agent jobs and monitoring are deliberately absent.
 - Assistant messages render as Markdown on completion; the live stream
   is plain text.

@@ -1,10 +1,11 @@
-// Package firecrawl adds read-only live web research to HAL9001.
+// Package firecrawl is HAL9001's native Firecrawl v2 client.
 //
-// The client speaks Firecrawl's v2 REST API directly: a small native HTTP
-// client, no Node runtime and no generic MCP bridge. Search returns ranked
-// titles, URLs and excerpts; scrape returns the main-page Markdown for one
-// public HTTPS URL. Neither tool can execute anything, change the permission
-// mode or write to MPM. Retrieved pages are untrusted external data.
+// It speaks the REST API directly: a small native HTTP client, no Node runtime
+// and no generic MCP bridge. Search returns ranked titles, URLs and excerpts;
+// scrape returns the main-page Markdown for one public HTTPS URL. The unified
+// web_search surface in internal/websearch uses this client as its primary
+// provider. Neither operation can execute anything, change the permission mode
+// or write to MPM. Retrieved pages are untrusted external data.
 //
 // The API key is read from FIRECRAWL_API_KEY and is only ever placed in the
 // Authorization header. It is never stored in a session, an audit record, a
@@ -901,6 +902,20 @@ func redact(s, key string) string {
 		return s
 	}
 	return strings.ReplaceAll(s, key, "[redacted]")
+}
+
+func truncateRunes(s string, max int) (string, bool) {
+	if max < 0 {
+		max = 0
+	}
+	if len([]rune(s)) <= max {
+		return s, false
+	}
+	r := []rune(s)
+	if max == 0 {
+		return "", true
+	}
+	return strings.TrimRight(string(r[:max]), " \t\r\n") + "…", true
 }
 
 // clipText bounds a metadata field. It is display/context hygiene, not a

@@ -115,6 +115,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/v2/search":
             query = str(request.get("query", ""))
+            if "exafallback" in query or "ddgfallback" in query or "allfail" in query:
+                self.send_json(503, {"success": False, "error": "Service unavailable"})
+                return
             if "ratelimit" in query:
                 self.send_response(429)
                 self.send_header("Retry-After", "0")

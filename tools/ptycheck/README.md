@@ -82,10 +82,10 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/polish_checks.py
 ```
 
-The Firecrawl checks own a fake OpenAI-compatible provider on port 8118,
-a fake Firecrawl v2 server on port 8123, and their config, Home, workspace,
-session store and audit file. They never read the operator's real
-`FIRECRAWL_API_KEY`:
+The web-research checks own a fake OpenAI-compatible provider on port 8118,
+a fake Firecrawl v2 server on 8123, a fake Exa server on 8124, a fake
+DuckDuckGo Lite server on 8125, and their config, Home, workspace, session
+store and audit file. They never read the operator's real keys:
 
 ```sh
 HAL9001_BINARY=/tmp/opencode/hal9001 \
@@ -147,13 +147,14 @@ python3 tools/ptycheck/firecrawl_checks.py
   right-aligned statistics sit beneath the answer, and all five themes
   render the eye in colour. It also covers slash Esc dismissal and the
   444/666 footer.
-- The Firecrawl suite runs search and scrape through the real 444 tool
-  path. It checks ranked search results, empty results, scrape metadata,
-  large-page truncation, 401/403/429/5xx/malformed failures, invalid and
-  non-public URLs, prompt injection, missing credentials, the compact
-  activity line, `/diag`, `/help`, the 444 footer, the audit trail and
-  session resume. Every Firecrawl check uses a local fake server; no live
-  credits are spent.
+- The web-research suite runs the unified `web_search` path and the
+  Firecrawl scrape path. It checks Firecrawl success, empty results,
+  Firecrawl -> Exa fallback, Exa -> DuckDuckGo fallback, malformed-primary
+  fallback, all-provider failure, missing keys, provider attribution,
+  scrape metadata and truncation, invalid scrape URLs, prompt injection,
+  compact activity lines, `/diag`, `/help`, the 444 footer, the audit trail
+  and session resume. Every check uses local fake servers; no live credits
+  are spent.
 - The permission suite runs the lifecycle end to end: 444 is the default;
   a model-invented `read` is refused; conversation text and a plain `y` do
   not enable 666; `Ctrl+P` then `Ctrl+Y` enables a red `666 UNRESTRICTED`

@@ -30,6 +30,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/skills"
 	"github.com/flowbyte-com/HAL9001/internal/tui"
 	"github.com/flowbyte-com/HAL9001/internal/usage"
+	"github.com/flowbyte-com/HAL9001/internal/websearch"
 	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
 
@@ -106,9 +107,25 @@ func run(args []string) error {
 	app.knowledge = knowledge.NewRegistry(&knowledge.Client{}).
 		WithAudit(audit, func() string { return app.session }).
 		WithMode(app.permission.Mode)
-	// Firecrawl is read-only live research, available in 444. The key is
-	// read from the environment and never enters the session or audit.
-	app.web = firecrawl.NewRegistry(firecrawl.New(firecrawl.SettingsFromEnv())).
+	// Live web research is read-only and available in 444. Firecrawl is
+	// primary, Exa is the API fallback and DuckDuckGo Lite is keyless.
+	// Keys come only from the environment and never enter the session or
+	// audit.
+	webSettings := websearch.SettingsFromEnv()
+	firecrawlSettings := firecrawl.SettingsFromEnv()
+	// The unified limit is the contract; keep the Firecrawl client from
+	// applying a second, phase-1 cap to the same query.
+	firecrawlSettings.SearchLimit = webSettings.SearchLimit
+	firecrawlClient := firecrawl.New(firecrawlSettings)
+	app.web = websearch.NewRegistry(
+		websearch.NewFallback(
+			websearch.NewFirecrawlProvider(firecrawlClient),
+			websearch.NewExaProvider(websearch.ExaSettingsFromEnv()),
+			websearch.NewDuckDuckGoProvider(websearch.DuckDuckGoSettingsFromEnv()),
+		),
+		websearch.NewFirecrawlScraper(firecrawlClient),
+		webSettings,
+	).
 		WithAudit(audit, func() string { return app.session }).
 		WithMode(app.permission.Mode)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -173,7 +190,7 @@ type app struct {
 	// knowledge exposes MPM's own typed knowledge tools in both modes.
 	knowledge *knowledge.Registry
 	// web exposes Firecrawl's read-only research tools in 444 and 666.
-	web *firecrawl.Registry
+	web *websearch.Registry
 }
 
 // defaultSessionName is the conversation used when nothing has been
@@ -419,7 +436,7 @@ func (a *app) rebuildEngine() {
 // webStatus is the content-free Firecrawl line shown in /diag.
 func (a *app) webStatus() string {
 	if a.web == nil {
-		return "firecrawl · unavailable"
+		return "web research · unavailable"
 	}
 	return a.web.StatusLine()
 }

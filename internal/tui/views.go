@@ -758,7 +758,13 @@ func (m Model) diagRows() []string {
 	}
 	if m.hooks.WebResearch != nil {
 		if status := strings.TrimSpace(m.hooks.WebResearch()); status != "" {
-			composer("web research", status)
+			for i, line := range strings.Split(status, "\n") {
+				if i == 0 {
+					composer("web research", line)
+					continue
+				}
+				rows = append(rows, strings.Repeat(" ", 18)+line)
+			}
 		}
 	}
 	if len(m.lastTools) > 0 {

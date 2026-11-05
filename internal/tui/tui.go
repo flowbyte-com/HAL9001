@@ -2083,6 +2083,12 @@ func (m Model) toolLine(a engine.ToolActivity) string {
 	return m.theme.styles().tool.Render(line)
 }
 
+// isWebTool reports whether a tool belongs to the web-research surface,
+// including historical firecrawl_search rows from earlier sessions.
+func isWebTool(name string) bool {
+	return name == "web_search" || strings.HasPrefix(name, "firecrawl_")
+}
+
 // toolActivityLine renders one tool result in the established compact
 // form, for example "⚙ bash · completed · exit 0 · 666". The width is in
 // display cells; long targets are shortened so the status and mode stay
@@ -2104,18 +2110,21 @@ func toolActivityLine(a engine.ToolActivity, width int) string {
 		status += fmt.Sprintf(" · exit %d", *a.ExitCode)
 	}
 	switch {
-	case strings.HasPrefix(a.Name, "firecrawl_"):
-		// Search reports a result count; scrape reports returned bytes.
-		// Failures report a safe detail such as "rate limited". A detail
-		// equal to the status label ("cancelled", "timed out") is not
-		// repeated.
+	case isWebTool(a.Name):
+		// Search reports a result count and provider; scrape reports
+		// returned bytes. Failures report a safe detail such as
+		// "rate limited". A detail equal to the status label
+		// ("cancelled", "timed out") is not repeated.
 		detail := strings.TrimSpace(a.Summary)
-		if detail == toolStatusLabel(a.Status) {
+		label := toolStatusLabel(a.Status)
+		if detail == label {
 			detail = ""
+		} else if strings.HasPrefix(detail, label+" · ") {
+			detail = strings.TrimPrefix(detail, label+" · ")
 		}
 		if a.Status != "ok" && detail != "" {
 			status += " · " + detail
-		} else if a.Name == "firecrawl_search" && detail != "" {
+		} else if (a.Name == "web_search" || a.Name == "firecrawl_search") && detail != "" {
 			status += " · " + detail
 		} else if a.Bytes > 0 {
 			status += " · " + humanSize(int64(a.Bytes))

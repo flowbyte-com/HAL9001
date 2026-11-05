@@ -15,12 +15,12 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/agenttools"
 	"github.com/flowbyte-com/HAL9001/internal/capability"
-	"github.com/flowbyte-com/HAL9001/internal/firecrawl"
 	"github.com/flowbyte-com/HAL9001/internal/knowledge"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/skills"
+	"github.com/flowbyte-com/HAL9001/internal/websearch"
 	"github.com/flowbyte-com/HAL9001/internal/workspace"
 )
 
@@ -62,7 +62,7 @@ type Engine struct {
 	// web is Firecrawl's read-only research surface. It is available in
 	// 444 and 666, and it cannot execute code, write files or change the
 	// permission mode.
-	web *firecrawl.Registry
+	web *websearch.Registry
 }
 
 // maxToolSteps bounds a single provider conversation. It is a safety limit,
@@ -117,7 +117,7 @@ func (e *Engine) WithKnowledge(k *knowledge.Registry) *Engine {
 // WithWebResearch attaches Firecrawl's read-only research tools. They are
 // offered in 444; the registry is never a permission authority and cannot
 // reach the 666 executor or MPM's write tools.
-func (e *Engine) WithWebResearch(w *firecrawl.Registry) *Engine {
+func (e *Engine) WithWebResearch(w *websearch.Registry) *Engine {
 	e.web = w
 	return e
 }
@@ -213,7 +213,7 @@ func permissionBlock(mode permission.Mode) string {
 	}
 	return "## Current permission: 444 READ ONLY\n\n" +
 		"You may converse, retrieve and update MPM knowledge through its typed tools, use the configured " +
-		"read-only Firecrawl web research tools, and prepare one guarded write proposal for operator " +
+		"read-only web research tools, and prepare one guarded write proposal for operator " +
 		"approval. You cannot run shell commands or edit OS files. A request for " +
 		"those capabilities is outside your authority; do not claim a current operation happened unless a tool " +
 		"result confirms it. If an earlier assistant message reports a completed action but no verified " +
@@ -696,7 +696,7 @@ func toolEvidence(a ToolActivity) (session.ToolExecution, bool) {
 // execution did, never the command text, stdout/stderr, file contents or
 // environment.
 func evidenceSummary(a ToolActivity, status session.ToolStatus) string {
-	if strings.HasPrefix(a.Name, "firecrawl_") && strings.TrimSpace(a.Summary) != "" {
+	if (a.Name == "web_search" || strings.HasPrefix(a.Name, "firecrawl_")) && strings.TrimSpace(a.Summary) != "" {
 		// The registry already supplies a content-free result count or
 		// failure reason. It never contains page text, the query or a key.
 		return a.Summary
