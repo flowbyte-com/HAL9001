@@ -52,13 +52,13 @@ def cell_column(text, fragment):
 
 
 def content_column(cols):
-    block = min(cols, 104)
-    left = (cols - block) // 2
-    return left + 2
+    # Fixed two-cell inset; the eye sits in the gutter to its left.
+    return 2
 
 
 def content_width(cols):
-    return min(cols, 104) - 4
+    # Soft reading cap, left-aligned and never centred.
+    return min(cols - 4, 116)
 
 
 def row_with(screen, fragment):

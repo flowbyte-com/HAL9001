@@ -16,8 +16,9 @@ permission model, the tool ledger and all tool execution are unchanged.
 - Tool activity and statistics are supplementary assistant rows. Tool
   lines use the established status model; statistics are muted and
   right-aligned to the response edge.
-- On wide terminals the reading measure is capped at 100 cells and
-  centred. The header, composer and footer keep the full terminal width.
+- On wide terminals the reading measure is capped at 116 display cells
+  and stays left-aligned. The header, composer and footer keep the full
+  terminal width.
 - Decorations never enter `/copy`, a mouse selection or the model
   context. Only the reply's own text is selected.
 
@@ -81,41 +82,42 @@ Enter send · Ctrl+J newline · /help
 
 ### 170x38, polished
 
-The wide terminal gets a centred 100-cell reading measure rather than a
-170-cell line and table.
+The wide terminal gets a left-aligned 116-cell reading measure rather
+than a 170-cell line and table. The extra space stays on the right; the
+conversation is never moved inward.
 
 ```text
-● HAL9001 · 2026-11-05 09:49
+● HAL9001 · 2026-11-05 10:00
 
 
 
 
 
-                                   Show me the plan.
+  Show me the plan.
 
-                                 ◉ Plan
+◉ Plan
 
-                                   A short paragraph with strong text and code.
+  A short paragraph with strong text and code.
 
-                                   • first item
-                                   • second item
+  • first item
+  • second item
 
-                                   fmt.Println("HAL")
+  fmt.Println("HAL")
 
-                                    Stage                                            │ State
-                                   ──────────────────────────────────────────────────┼─────────────────────────────────────────────────
-                                    Foundation                                       │ verified
-                                    Polish                                           │ in progress
-                                                                                                           2m 20s · 4.2k in / 12.8k out
+   Stage                                                    │ State
+  ──────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────
+   Foundation                                               │ verified
+   Polish                                                   │ in progress
+                                                                                          2m 20s · 4.2k in / 12.8k out
 
-                                   What ran?
+  What ran?
 
-                                 ◉ The command completed. One step failed and one was cancelled.
-                                   ⚙ write notes/plan.md · completed · 13 bytes · 666
-                                   ⚙ bash · failed · exit 17 · 666
-                                   ⚙ bash · cancelled · 666
-                                   ⚙ bash · refused · 444
-                                                                                    2s · 900 in / 300 out · skill: system-prompt-writer
+◉ The command completed. One step failed and one was cancelled.
+  ⚙ write notes/plan.md · completed · 13 bytes · 666
+  ⚙ bash · failed · exit 17 · 666
+  ⚙ bash · cancelled · 666
+  ⚙ bash · refused · 444
+                                                                   2s · 900 in / 300 out · skill: system-prompt-writer
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -223,5 +225,5 @@ Results at the polish HEAD:
 - The footer keeps its existing narrow-terminal fallback, which can pack
   the three parts tightly at 60 cells. This was already the accepted
   footer behaviour and was not changed by this visual milestone.
-- The centered reading measure applies to the conversation only. The
+- The soft reading measure applies to the conversation only. The
   composer rules, header and footer remain full width.

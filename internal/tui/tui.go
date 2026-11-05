@@ -2180,43 +2180,25 @@ const (
 	transcriptGutter = 2
 	// transcriptRightMargin keeps the longest line off the terminal edge.
 	transcriptRightMargin = 2
-	// transcriptMaxContent is the reading measure. Wide terminals get
-	// generous side whitespace instead of lines too long to scan.
-	transcriptMaxContent = 100
+	// transcriptMaxContent is the soft reading measure for long-form
+	// prose. It is left-aligned, never centred: a wide terminal keeps a
+	// generous right margin rather than moving the conversation inward.
+	transcriptMaxContent = 116
 )
-
-// transcriptBlock is the width of the gutter, content and right margin,
-// capped on wide terminals and then centred.
-func (m Model) transcriptBlock() int {
-	block := transcriptGutter + transcriptMaxContent + transcriptRightMargin
-	if m.width < block {
-		block = m.width
-	}
-	if block < 1 {
-		block = 1
-	}
-	return block
-}
-
-// transcriptLeft is the blank margin before the eye gutter.
-func (m Model) transcriptLeft() int {
-	left := (m.width - m.transcriptBlock()) / 2
-	if left < 0 {
-		return 0
-	}
-	return left
-}
 
 // contentColumn is the display column where every conversation message
 // begins. The eye occupies the separate gutter to its left.
 func (m Model) contentColumn() int {
-	return m.transcriptLeft() + transcriptGutter
+	return transcriptGutter
 }
 
 // contentWidth is the width available to message text. Measurements are
 // in display cells, so wide glyphs and combining marks wrap correctly.
 func (m Model) contentWidth() int {
-	w := m.transcriptBlock() - transcriptGutter - transcriptRightMargin
+	w := m.width - transcriptGutter - transcriptRightMargin
+	if w > transcriptMaxContent {
+		w = transcriptMaxContent
+	}
 	if w < 10 {
 		w = 10
 	}
