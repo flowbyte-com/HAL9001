@@ -90,11 +90,23 @@ persisted only after successful generation.
 A turn with tools is a bounded loop of at most eight provider rounds.
 Each tool call becomes an assistant tool-call message plus a `tool`
 result, so the model can read, act and continue in one exchange. Those
-transcript messages exist only inside the turn: the session stores the
-final visible answer, never the tool payloads. The interface receives a
-content-free activity record for each call and shows a compact
-`⚙ tool · status` line; a denied or cancelled call is reported to the
-model honestly and halts the loop.
+transcript messages exist only inside the turn. The session stores the
+final visible answer plus a bounded, versioned **tool evidence ledger**:
+the turn id, call id, tool, action, target, historical mode, status,
+exit code, duration, output size/truncation and a redacted summary. Raw
+stdout, file contents, command text and environment are never copied into
+the ledger. A denied call halts the loop; a failed, timed-out or
+cancelled execution is returned to the model and the turn continues. The
+interface receives a content-free activity record for each call and
+shows a compact `⚙ tool · status` line.
+
+On resume the ledger becomes a clearly labelled system note, not a
+provider tool-call message. The note says the records are historical
+facts, not current tool availability; it never grants a tool or makes 666
+active. Historical mode 666 therefore survives as evidence while the
+current conversation still starts in 444. Older sessions without a
+ledger load normally, and an assistant claim with no verified record is
+described as uncertain rather than as fabricated.
 
 ## Terminal interface
 
@@ -393,6 +405,46 @@ arbitrary OS files, and every call is audited without copying the
 payload. A response larger than the prompt budget is shortened
 explicitly, with the original size and digest; the model is never handed
 a cut JSON object as if it were complete.
+
+## Tool evidence ledger
+
+Every assistant message may carry a `tool_ledger` object. It is versioned
+(`version: 1`) and stores only verified execution metadata:
+
+```json
+{"version":1,"session_id":"chat","turn_id":"turn-…","executions":[
+  {"turn_id":"turn-…","call_id":"call-…","tool":"bash","action":"bash",
+   "target":"/work","mode":"666","status":"success","exit_code":0,
+   "duration_ms":41,"bytes":12,"summary":"exit 0"}]}
+```
+
+A ledger is attached only to the assistant turn whose tools ran. `status`
+is one of `success`, `failure`, `cancelled` or `refused`; `mode` is the
+historical 444/666 boundary. Summaries are bounded and redacted: no raw
+stdout, file contents, command text or environment. One turn is capped at
+64 executions and each field has a size cap.
+
+`session.Message.ToolExecutions()` validates the version, session id, turn
+id, status and mode before returning a record. A missing ledger, an older
+session, an unsupported version, a copied ledger from another session, or
+a damaged optional ledger is treated as no evidence — never inferred from
+assistant text. Core message corruption still fails loudly.
+
+On resume, `internal/engine` renders the valid ledgers as a trusted system
+note headed **Verified historical tool evidence**. It lists each turn and
+call, its historical mode and its outcome. It explicitly says the records
+are not current tool calls and do not grant permission. The engine never
+emits provider `tool` messages or `tool_calls` for history, never reruns an
+operation, and never consults a ledger when deciding `offeredTools()`. The
+current permission block still says 444, and the controller is the only
+authority.
+
+The TUI preserves `turn_id` on reconstructed entries, puts historical tool
+notes immediately above their assistant answer, and rebinds `lastTools` to
+the latest assistant turn (or clears it). `/diag` therefore shows verified
+history rather than stale activity from the previous conversation. The
+separate `~/.hal9001/audit.jsonl` remains content-free bookkeeping and is
+not the source of conversational truth.
 
 ## The one-off approved write (666 REQUESTED)
 

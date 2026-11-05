@@ -314,6 +314,13 @@ a pasted instruction cannot enable it.
 - The audit trail records each tool's name, action, target, mode, outcome,
   exit code, duration, bytes and truncation. It never records file
   contents or shell command text; a command is identified by a hash.
+- Completed tools are also recorded with their assistant turn in a
+  versioned, bounded session ledger. On resume the verified records appear
+  as historical evidence, including their original turn, 444/666 mode and
+  outcome. The current conversation still starts in 444; a historical
+  record is never a tool, never a permission and never replayed. Older
+  sessions without a ledger load normally, and an unverified earlier claim
+  is described as uncertain rather than fabricated.
 
 **One approved write (666).** This is the 444 transaction, separate from
 the session mode. HAL's authority stays 444. When a model asks to save a
