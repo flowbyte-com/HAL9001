@@ -44,10 +44,10 @@ var writeTool = provider.Tool{
 
 // offeredTools is what the engine offers on a turn.
 //
-// In 444 it is the guarded write proposal plus MPM's typed knowledge tools.
-// In 666 the guarded proposal is replaced by the real read/write/edit/bash
-// set; MPM tools remain available because they operate on MPM records, not
-// arbitrary OS files.
+// In 444 it is the guarded write proposal, the read-only Firecrawl research
+// tools and MPM's typed knowledge tools. In 666 the guarded proposal is
+// replaced by the real read/write/edit/bash set; Firecrawl and MPM tools
+// remain available because they cannot edit OS files.
 func (e *Engine) offeredTools() []provider.Tool {
 	if e.toolUnsupported {
 		return nil
@@ -57,6 +57,9 @@ func (e *Engine) offeredTools() []provider.Tool {
 		out = append(out, agenttools.Tools()...)
 	} else if e.workspace != nil {
 		out = append(out, writeTool)
+	}
+	if e.web != nil {
+		out = append(out, e.web.Tools()...)
 	}
 	if e.knowledge != nil {
 		out = append(out, e.knowledge.Tools()...)

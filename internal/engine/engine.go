@@ -15,6 +15,7 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/agenttools"
 	"github.com/flowbyte-com/HAL9001/internal/capability"
+	"github.com/flowbyte-com/HAL9001/internal/firecrawl"
 	"github.com/flowbyte-com/HAL9001/internal/knowledge"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
@@ -58,6 +59,10 @@ type Engine struct {
 	// knowledge exposes MPM's own knowledge tools. It is available in both
 	// 444 and 666: it mutates MPM records, never arbitrary OS files.
 	knowledge *knowledge.Registry
+	// web is Firecrawl's read-only research surface. It is available in
+	// 444 and 666, and it cannot execute code, write files or change the
+	// permission mode.
+	web *firecrawl.Registry
 }
 
 // maxToolSteps bounds a single provider conversation. It is a safety limit,
@@ -109,6 +114,14 @@ func (e *Engine) WithKnowledge(k *knowledge.Registry) *Engine {
 	return e
 }
 
+// WithWebResearch attaches Firecrawl's read-only research tools. They are
+// offered in 444; the registry is never a permission authority and cannot
+// reach the 666 executor or MPM's write tools.
+func (e *Engine) WithWebResearch(w *firecrawl.Registry) *Engine {
+	e.web = w
+	return e
+}
+
 // permissionMode is the safe snapshot used for the system instruction and
 // the offered-tool list. It never replaces the gate's execution check.
 func (e *Engine) permissionMode() permission.Mode {
@@ -145,6 +158,15 @@ func (e *Engine) requestMessages(history []session.Message, guidance string) []p
 			system += "\n\n" + block
 		} else {
 			system = block
+		}
+	}
+	if e.web != nil {
+		if block := e.web.Guidance(); block != "" {
+			if system != "" {
+				system += "\n\n" + block
+			} else {
+				system = block
+			}
 		}
 	}
 	if block := e.historicalEvidenceBlock(history); block != "" {
@@ -190,8 +212,9 @@ func permissionBlock(mode permission.Mode) string {
 			"not call it fabricated."
 	}
 	return "## Current permission: 444 READ ONLY\n\n" +
-		"You may converse, retrieve and update MPM knowledge through its typed tools, and prepare one guarded " +
-		"write proposal for operator approval. You cannot run shell commands or edit OS files. A request for " +
+		"You may converse, retrieve and update MPM knowledge through its typed tools, use the configured " +
+		"read-only Firecrawl web research tools, and prepare one guarded write proposal for operator " +
+		"approval. You cannot run shell commands or edit OS files. A request for " +
 		"those capabilities is outside your authority; do not claim a current operation happened unless a tool " +
 		"result confirms it. If an earlier assistant message reports a completed action but no verified " +
 		"historical record is present for it, say that you cannot verify it from this context; do not assert it " +
@@ -495,7 +518,7 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 			if call.ID == "" {
 				call.ID = fmt.Sprintf("call-%d-%d", step, i)
 			}
-			content, activity, prepared, halt := e.executeTool(ctx, call, turn)
+			content, activity, prepared, halt := e.executeTool(ctx, call, turn, turnID)
 			if emit != nil {
 				a := activity
 				emit(Event{Tool: &a})
@@ -544,7 +567,7 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 // executeTool resolves one provider call. The permission gate is consulted
 // by the executor at the operation itself; this function never caches a
 // prior decision as authority.
-func (e *Engine) executeTool(ctx context.Context, call provider.ToolCall, turn int) (string, ToolActivity, *workspace.Proposal, bool) {
+func (e *Engine) executeTool(ctx context.Context, call provider.ToolCall, turn int, turnID string) (string, ToolActivity, *workspace.Proposal, bool) {
 	mode := e.permissionMode()
 	activity := ToolActivity{
 		CallID: call.ID, Name: call.Name, Action: call.Name, Mode: mode,
@@ -598,6 +621,18 @@ func (e *Engine) executeTool(ctx context.Context, call provider.ToolCall, turn i
 		}
 		return res.Content, activity, nil, false
 	default:
+		if e.web != nil && e.web.Has(call.Name) {
+			res := e.web.Execute(ctx, call, turnID)
+			activity.Action = res.Action
+			activity.Target = res.Target
+			activity.Status = res.Status
+			activity.Summary = res.Summary
+			activity.Duration = res.Duration
+			activity.Bytes = res.Bytes
+			activity.Truncated = res.Truncated
+			activity.Mode = res.Mode
+			return res.Content, activity, nil, false
+		}
 		if e.knowledge != nil && e.knowledge.Has(call.Name) {
 			res := e.knowledge.Execute(ctx, call)
 			activity.Action = res.Action
@@ -661,6 +696,11 @@ func toolEvidence(a ToolActivity) (session.ToolExecution, bool) {
 // execution did, never the command text, stdout/stderr, file contents or
 // environment.
 func evidenceSummary(a ToolActivity, status session.ToolStatus) string {
+	if strings.HasPrefix(a.Name, "firecrawl_") && strings.TrimSpace(a.Summary) != "" {
+		// The registry already supplies a content-free result count or
+		// failure reason. It never contains page text, the query or a key.
+		return a.Summary
+	}
 	switch status {
 	case session.ToolRefused:
 		return "refused"

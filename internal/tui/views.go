@@ -756,6 +756,11 @@ func (m Model) diagRows() []string {
 		rows = append(rows, "  "+padTo(st.active.Render("session"), 16)+
 			m.sessionID+" · "+m.permissionLabel())
 	}
+	if m.hooks.WebResearch != nil {
+		if status := strings.TrimSpace(m.hooks.WebResearch()); status != "" {
+			composer("web research", status)
+		}
+	}
 	if len(m.lastTools) > 0 {
 		rows = append(rows, "  "+padTo(st.active.Render("last tools"), 16))
 		for _, a := range m.lastTools {

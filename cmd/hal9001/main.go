@@ -21,6 +21,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/clipboard"
 	"github.com/flowbyte-com/HAL9001/internal/config"
 	"github.com/flowbyte-com/HAL9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/firecrawl"
 	"github.com/flowbyte-com/HAL9001/internal/knowledge"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/persona"
@@ -105,6 +106,11 @@ func run(args []string) error {
 	app.knowledge = knowledge.NewRegistry(&knowledge.Client{}).
 		WithAudit(audit, func() string { return app.session }).
 		WithMode(app.permission.Mode)
+	// Firecrawl is read-only live research, available in 444. The key is
+	// read from the environment and never enters the session or audit.
+	app.web = firecrawl.NewRegistry(firecrawl.New(firecrawl.SettingsFromEnv())).
+		WithAudit(audit, func() string { return app.session }).
+		WithMode(app.permission.Mode)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := app.skills.Refresh(ctx); err != nil {
@@ -166,6 +172,8 @@ type app struct {
 	tools *agenttools.Executor
 	// knowledge exposes MPM's own typed knowledge tools in both modes.
 	knowledge *knowledge.Registry
+	// web exposes Firecrawl's read-only research tools in 444 and 666.
+	web *firecrawl.Registry
 }
 
 // defaultSessionName is the conversation used when nothing has been
@@ -276,6 +284,7 @@ func (a *app) run() error {
 		RenameSession:  a.renameSession,
 		SessionTitle:   func() string { return a.sessionTitle },
 		SessionID:      func() string { return a.session },
+		WebResearch:    a.webStatus,
 	}
 	m := tui.NewWithHooks(a.eng, hooks)
 	m.SetModelName(a.activeModelID())
@@ -403,7 +412,16 @@ func (a *app) rebuildEngine() {
 		WithSkills(a.skills).
 		WithPermission(a.permission).
 		WithExecution(a.tools).
+		WithWebResearch(a.web).
 		WithKnowledge(a.knowledge)
+}
+
+// webStatus is the content-free Firecrawl line shown in /diag.
+func (a *app) webStatus() string {
+	if a.web == nil {
+		return "firecrawl · unavailable"
+	}
+	return a.web.StatusLine()
 }
 
 func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {

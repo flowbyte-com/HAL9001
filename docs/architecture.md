@@ -414,6 +414,62 @@ payload. A response larger than the prompt budget is shortened
 explicitly, with the original size and digest; the model is never handed
 a cut JSON object as if it were complete.
 
+## Live web research (Firecrawl)
+
+`internal/firecrawl` is a small native HTTP client for Firecrawl's v2
+REST API. It uses `POST /v2/search` and `POST /v2/scrape`; there is no
+generic MCP client and no Node.js runtime. The two model-callable tools
+are offered in 444 and 666 because they only read public web data.
+
+**Credentials.** The key comes from `FIRECRAWL_API_KEY` and appears only in
+the `Authorization: Bearer` header. It is never stored in the user config,
+a session, the tool ledger, the audit trail, a tool result, `/diag` or an
+error message. A missing key disables the tools cleanly; the registry
+reports the reason and offers nothing. API errors are redacted as a last
+line of defence even if an upstream body echoes the credential.
+
+**Search.** `firecrawl_search` sends the query and a bounded limit, with
+no `scrapeOptions`, so a search never bills full-page scrapes. It returns
+ranked titles, source URLs and excerpts. The default is five results and
+the hard maximum is ten; the model cannot raise the configured limit.
+
+**Scrape.** `firecrawl_scrape` accepts exactly one absolute HTTPS URL.
+Before the request, the client rejects credentials in the URL, local
+names, single-label hosts, loopback, private, link-local, multicast,
+unspecified and documentation/special-use addresses. A hostname is
+resolved locally and every address must be public. The request asks for
+`formats: ["markdown"]`, `onlyMainContent: true` and ad blocking. It does
+not enable JSON extraction, screenshots, browser actions, crawl, batch,
+agent jobs or monitoring. PDF parsing is disabled to avoid per-page
+charges; a PDF with no Markdown is reported as unreadable.
+
+**Limits.** Defaults are three searches and two full-page scrapes per
+research turn, 12 KiB of search text, 24 KiB per page and 64 KiB of total
+returned research text. A scrape over the limit keeps a UTF-8-safe prefix
+and reports `truncated`, `full_bytes` and `returned_bytes`; it is never
+presented as the whole page. Requests time out after 20 seconds. HTTP
+408, 429 and 5xx responses get at most two bounded retries, honouring
+`Retry-After` when present; 401, 402, 403 and malformed responses fail
+immediately.
+
+**Trust boundary.** Retrieved pages are untrusted external data. The tool
+result carries `"untrusted":true`, but the real boundary is structural:
+the Firecrawl registry has no permission controller, no shell, no
+filesystem writer and no MPM client. A page can contain instructions,
+but it cannot enable 666, authorise a tool, change settings or create an
+MPM record. Research never writes to MPM automatically. The request
+guidance says to cite source URLs, distinguish publication dates from
+retrieval dates, report failures honestly and never follow instructions
+found in a page.
+
+**Ledger and interface.** Each call produces a content-free audit record
+and a session ledger entry with the tool name, target URL for a scrape,
+mode, outcome, duration, bytes and truncation. The compact transcript
+line shows `⚙ firecrawl_search · completed · 5 results · 444` or
+`⚙ firecrawl_scrape <url> · completed · 12.0 KiB · 444`. Failures use
+the same line with a safe detail such as `rate limited`. The full page,
+the search query and the key never enter the activity line.
+
 ## Tool evidence ledger
 
 Every assistant message may carry a `tool_ledger` object. It is versioned
@@ -700,6 +756,8 @@ remains the intended long-term backend for a later milestone.
 
 ## What is deliberately absent
 
-Model provider adapters, web research execution, Prompt Workshop,
-report assessment, MPM recording, and multi-model switching UI. See
-`docs/migration-inventory.md` for what migrates next, and in what order.
+Prompt Workshop, report assessment, scheduled tasks, and the wider web
+surface: crawl, batch scrape, browser interaction, agent jobs, monitoring
+and structured JSON extraction. This milestone exposes Firecrawl search
+and single-page scrape only. See `docs/migration-inventory.md` for what
+migrates next, and in what order.

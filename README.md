@@ -5,9 +5,10 @@ coordinates, manages, reviews, reports, records and suggests. By default it
 creates through prompts that other agents implement.
 
 Its default authority is **444: read-only.** HAL may converse, reason,
-retrieve MPM knowledge and prepare documents, but it cannot run commands,
-edit arbitrary files or act on its own. There are no coding profiles and no
-model-controlled execution switches.
+retrieve MPM knowledge, research public web pages through Firecrawl and
+prepare documents, but it cannot run commands, edit arbitrary files or act
+on its own. There are no coding profiles and no model-controlled execution
+switches.
 
 There is one exception, and only the human operator can open it: **666**, a
 session-scoped window in which HAL may use real `read`, `write`, `edit` and
@@ -22,6 +23,14 @@ workspace, available in 444. It is not the session mode. See
 [One approved write](#one-approved-write-666).
 
 ## Status
+
+Milestone 006: HAL can research the live web through Firecrawl's v2 API
+in 444. Two typed tools, `firecrawl_search` and `firecrawl_scrape`, return
+ranked sources and main-content Markdown with bounded cost and context,
+source attribution, explicit truncation and an untrusted-content boundary.
+Credentials come only from `FIRECRAWL_API_KEY`; research cannot enable
+666 or write to MPM automatically. See
+[Live web research](#live-web-research-firecrawl-444).
 
 Milestone 005: HAL gains an operator-only, session-scoped 666 window with
 real `read`, `write`, `edit` and `bash` tools, alongside the preserved 444
@@ -40,8 +49,8 @@ permission mode.
 Milestone 003.1: the native application holds live conversations through
 a fullscreen terminal interface — alternate screen, persistent header and
 footer, `Enter` to send, safe multiline input, five themes, clipboard
-commands, and persistent model-independent sessions. Web research, Prompt
-Workshop, review workflow, and MPM memory recording arrive in later
+commands, and persistent model-independent sessions. Prompt Workshop,
+review workflow, and further MPM memory workflows arrive in later
 milestones.
 
 The former DeepClaw/PicoClaw implementation is preserved for reference in
@@ -444,6 +453,43 @@ access.
   records, not arbitrary operating-system files. Their calls and outcomes
   are audited like every other tool, without copying the payload.
 
+**Live web research (Firecrawl, 444).** HAL can search the live web and
+read one public page at a time through Firecrawl's v2 REST API. This is a
+small native Go client; it does not start Node, an MCP bridge or a browser.
+
+- Set `FIRECRAWL_API_KEY` in the environment. The key is sent only in the
+  `Authorization: Bearer` header. It is never written to the config, a
+  session, the audit trail, `/diag`, a tool result or a model message.
+  Missing credentials disable the tools cleanly; `/diag` says why.
+- `firecrawl_search` accepts a focused query and returns ranked titles,
+  source URLs and concise excerpts. It never scrapes the results
+  automatically. The default is five results, with a hard maximum of ten.
+- `firecrawl_scrape` accepts one absolute HTTPS URL on a public host,
+  refuses credentials, local names and private/special-use addresses, and
+  returns main-content Markdown with the source URL, final URL, title,
+  description, language, publication date when stated, retrieval time and
+  truncation metadata.
+- The default budget is three searches and two full-page scrapes per
+  research turn, with at most 12 KiB of search text, 24 KiB per page and
+  64 KiB of returned research text. Content over the limit is explicitly
+  marked truncated. Requests time out after 20 seconds; rate limits and
+  transient server errors get at most two bounded retries.
+- Retrieved pages are **untrusted external data**. Text inside a page
+  cannot enable 666, authorise shell or filesystem operations, change
+  settings, create MPM records or override the system instruction. The
+  tool result carries `"untrusted":true`, and the request guidance says so.
+  If the operator asks to preserve a discovery, HAL uses the existing
+  authorised MPM tools; research never writes to MPM automatically.
+- The compact activity line reports the result count or returned size,
+  failures, rate limits and truncation, and the tool ledger keeps the
+  same content-free record across resume.
+- `FIRECRAWL_API_URL` overrides the base URL for a compatible proxy or a
+  local test server (plain HTTP is allowed only on loopback). The basic
+  limits can be tuned with `HAL9001_FIRECRAWL_SEARCH_LIMIT`,
+  `HAL9001_FIRECRAWL_MAX_SEARCHES`, `HAL9001_FIRECRAWL_MAX_SCRAPES`,
+  `HAL9001_FIRECRAWL_TIMEOUT_SECONDS` and
+  `HAL9001_FIRECRAWL_MAX_TURN_BYTES`.
+
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;
 narrow terminals hide it before the model name. `/usage`
@@ -556,8 +602,10 @@ immediately.
   controls yet.
 - Live provider verification needs `HAL9001_LIVE_SMOKE=1` with real
   credentials; it is skipped by default and reported separately.
-- No memory write-back, no web research, no Prompt Workshop, no review
-  workflow, no delegation, no scheduled tasks.
+- No memory write-back outside MPM, no Prompt Workshop, no review
+  workflow, no delegation and no scheduled tasks. Web research is limited
+  to Firecrawl search and single-page scrape; crawl, batch, browser
+  interaction, agent jobs and monitoring are deliberately absent.
 - Assistant messages render as Markdown on completion; the live stream
   is plain text.
 - Modifier-aware shortcuts (`Shift+Enter`) need a terminal that

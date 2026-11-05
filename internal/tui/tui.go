@@ -205,6 +205,9 @@ type Hooks struct {
 	// SetEffort persists a level for the active model and returns the
 	// engine for subsequent requests.
 	SetEffort func(level string) (Engine, error)
+	// WebResearch reports the Firecrawl availability and limits for
+	// diagnostics. It never includes the API key.
+	WebResearch func() string
 }
 
 // Engine runs the conversation behind the interface. It matches
@@ -2100,7 +2103,24 @@ func toolActivityLine(a engine.ToolActivity, width int) string {
 	if a.Name == "bash" && a.ExitCode != nil {
 		status += fmt.Sprintf(" · exit %d", *a.ExitCode)
 	}
-	if a.Name != "bash" && a.Bytes > 0 {
+	switch {
+	case strings.HasPrefix(a.Name, "firecrawl_"):
+		// Search reports a result count; scrape reports returned bytes.
+		// Failures report a safe detail such as "rate limited". A detail
+		// equal to the status label ("cancelled", "timed out") is not
+		// repeated.
+		detail := strings.TrimSpace(a.Summary)
+		if detail == toolStatusLabel(a.Status) {
+			detail = ""
+		}
+		if a.Status != "ok" && detail != "" {
+			status += " · " + detail
+		} else if a.Name == "firecrawl_search" && detail != "" {
+			status += " · " + detail
+		} else if a.Bytes > 0 {
+			status += " · " + humanSize(int64(a.Bytes))
+		}
+	case a.Name != "bash" && a.Bytes > 0:
 		status += " · " + humanSize(int64(a.Bytes))
 	}
 	if a.Duration >= time.Second {

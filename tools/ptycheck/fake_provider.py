@@ -7,10 +7,11 @@ short sentence plus a streamed ``write_file`` tool call. The interface
 must show the approval review, and only an operator key may save it.
 
 A ``[[read PATH]]`` or ``[[bash COMMAND]]`` directive makes the stub
-propose the corresponding real tool. On the second provider round, when
-the tool result is present, it answers with the result instead of asking
-again. The stub never executes anything: the engine and the permission
-gate decide.
+propose the corresponding real tool. A ``[[fcsearch QUERY]]`` or
+``[[fcscrape URL]]`` directive proposes the corresponding 444 Firecrawl
+tool. On the second provider round, when the tool result is present, it
+answers with the result instead of asking again. The stub never executes
+anything: the engine and the permission gate decide.
 """
 import json
 import os
@@ -38,6 +39,8 @@ LONG_SAVE_BODY = "\n".join("document line %03d" % i for i in range(1, 61))
 SAVE_RE = re.compile(r"\[\[save\s+([^\]]+)\]\]")
 READ_RE = re.compile(r"\[\[read\s+([^\]]+)\]\]")
 BASH_RE = re.compile(r"\[\[bash\s+([^\]]+)\]\]")
+FCSEARCH_RE = re.compile(r"\[\[fcsearch\s+([^\]]+)\]\]")
+FCSCRAPE_RE = re.compile(r"\[\[fcscrape\s+([^\]]+)\]\]")
 
 # SKILL_RE finds the skill name in a composed system instruction.
 SKILL_RE = re.compile(r"MPM skill: ([A-Za-z0-9_.-]+)")
@@ -54,17 +57,23 @@ def tool_results(request):
 
 def result_field(request, name, field):
     """Read one JSON field from the last tool result, if it is there."""
-    results = tool_results(request)
-    for message in reversed(results):
+    payload = tool_payload(request, name)
+    if payload is None:
+        return ""
+    value = payload.get(field, "")
+    return value if isinstance(value, str) else str(value)
+
+
+def tool_payload(request, name):
+    """Return the last structured result for one tool, if present."""
+    for message in reversed(tool_results(request)):
         try:
             payload = json.loads(message.get("content", "{}"))
         except Exception:
             continue
-        if payload.get("tool") != name:
-            continue
-        value = payload.get(field, "")
-        return value if isinstance(value, str) else str(value)
-    return ""
+        if payload.get("tool") == name:
+            return payload
+    return None
 
 
 def applied_skill(request):
@@ -122,6 +131,36 @@ class Handler(BaseHTTPRequestHandler):
                 self.answer("BASH RESULT: " + out.strip()[:120])
             else:
                 self.propose_tool("bash", {"command": command.group(1)})
+            return
+
+        search = FCSEARCH_RE.search(last)
+        if search:
+            payload = tool_payload(request, "firecrawl_search")
+            if payload is not None:
+                if payload.get("ok"):
+                    results = payload.get("results") or []
+                    first = results[0].get("title", "") if results else ""
+                    self.answer("SEARCH RESULT: %d results; first: %s" %
+                                (payload.get("result_count", len(results)), first))
+                else:
+                    self.answer("SEARCH ERROR: " + str(payload.get("code", "failed")))
+            else:
+                self.propose_tool("firecrawl_search", {"query": search.group(1)})
+            return
+
+        page = FCSCRAPE_RE.search(last)
+        if page:
+            payload = tool_payload(request, "firecrawl_scrape")
+            if payload is not None:
+                if payload.get("ok"):
+                    self.answer("SCRAPE RESULT: %s [%s bytes, truncated=%s]" % (
+                        payload.get("title", "untitled"),
+                        payload.get("returned_bytes", 0),
+                        str(payload.get("truncated", False)).lower()))
+                else:
+                    self.answer("SCRAPE ERROR: " + str(payload.get("code", "failed")))
+            else:
+                self.propose_tool("firecrawl_scrape", {"url": page.group(1)})
             return
 
         # A skill in the system instruction means the guidance was loaded

@@ -106,6 +106,32 @@ zones, and only the middle one moves.
       row at a time.
 - [ ] A drag that passes over the jump control does not jump.
 
+## Web research
+
+With `FIRECRAWL_API_KEY` set in the environment and HAL started in 444:
+
+- [ ] Ask for a current release or documentation change. HAL performs one
+      targeted `firecrawl_search`, not a scrape of every result.
+- [ ] The activity line shows `⚙ firecrawl_search · completed · N results
+      · 444`, and the answer cites the source URLs.
+- [ ] Ask HAL to read one result or a supplied HTTPS URL. The
+      `firecrawl_scrape` line reports returned bytes, and truncation is
+      marked explicitly when the page is long.
+- [ ] Ask for an HTTP URL, a localhost URL or a private address. HAL
+      refuses it as an invalid URL and performs no request.
+- [ ] Make a page or search fail (401, 403, 429, 5xx or malformed). HAL
+      reports the limitation rather than inventing a result; the line
+      says `authentication failed`, `forbidden`, `rate limited`,
+      `upstream error` or `malformed response`.
+- [ ] A page containing instructions to enable 666, run bash or save to
+      MPM changes nothing: the footer stays 444, no privileged tool is
+      offered, and no MPM record appears.
+- [ ] `/diag` names Firecrawl availability and its limits. It never
+      shows the key. With the key unset, it says
+      `FIRECRAWL_API_KEY is not set` and the tools are not offered.
+- [ ] Search and scrape records survive a resume as content-free
+      activity rows.
+
 ## Every theme
 
 Run `/theme` and walk through all five. For each one:
