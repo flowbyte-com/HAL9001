@@ -22,6 +22,8 @@ func (m Model) renderMarkdown(text string, width int) string {
 	if width < 20 {
 		width = 80
 	}
+	text = sanitizeMarkdown(text)
+	prepared, links := prepareMarkdownLinks(text)
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(m.theme.glamourStyle()),
 		glamour.WithWordWrap(width),
@@ -29,14 +31,15 @@ func (m Model) renderMarkdown(text string, width int) string {
 	if err != nil {
 		return strings.Trim(text, "\n")
 	}
-	out, err := renderer.Render(text)
+	out, err := renderer.Render(prepared)
 	if err != nil {
 		return strings.Trim(text, "\n")
 	}
 	// Headings use a zero-width prefix to keep glamour's heading style
 	// (and therefore the theme accent) on the text. The marker itself is
 	// never part of the transcript.
-	return strings.Trim(strings.ReplaceAll(out, "\u200b", ""), "\n")
+	out = strings.Trim(strings.ReplaceAll(out, "\u200b", ""), "\n")
+	return scrubUnsafeHyperlinks(applyPreparedLinks(out, links, m.theme.styles().link))
 }
 
 // logicalWrapWidth is the width used for the unwrapped render, and the
@@ -68,6 +71,8 @@ func (m Model) renderMarkdownLogical(text string) []string {
 }
 
 func (m Model) renderMarkdownLogicalWidth(text string, width int) []string {
+	text = sanitizeMarkdown(text)
+	prepared, _ := prepareMarkdownLinks(text)
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(m.theme.glamourStyle()),
 		glamour.WithWordWrap(width),
@@ -75,11 +80,12 @@ func (m Model) renderMarkdownLogicalWidth(text string, width int) []string {
 	if err != nil {
 		return strings.Split(text, "\n")
 	}
-	out, err := renderer.Render(text)
+	out, err := renderer.Render(prepared)
 	if err != nil {
 		return strings.Split(text, "\n")
 	}
 	out = strings.ReplaceAll(out, "\u200b", "")
+	out = strings.ReplaceAll(out, linkMarker, "")
 	lines := strings.Split(strings.Trim(out, "\n"), "\n")
 	logical := make([]string, 0, len(lines))
 	for _, line := range lines {

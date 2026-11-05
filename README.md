@@ -119,6 +119,13 @@ separates turns, so consecutive messages stay readable without chrome.
 The transcript uses the full usable terminal width with two-cell side
 margins; the composer, header and footer keep the full width.
 
+Links are OSC 8 hyperlinks. A labeled Markdown link shows its label, not a
+duplicated raw destination; a bare `http(s)://` URL stays visible. In a
+compatible terminal, Ctrl+click opens the destination in the system
+browser. Only HTTP/HTTPS destinations become clickable, and control
+characters cannot enter a link label or destination. Mouse selection and
+`/copy` return the visible text without OSC 8 or other escape sequences.
+
 Verified tool activity sits beneath the answer that produced it in one
 compact line per call, for example `⚙ bash · completed · exit 0 · 666`.
 The per-response statistics line is the last row of the assistant block,

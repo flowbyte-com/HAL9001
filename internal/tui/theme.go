@@ -58,6 +58,7 @@ type styles struct {
 	user   lipgloss.Style
 	eye    lipgloss.Style
 	tool   lipgloss.Style
+	link   lipgloss.Style
 	rule   lipgloss.Style
 	footer lipgloss.Style
 	active lipgloss.Style
@@ -103,6 +104,7 @@ func (t Theme) styles() styles {
 		user:   lipgloss.NewStyle().Bold(true).Foreground(fg(t.Text)),
 		eye:    lipgloss.NewStyle().Bold(true).Foreground(fg(t.Eye)),
 		tool:   lipgloss.NewStyle().Foreground(fg(t.Muted)),
+		link:   lipgloss.NewStyle().Foreground(fg(t.Accent)).Underline(true),
 		rule:   lipgloss.NewStyle().Foreground(fg(t.Muted)),
 		footer: lipgloss.NewStyle().Foreground(fg(t.Muted)),
 		active: lipgloss.NewStyle().Bold(true).Foreground(fg(t.Accent)),
@@ -172,6 +174,14 @@ func (t Theme) glamourStyle() ansi.StyleConfig {
 	cfg.Strikethrough.Color = &muted
 	cfg.Link.Color = &accent
 	cfg.LinkText.Color = &accent
+	// The transcript link is understated: accent colour and an underline,
+	// never the bold label Glamour uses by default.
+	noBold := false
+	underline := true
+	cfg.Link.Bold = &noBold
+	cfg.Link.Underline = &underline
+	cfg.LinkText.Bold = &noBold
+	cfg.LinkText.Underline = &underline
 	cfg.Code.Color = &accent
 	cfg.Code.Prefix = ""
 	cfg.Code.Suffix = ""

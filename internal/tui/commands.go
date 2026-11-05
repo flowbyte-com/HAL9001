@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // command is one local slash command. The table below is the single
@@ -537,6 +538,7 @@ func (m *Model) copyCmd(codeOnly bool) tea.Cmd {
 		}
 		text, label = block, "code block"
 	}
+	text = ansi.Strip(text)
 	if strings.TrimSpace(text) == "" {
 		m.notice = "Nothing to copy yet — no completed response."
 		return nil

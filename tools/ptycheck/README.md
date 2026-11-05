@@ -92,6 +92,14 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/firecrawl_checks.py
 ```
 
+The link checks own a static conversation fixture and a temporary
+home/store. They need no provider and no graphical desktop:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/link_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -155,6 +163,9 @@ python3 tools/ptycheck/firecrawl_checks.py
   compact activity lines, `/diag`, `/help`, the 444 footer, the audit trail
   and session resume. Every check uses local fake servers; no live credits
   are spent.
+- The link suite verifies OSC 8 destinations, label-only Markdown links,
+  visible bare URLs, numbered lists, tables, unsafe-scheme rejection,
+  fenced-code exclusion and plain reconstructed screen text.
 - The permission suite runs the lifecycle end to end: 444 is the default;
   a model-invented `read` is refused; conversation text and a plain `y` do
   not enable 666; `Ctrl+P` then `Ctrl+Y` enables a red `666 UNRESTRICTED`

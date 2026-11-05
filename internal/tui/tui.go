@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +19,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
@@ -2644,21 +2644,32 @@ func (m *Model) rewrap() {
 // The first row carries the eye; every later row shares the content
 // column, so the terminal rows and the cell map never disagree.
 func (m Model) pendingRows(pending string) []string {
-	lines := strings.Split(pending, "\n")
+	lines := strings.Split(sanitizeMarkdown(pending), "\n")
 	rows := make([]string, 0, len(lines))
+	fence := false
 	for i, line := range lines {
+		display := line
+		switch {
+		case isFenceLine(line):
+			fence = !fence
+		case !fence:
+			// Bare URLs and complete labeled links become clickable
+			// while the answer is still arriving; incomplete Markdown
+			// remains raw until its closing parenthesis arrives.
+			display = linkifyPendingText(line, m.theme.styles().link)
+		}
 		if i == 0 {
-			rows = append(rows, m.eyePrefix()+line)
+			rows = append(rows, m.eyePrefix()+display)
 			continue
 		}
-		rows = append(rows, m.transcriptPrefix()+line)
+		rows = append(rows, m.transcriptPrefix()+display)
 	}
 	return rows
 }
 
 // pendingLogical is the unwrapped text of the answer being streamed.
 func pendingLogical(pending string) []string {
-	return strings.Split(pending, "\n")
+	return strings.Split(sanitizeMarkdown(pending), "\n")
 }
 
 // separatorEntry is the single blank row between conversation turns.
@@ -3387,12 +3398,11 @@ func fitStatusBar(left, mid, right string, width int) (string, bool) {
 	}
 }
 
-var ansiSequence = regexp.MustCompile("\x1b\\[[0-9;?]*[ -/]*[@-~]")
-
-// stripANSI removes escape sequences for monochrome terminals. Widgets
-// style themselves internally, so the fallback applies at the final view.
+// stripANSI removes escape sequences, including OSC 8 hyperlinks, for
+// monochrome terminals and plain-text comparisons. Widgets style themselves
+// internally, so the fallback applies at the final view.
 func stripANSI(s string) string {
-	return ansiSequence.ReplaceAllString(s, "")
+	return ansi.Strip(s)
 }
 
 // RunWithModel launches a prebuilt interface (used when the caller sets

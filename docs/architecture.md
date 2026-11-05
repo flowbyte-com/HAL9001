@@ -139,6 +139,30 @@ is deliberately the same weight. The composer's rules replace the old
 border rather than adding frame rows, so the conversation keeps its
 height and the suggestion panel keeps its room on short terminals.
 
+### Hyperlinks
+
+Markdown links are rendered as OSC 8 hyperlinks by the existing Glamour
+stack. Glamour normally prints a labeled link's destination after its
+label; HAL preprocesses the Markdown with the same Goldmark parser, lays
+out only the label, and reattaches one OSC 8 hyperlink after rendering.
+This keeps table widths, paragraph wrapping and long-link rows honest.
+Bare HTTP(S) URLs are left to Glamour's autolink support and stay visible.
+The label and bare URL use the theme accent with an underline.
+
+Only `http` and `https` destinations are clickable. Credentials in a URL,
+non-HTTP schemes, control characters and unterminated OSC sequences are
+rejected. The entire Markdown source is stripped of C0/C1 controls before
+rendering, so a label or destination cannot inject a terminal sequence.
+Fenced and inline code never become links. Unsafe spans left by Glamour
+are removed by a final OSC 8 validation pass.
+
+Activation is native to the terminal: Ctrl+click in Ghostty (or the
+terminal's equivalent) uses its own URL handler. HAL does not open links,
+install a browser command or intercept mouse clicks for URLs. Link
+selection uses the existing conversation selection, which copies labels
+and visible URLs as plain text; `/copy` strips escape sequences before
+writing to the clipboard.
+
 The hint row below the composer is about the composer alone. It offers
 the keys that act on the draft right now — the plain keys when the
 composer is empty, the editing keys while it holds text, the undo hint

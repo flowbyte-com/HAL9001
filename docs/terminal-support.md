@@ -161,6 +161,16 @@ Terminal differences to check by hand:
 - Terminals that do not implement SGR mouse reporting (`CSI ?1006h`) get
   no pointer events at all, and HAL falls back to keyboard scrolling.
 
+## Hyperlinks
+
+HAL emits OSC 8 hyperlinks for labeled Markdown links and for bare
+HTTP/HTTPS URLs. Ghostty, kitty, WezTerm, foot and recent Konsole support
+them natively: Ctrl+click (or the terminal's equivalent) opens the
+destination. Terminals that do not implement OSC 8 simply ignore the
+sequence and keep the visible label or URL; HAL does not open links
+itself. Selection and `/copy` are plain text and never contain the OSC 8
+control sequence.
+
 ## Known limitations
 
 - **Native selection in the alternate screen.** Selecting with the

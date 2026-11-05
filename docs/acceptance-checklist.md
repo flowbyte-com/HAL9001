@@ -136,6 +136,17 @@ With `FIRECRAWL_API_KEY` set, `EXA_API_KEY` optional, and HAL started in
 - [ ] Search and scrape records survive a resume as content-free
       activity rows.
 
+## Clickable links
+
+Automated tests cover OSC 8 sequences, labels, bare URLs, wrapping,
+sanitisation, code fences, tables, lists, selection and `/copy`. One
+manual terminal check remains:
+
+- [ ] Launch HAL in Ghostty, ask HAL to display a Markdown link to
+      `https://example.com`, then Ctrl+click the label. The default
+      browser opens the correct URL. HAL itself must not open anything
+      until that click.
+
 ## Every theme
 
 Run `/theme` and walk through all five. For each one:
