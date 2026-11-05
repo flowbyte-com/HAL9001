@@ -22,15 +22,19 @@ type Theme struct {
 	Text       string
 	Accent     string
 	Muted      string
+	// Eye is the restrained red of HAL's assistant marker. It is a
+	// separate semantic colour so every theme can keep the eye red
+	// without recolouring the rest of its palette.
+	Eye string
 }
 
 // Preset themes. HAL Classic is the default.
 var (
-	ThemeHALClassic = Theme{Name: "HAL Classic", Background: "#121316", Text: "#E5E7EB", Accent: "#EC5359", Muted: "#8A8F98"}
-	ThemeMidnight   = Theme{Name: "Midnight", Background: "#101C2D", Text: "#D7E7F7", Accent: "#75B9EE", Muted: "#5E7A93"}
-	ThemeAmber      = Theme{Name: "Amber", Background: "#211B12", Text: "#F7DFAE", Accent: "#E6AA46", Muted: "#8A7551"}
-	ThemePaper      = Theme{Name: "Paper", Background: "#F4F1E9", Text: "#323337", Accent: "#B84347", Muted: "#8A8578"}
-	ThemeMono       = Theme{Name: "Monochrome", Background: "#111111", Text: "#EDEDED", Accent: "#FFFFFF", Muted: "#8A8A8A"}
+	ThemeHALClassic = Theme{Name: "HAL Classic", Background: "#121316", Text: "#E5E7EB", Accent: "#EC5359", Muted: "#8A8F98", Eye: "#FF4D5A"}
+	ThemeMidnight   = Theme{Name: "Midnight", Background: "#101C2D", Text: "#D7E7F7", Accent: "#75B9EE", Muted: "#5E7A93", Eye: "#FF6B6B"}
+	ThemeAmber      = Theme{Name: "Amber", Background: "#211B12", Text: "#F7DFAE", Accent: "#E6AA46", Muted: "#8A7551", Eye: "#FF5A4E"}
+	ThemePaper      = Theme{Name: "Paper", Background: "#F4F1E9", Text: "#323337", Accent: "#B84347", Muted: "#8A8578", Eye: "#B84347"}
+	ThemeMono       = Theme{Name: "Monochrome", Background: "#111111", Text: "#EDEDED", Accent: "#FFFFFF", Muted: "#8A8A8A", Eye: "#FF5A5A"}
 )
 
 // Themes lists the presets in picker order.
@@ -52,7 +56,8 @@ func ThemeByName(name string) Theme {
 type styles struct {
 	header lipgloss.Style
 	user   lipgloss.Style
-	hal    lipgloss.Style
+	eye    lipgloss.Style
+	tool   lipgloss.Style
 	rule   lipgloss.Style
 	footer lipgloss.Style
 	active lipgloss.Style
@@ -95,8 +100,9 @@ func (t Theme) styles() styles {
 	fg := func(c string) color.Color { return lipgloss.Color(c) }
 	return styles{
 		header: lipgloss.NewStyle().Bold(true).Foreground(fg(t.Accent)),
-		user:   lipgloss.NewStyle().Bold(true).Foreground(fg(t.Accent)),
-		hal:    lipgloss.NewStyle().Bold(true).Foreground(fg(t.Text)),
+		user:   lipgloss.NewStyle().Bold(true).Foreground(fg(t.Text)),
+		eye:    lipgloss.NewStyle().Bold(true).Foreground(fg(t.Eye)),
+		tool:   lipgloss.NewStyle().Foreground(fg(t.Muted)),
 		rule:   lipgloss.NewStyle().Foreground(fg(t.Muted)),
 		footer: lipgloss.NewStyle().Foreground(fg(t.Muted)),
 		active: lipgloss.NewStyle().Bold(true).Foreground(fg(t.Accent)),
@@ -142,6 +148,14 @@ func (t Theme) glamourStyle() ansi.StyleConfig {
 	}
 	text, accent, muted := t.Text, t.Accent, t.Muted
 
+	// The conversation owns the left gutter now. Glamour's document and
+	// code-block margins would add a second, invisible column and make
+	// wrapped assistant text disagree with the user text.
+	zero := uint(0)
+	cfg.Document.Margin = &zero
+	cfg.Document.BlockPrefix = ""
+	cfg.Document.BlockSuffix = ""
+	cfg.CodeBlock.Margin = &zero
 	cfg.Document.Color = &text
 	cfg.Document.BackgroundColor = nil
 	cfg.Paragraph.Color = &text
@@ -149,6 +163,8 @@ func (t Theme) glamourStyle() ansi.StyleConfig {
 	for _, h := range []*ansi.StyleBlock{&cfg.H1, &cfg.H2, &cfg.H3, &cfg.H4, &cfg.H5, &cfg.H6} {
 		h.Color = &accent
 		h.BackgroundColor = nil
+		h.Prefix = "\u200b"
+		h.Suffix = ""
 	}
 	cfg.Text.Color = &text
 	cfg.Emph.Color = &text
@@ -157,6 +173,8 @@ func (t Theme) glamourStyle() ansi.StyleConfig {
 	cfg.Link.Color = &accent
 	cfg.LinkText.Color = &accent
 	cfg.Code.Color = &accent
+	cfg.Code.Prefix = ""
+	cfg.Code.Suffix = ""
 	cfg.Code.BackgroundColor = nil
 	cfg.CodeBlock.Color = &text
 	cfg.CodeBlock.BackgroundColor = nil

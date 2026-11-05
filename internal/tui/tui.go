@@ -316,8 +316,15 @@ type entry struct {
 	turnID   string
 	collapse collapseState
 	note     bool
-	meta     usage.Turn
-	hasMeta  bool
+	// tools is the verified activity that belongs to this assistant
+	// turn. It is rendered beneath the answer and above the metadata.
+	tools []engine.ToolActivity
+	// contentCol is the terminal column where this entry's text starts.
+	// It is recorded with the rows so the cell map can exclude the eye
+	// gutter even if the geometry changes later.
+	contentCol int
+	meta       usage.Turn
+	hasMeta    bool
 	// attribution names the skills that shaped this answer. It is
 	// presentation metadata about the turn: it is never part of the
 	// text, and it never reaches the model.
@@ -448,6 +455,11 @@ type Model struct {
 	suggestOpen   bool
 	suggestItems  []*command
 	suggestCursor int
+	// suggestDismissed keeps Esc closed until the operator edits the
+	// draft. Cursor blinks and other non-edit updates must not reopen a
+	// panel the operator deliberately dismissed.
+	suggestDismissed      bool
+	suggestDismissedValue string
 	// Onboarding form.
 	obEndpoint textinput.Model
 	obModel    textinput.Model
@@ -673,23 +685,17 @@ func (m *Model) SetHistory(lines []SessionLine) {
 	m.clearUndo()
 	m.clearSelection()
 	for _, line := range lines {
-		// Tool notes precede the answer, exactly as they did when the
-		// turn was live. They come from the verified ledger, not from
-		// the assistant's prose.
-		if line.Role == "assistant" && len(line.Tools) > 0 {
+		var tools []engine.ToolActivity
+		if line.Role == "assistant" {
 			for _, e := range line.Tools {
-				m.entries = append(m.entries, entry{
-					role:   "assistant",
-					text:   toolActivityLine(historicalToolActivity(e)),
-					turnID: e.TurnID,
-					note:   true,
-				})
+				tools = append(tools, historicalToolActivity(e))
 			}
 		}
 		m.entries = append(m.entries, entry{
 			role:        line.Role,
 			text:        line.Text,
 			turnID:      line.TurnID,
+			tools:       tools,
 			collapse:    collapseShown,
 			attribution: line.Attribution,
 		})
@@ -1053,8 +1059,9 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.completeSuggestion()
 				return m, nil
 			case "esc":
-				// Close the panel but keep the draft.
-				m.closeSuggestions()
+				// Close the panel but keep the draft. Suppress reopening
+				// until the operator edits it.
+				m.dismissSuggestions()
 				return m, nil
 			}
 		}
@@ -1162,7 +1169,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.lastTools = mergeToolActivity(m.lastTools, msg.activity)
-		m.notice = toolActivityLine(msg.activity)
+		m.notice = toolActivityLine(msg.activity, m.width)
 		return m, nil
 	case streamDeltaMsg:
 		if !m.currentTurn(msg.id) {
@@ -1218,8 +1225,11 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turnAttribution = msg.attribution
 		m.turnID = msg.turn
 		m.lastTools = append([]engine.ToolActivity(nil), msg.tools...)
-		m.appendToolNotes(msg.tools)
 		i := m.appendEntry("assistant", msg.text)
+		m.entries[i].turnID = msg.turn
+		m.entries[i].tools = append([]engine.ToolActivity(nil), msg.tools...)
+		m.renderEntry(i)
+		m.renderConversation()
 		// Attach this turn's reported usage directly: the answer on screen
 		// and its metadata stay together even before any refresh.
 		if reported != nil && reported.HasUsage {
@@ -1727,6 +1737,27 @@ func (m Model) anchor() scrollAnchor {
 	offset := m.viewport.YOffset()
 	acc := 0
 	for e := range m.entries {
+		if e > 0 {
+			// One decoration row separates consecutive entries.
+			if offset < acc+1 {
+				rows := m.entries[e].rows
+				rr := 0
+				for rr < len(rows) && strings.TrimSpace(stripANSI(rows[rr])) == "" {
+					rr++
+				}
+				if rr >= len(rows) {
+					rr = 0
+				}
+				return scrollAnchor{
+					entry: e,
+					row:   rr,
+					count: len(rows),
+					sub:   0,
+					text:  strings.TrimSpace(stripANSI(rows[rr])),
+				}
+			}
+			acc++
+		}
 		rows := m.entries[e].rows
 		for r := range rows {
 			h := m.wrappedHeight(rows[r])
@@ -1829,6 +1860,8 @@ func (m *Model) restoreAnchor(a scrollAnchor) {
 			offset += m.wrappedHeight(text)
 		}
 	}
+	// Each entry after the first is preceded by one decoration row.
+	offset += a.entry
 	for r := 0; r < row; r++ {
 		offset += m.wrappedHeight(rows[r])
 	}
@@ -2031,66 +2064,96 @@ func historicalToolActivity(e session.ToolExecution) engine.ToolActivity {
 	}
 }
 
-// toolActivityLine is the compact, content-free line shown in the
-// conversation and diagnostics.
-func toolActivityLine(a engine.ToolActivity) string {
-	line := "⚙ " + a.Name
+// showToolActivity reports whether a tool record belongs in the
+// transcript. A guarded write proposal is already described by the
+// answer; empty records are not final.
+func showToolActivity(a engine.ToolActivity) bool {
+	return a.Status != "" && a.Status != "proposed"
+}
+
+// toolLine is the muted, compact transcript form of one tool record.
+func (m Model) toolLine(a engine.ToolActivity) string {
+	line := toolActivityLine(a, m.contentWidth())
+	if !m.color {
+		return line
+	}
+	return m.theme.styles().tool.Render(line)
+}
+
+// toolActivityLine renders one tool result in the established compact
+// form, for example "⚙ bash · completed · exit 0 · 666". The width is in
+// display cells; long targets are shortened so the status and mode stay
+// readable.
+func toolActivityLine(a engine.ToolActivity, width int) string {
+	if width < 8 {
+		width = 8
+	}
+	name := strings.TrimSpace(a.Name)
+	if name == "" {
+		name = "tool"
+	}
+	label := "⚙ " + name
 	if a.Action != "" && a.Action != a.Name {
-		line += " " + a.Action
+		label += " " + a.Action
 	}
-	if a.Target != "" {
-		line += " " + truncateMiddle(a.Target, 64)
+	status := " · " + toolStatusLabel(a.Status)
+	if a.Name == "bash" && a.ExitCode != nil {
+		status += fmt.Sprintf(" · exit %d", *a.ExitCode)
 	}
-	switch a.Status {
-	case "ok":
-		if a.Name == "bash" && a.ExitCode != nil {
-			line += fmt.Sprintf(" · exit %d", *a.ExitCode)
-		} else {
-			line += " · ok"
-		}
-	case "failed":
-		if a.Name == "bash" && a.ExitCode != nil {
-			line += fmt.Sprintf(" · exit %d · failed", *a.ExitCode)
-		} else {
-			line += " · failed"
-		}
-	case "proposed":
-		line += " · awaiting approval"
-	case "denied":
-		line += " · denied"
-	case "cancelled":
-		line += " · cancelled"
-	case "timeout":
-		line += " · timed out"
-	default:
-		if a.Status != "" {
-			line += " · " + a.Status
-		}
+	if a.Name != "bash" && a.Bytes > 0 {
+		status += " · " + humanSize(int64(a.Bytes))
 	}
-	if a.Bytes > 0 {
-		line += " · " + humanSize(int64(a.Bytes))
-	}
-	if a.Duration > 0 {
-		line += " · " + a.Duration.Round(10*time.Millisecond).String()
+	if a.Duration >= time.Second {
+		status += " · " + a.Duration.Round(100*time.Millisecond).String()
 	}
 	if a.Truncated {
-		line += " · truncated"
+		status += " · truncated"
 	}
-	if a.Historical {
-		line += " · " + a.Mode.String()
+	status += " · " + a.Mode.String()
+	// Reserve the status and mode first: a long model-supplied tool name
+	// must never push the outcome out of the line.
+	if maxLabel := width - lipgloss.Width(status) - 2; maxLabel >= 4 &&
+		lipgloss.Width(label) > maxLabel {
+		label = truncateCells(label, maxLabel)
+	}
+	target := a.Target
+	if target == a.Name+"/"+a.Action {
+		target = ""
+	}
+	if target != "" {
+		budget := width - lipgloss.Width(label) - lipgloss.Width(status) - 2
+		if budget >= 4 {
+			label += " " + truncateMiddle(target, budget)
+		}
+	}
+	line := label + status
+	if lipgloss.Width(line) > width {
+		line = truncateCells(line, width)
 	}
 	return line
 }
 
-// appendToolNotes puts each completed tool activity above the answer. A
-// proposal is already described by the answer itself, and a running record
-// is not final.
-func (m *Model) appendToolNotes(tools []engine.ToolActivity) {
-	for _, a := range tools {
-		if a.Status == "proposed" || a.Status == "running" || a.Status == "" {
-			continue
+func toolStatusLabel(status string) string {
+	switch status {
+	case "ok", "success":
+		return "completed"
+	case "failed", "failure":
+		return "failed"
+	case "cancelled":
+		return "cancelled"
+	case "denied", "refused":
+		return "refused"
+	case "timeout":
+		return "timed out"
+	case "running":
+		return "running"
+	case "proposed":
+		return "awaiting approval"
+	default:
+		if strings.TrimSpace(status) == "" {
+			return "unknown"
 		}
-		m.appendNote("assistant", toolActivityLine(a))
+		return status
 	}
 }
 
@@ -2110,56 +2173,166 @@ func (m *Model) attachMeta(i int, turn usage.Turn) {
 // unset id (0) means it did not come from a stream and always applies.
 func (m Model) currentTurn(id int) bool { return id == 0 || id == m.streamID }
 
-// userWidth is the room left for user text after the "You > " label.
-func (m Model) userWidth() int {
-	w := m.width - len("You > ")
+const (
+	// transcriptGutter is the narrow left gutter. User and assistant
+	// text start after it; only the first assistant row places the eye
+	// in it.
+	transcriptGutter = 2
+	// transcriptRightMargin keeps the longest line off the terminal edge.
+	transcriptRightMargin = 2
+	// transcriptMaxContent is the reading measure. Wide terminals get
+	// generous side whitespace instead of lines too long to scan.
+	transcriptMaxContent = 100
+)
+
+// transcriptBlock is the width of the gutter, content and right margin,
+// capped on wide terminals and then centred.
+func (m Model) transcriptBlock() int {
+	block := transcriptGutter + transcriptMaxContent + transcriptRightMargin
+	if m.width < block {
+		block = m.width
+	}
+	if block < 1 {
+		block = 1
+	}
+	return block
+}
+
+// transcriptLeft is the blank margin before the eye gutter.
+func (m Model) transcriptLeft() int {
+	left := (m.width - m.transcriptBlock()) / 2
+	if left < 0 {
+		return 0
+	}
+	return left
+}
+
+// contentColumn is the display column where every conversation message
+// begins. The eye occupies the separate gutter to its left.
+func (m Model) contentColumn() int {
+	return m.transcriptLeft() + transcriptGutter
+}
+
+// contentWidth is the width available to message text. Measurements are
+// in display cells, so wide glyphs and combining marks wrap correctly.
+func (m Model) contentWidth() int {
+	w := m.transcriptBlock() - transcriptGutter - transcriptRightMargin
 	if w < 10 {
-		return 10
+		w = 10
 	}
 	return w
+}
+
+// transcriptPrefix is the blank gutter in front of a non-eye row.
+func (m Model) transcriptPrefix() string {
+	return strings.Repeat(" ", m.contentColumn())
+}
+
+// eyePrefix is the eye and its separating cell. The result is exactly
+// contentColumn cells wide, so the first content character lines up with
+// every wrapped row and with user text.
+func (m Model) eyePrefix() string {
+	left := m.contentColumn() - transcriptGutter
+	if left < 0 {
+		left = 0
+	}
+	eye := "◉"
+	if m.color {
+		eye = m.theme.styles().eye.Render(eye)
+	}
+	return strings.Repeat(" ", left) + eye + " "
 }
 
 // renderEntry refreshes one entry's cached rows for the current width,
 // applying the collapse rule to long user messages.
 func (m *Model) renderEntry(i int) {
 	e := &m.entries[i]
-	switch e.role {
-	case "user":
+	switch {
+	case e.role == "user":
 		rows, deco := m.renderUser(e)
 		e.rows = rows
 		e.deco = deco
+		e.contentCol = m.contentColumn()
 		// The user's own line breaks are the logical lines: a wrapped
 		// row is not a new line of what was written.
 		if len(e.logical) == 0 {
 			e.logical = strings.Split(e.text, "\n")
 		}
-	default:
-		label := "HAL > "
-		indent := strings.Repeat(" ", len(label))
-		body := m.renderMarkdown(e.text, m.assistantWidth())
-		lines := strings.Split(body, "\n")
-		rows := make([]string, 0, len(lines)+1)
-		for j, line := range lines {
-			if j == 0 {
-				rows = append(rows, label+line)
-				continue
-			}
-			rows = append(rows, indent+line)
-		}
-		e.deco = nil
-		if e.hasMeta || e.attribution != nil {
-			rows = append(rows, m.metaLine(e.meta, e.attribution))
-			// The metadata line is interface, not answer: it stays on
-			// screen but is never part of a selection.
-			e.deco = decorationRows(len(rows))
-		}
+	case e.note:
+		rows, deco := m.renderNote(e)
 		e.rows = rows
+		e.deco = deco
+		e.contentCol = m.contentColumn()
+		e.logical = nil
+	default:
+		e.contentCol = m.contentColumn()
+		rows, deco := m.renderAssistant(e)
+		e.rows = rows
+		e.deco = deco
 		if len(e.logical) == 0 {
 			// The unwrapped render does not depend on the width, so it
 			// is computed once and kept for the life of the entry.
 			e.logical = m.renderMarkdownLogical(e.text)
 		}
 	}
+}
+
+// renderAssistant renders one answer as an eye-led block. The eye marks
+// the response once; wrapped rows, tool activity and metadata all share
+// the content column.
+func (m *Model) renderAssistant(e *entry) ([]string, []bool) {
+	body := m.renderMarkdown(e.text, m.contentWidth())
+	lines := strings.Split(body, "\n")
+	rows := make([]string, 0, len(lines)+len(e.tools)+1)
+	prefix := m.transcriptPrefix()
+	for j, line := range lines {
+		line = strings.TrimRight(line, " ")
+		if j == 0 {
+			rows = append(rows, m.eyePrefix()+line)
+			continue
+		}
+		rows = append(rows, prefix+line)
+	}
+	toolStart := len(rows)
+	for _, a := range e.tools {
+		if !showToolActivity(a) {
+			continue
+		}
+		rows = append(rows, prefix+m.toolLine(a))
+	}
+	if e.hasMeta || e.attribution != nil {
+		if row := m.metaRow(e.meta, e.attribution); row != "" {
+			rows = append(rows, row)
+		}
+	}
+	deco := make([]bool, len(rows))
+	for j := toolStart; j < len(rows); j++ {
+		deco[j] = true
+	}
+	return rows, deco
+}
+
+// renderNote renders interface text — an error explanation, a write
+// outcome — inside the content column. Notes are decoration, never part
+// of the answer and never copied.
+func (m *Model) renderNote(e *entry) ([]string, []bool) {
+	width := m.contentWidth()
+	rendered := strings.TrimRight(lipgloss.NewStyle().Width(width).Render(e.text), "\n")
+	wrapped := strings.Split(rendered, "\n")
+	prefix := m.transcriptPrefix()
+	rows := make([]string, 0, len(wrapped))
+	for _, line := range wrapped {
+		line = strings.TrimRight(line, " ")
+		if m.color && line != "" {
+			line = m.theme.styles().footer.Render(line)
+		}
+		rows = append(rows, prefix+line)
+	}
+	deco := make([]bool, len(rows))
+	for j := range deco {
+		deco[j] = true
+	}
+	return rows, deco
 }
 
 // renderUser wraps a user message and decides how much of it to show.
@@ -2169,19 +2342,20 @@ func (m *Model) renderEntry(i int) {
 // expand it. The hint is interface, not text: it is marked as
 // decoration, so a selection never copies it.
 func (m Model) renderUser(e *entry) ([]string, []bool) {
-	width := m.userWidth()
-	wrapped := strings.Split(lipgloss.NewStyle().Width(width).Render(e.text), "\n")
+	width := m.contentWidth()
+	rendered := strings.TrimRight(lipgloss.NewStyle().Width(width).Render(e.text), "\n")
+	wrapped := strings.Split(rendered, "\n")
 	lines := make([]string, 0, len(wrapped))
 	for _, line := range wrapped {
 		lines = append(lines, strings.TrimRight(line, " "))
 	}
+	prefix := m.transcriptPrefix()
 	rows := make([]string, 0, len(lines)+1)
-	for j, line := range lines {
-		if j == 0 {
-			rows = append(rows, "You > "+line)
-			continue
+	for _, line := range lines {
+		if m.color && line != "" {
+			line = m.theme.styles().user.Render(line)
 		}
-		rows = append(rows, strings.Repeat(" ", len("You > "))+line)
+		rows = append(rows, prefix+line)
 	}
 	preview := m.collapsedPreviewRows()
 	if len(rows) <= preview {
@@ -2217,12 +2391,12 @@ func (e entry) isDecoration(row int) bool {
 	return row < len(e.deco) && e.deco[row]
 }
 
-// metaLine renders one assistant turn's completion metadata: wall-clock
+// metaText renders one assistant turn's completion metadata: wall-clock
 // duration, provider-reported counts and the skill credit.
 //
 // It is display only — the entry text, and therefore /copy, the mouse
 // selection and the model context, never contains it.
-func (m Model) metaLine(t usage.Turn, a *session.Attribution) string {
+func (m Model) metaText(t usage.Turn, a *session.Attribution) string {
 	var parts []string
 	if t.Reported {
 		parts = append(parts, formatDuration(t.Duration)+" · "+
@@ -2231,11 +2405,35 @@ func (m Model) metaLine(t usage.Turn, a *session.Attribution) string {
 	if label := attributionLabel(a); label != "" {
 		parts = append(parts, label)
 	}
-	line := strings.Join(parts, " · ")
+	return strings.Join(parts, " · ")
+}
+
+// metaLine is the styled form used by callers that need the text alone.
+func (m Model) metaLine(t usage.Turn, a *session.Attribution) string {
+	text := m.metaText(t, a)
 	if !m.color {
-		return line
+		return text
 	}
-	return m.theme.styles().footer.Render(line)
+	return m.theme.styles().footer.Render(text)
+}
+
+// metaRow places the metadata at the right edge of the response area.
+// It is the last row of an assistant block and is always decoration.
+func (m Model) metaRow(t usage.Turn, a *session.Attribution) string {
+	text := m.metaText(t, a)
+	if text == "" {
+		return ""
+	}
+	width := m.contentWidth()
+	text = truncateCells(text, width)
+	pad := width - lipgloss.Width(text)
+	if pad < 0 {
+		pad = 0
+	}
+	if m.color {
+		text = m.theme.styles().footer.Render(text)
+	}
+	return m.transcriptPrefix() + strings.Repeat(" ", pad) + text
 }
 
 // attachAttribution credits the answer with the skills that shaped it.
@@ -2258,11 +2456,11 @@ func (m *Model) attachAttribution(i int) {
 // collapseHint renders the collapsed/expanded affordance aligned with the
 // message text.
 func (m Model) collapseHint(text string) string {
-	hint := strings.Repeat(" ", len("You > ")) + text
+	hint := m.transcriptPrefix() + text
 	if !m.color {
 		return hint
 	}
-	return strings.Repeat(" ", len("You > ")) + m.theme.styles().footer.Render(text)
+	return m.transcriptPrefix() + m.theme.styles().footer.Render(text)
 }
 
 // collapsible reports whether the entry is longer than the preview the
@@ -2426,18 +2624,17 @@ func (m *Model) rewrap() {
 // pendingRows splits the answer being streamed into the rows the
 // conversation shows while it is still arriving.
 //
-// Every row but the first carries the same indent as a finished reply,
-// so the rows the terminal shows and the rows the cell map knows about
-// are the same rows.
-func pendingRows(pending string) []string {
+// The first row carries the eye; every later row shares the content
+// column, so the terminal rows and the cell map never disagree.
+func (m Model) pendingRows(pending string) []string {
 	lines := strings.Split(pending, "\n")
 	rows := make([]string, 0, len(lines))
 	for i, line := range lines {
 		if i == 0 {
-			rows = append(rows, "HAL > "+line)
+			rows = append(rows, m.eyePrefix()+line)
 			continue
 		}
-		rows = append(rows, strings.Repeat(" ", len("HAL > "))+line)
+		rows = append(rows, m.transcriptPrefix()+line)
 	}
 	return rows
 }
@@ -2447,26 +2644,23 @@ func pendingLogical(pending string) []string {
 	return strings.Split(pending, "\n")
 }
 
+// separatorEntry is the single blank row between conversation turns.
+// It is decoration: it keeps the rows aligned without becoming text that
+// a selection or /copy can see.
+func separatorEntry() entry {
+	return entry{role: "assistant", rows: []string{""}, deco: []bool{true}}
+}
+
 func (m *Model) renderConversation() {
 	atBottom := m.viewport.AtBottom()
 	offset := m.viewport.YOffset()
-	st := m.theme.styles()
-	styleRow := func(row string) string {
-		if !m.color {
-			return row
+	content := make([]string, 0, len(m.entries)*2+1)
+	for i, e := range m.entries {
+		if i > 0 {
+			content = append(content, "")
 		}
-		if rest, ok := strings.CutPrefix(row, "You > "); ok {
-			return st.user.Render("You > ") + rest
-		}
-		if rest, ok := strings.CutPrefix(row, "HAL > "); ok {
-			return st.hal.Render("HAL > ") + rest
-		}
-		return row
-	}
-	content := make([]string, 0, len(m.entries)+1)
-	for _, e := range m.entries {
 		for _, row := range e.rows {
-			content = append(content, styleRow(row))
+			content = append(content, row)
 		}
 	}
 	m.conv = convMap{}
@@ -2480,12 +2674,23 @@ func (m *Model) renderConversation() {
 		// exactly as the cell map knows them: one row per line, so
 		// the terminal and the map never disagree about which row is
 		// which.
-		pending := pendingRows(m.pending)
+		if len(m.entries) > 0 {
+			content = append(content, "")
+		}
+		pending := m.pendingRows(m.pending)
 		for _, row := range pending {
-			content = append(content, styleRow(row))
+			content = append(content, row)
 		}
 		if m.mouse {
-			m.conv.addEntry(entry{role: "assistant", rows: pending, logical: pendingLogical(m.pending)})
+			if len(m.entries) > 0 {
+				m.conv.addEntry(separatorEntry())
+			}
+			m.conv.addEntry(entry{
+				role:       "assistant",
+				rows:       pending,
+				logical:    pendingLogical(m.pending),
+				contentCol: m.contentColumn(),
+			})
 		}
 	}
 	m.viewport.SetContent(strings.Join(content, "\n"))
@@ -2973,17 +3178,6 @@ func (m Model) heading() string {
 	return m.headerRow()
 }
 
-// assistantWidth is the width available for a rendered assistant reply.
-// The "HAL > " label and the viewport margin are subtracted so a reply
-// wraps inside the frame instead of being wrapped twice.
-func (m Model) assistantWidth() int {
-	w := m.width - len("HAL > ") - 2
-	if w < 20 {
-		return 20
-	}
-	return w
-}
-
 func (m Model) rule() string {
 	line := strings.Repeat("─", m.width)
 	if line == "" {
@@ -3205,7 +3399,9 @@ func Run(engine Engine, hooks Hooks) error {
 	return RunWithModel(NewWithHooks(engine, hooks))
 }
 
-// Lines returns the conversation lines, for tests.
+// Lines returns the conversation lines for tests and diagnostics. It
+// keeps the historical role labels so callers can tell a user line from
+// an assistant line; the rendered transcript no longer shows them.
 func (m Model) Lines() []string {
 	out := make([]string, 0, len(m.entries))
 	for _, e := range m.entries {

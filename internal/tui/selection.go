@@ -2,10 +2,10 @@ package tui
 
 import "strings"
 
-// entryPrefixCells is the width of the "You > " and "HAL > " labels HAL
-// puts in front of every conversation row. The labels are interface
-// decoration: they are never part of what a selection copies.
-const entryPrefixCells = len("You > ")
+// entryPrefixCells is the width of the eye gutter in front of every
+// conversation row. The gutter is interface decoration: it is never part
+// of what a selection copies.
+const entryPrefixCells = transcriptGutter
 
 // decorationRow marks a row that is interface rather than message text:
 // a collapse hint, an answer's metadata line. Such a row keeps its
@@ -46,9 +46,14 @@ type convMap struct {
 }
 
 // buildConvMap maps the rendered conversation to the text behind it.
+// It includes the blank separator rows that renderConversation places
+// between turns, so the screen and the map stay in lockstep.
 func buildConvMap(entries []entry) convMap {
 	cm := convMap{}
-	for _, e := range entries {
+	for i, e := range entries {
+		if i > 0 {
+			cm.addEntry(separatorEntry())
+		}
 		cm.addEntry(e)
 	}
 	return cm
@@ -64,9 +69,13 @@ func (cm *convMap) addEntry(e entry) {
 	searchFrom := 0
 	for i, row := range e.rows {
 		cells := scanRow(row)
+		prefix := e.contentCol
+		if prefix <= 0 {
+			prefix = entryPrefixCells
+		}
 		contentStart := len(cells.text)
-		if entryPrefixCells < len(cells.cells) {
-			contentStart = cells.cells[entryPrefixCells].start
+		if prefix < len(cells.cells) {
+			contentStart = cells.cells[prefix].start
 		}
 		if e.isDecoration(i) {
 			// A decoration row is on screen but not in the message: it

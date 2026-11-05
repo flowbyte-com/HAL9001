@@ -268,8 +268,19 @@ func (m *Model) dispatchSlash(input string) tea.Cmd {
 // refreshSuggestions recomputes the panel from the composer text and
 // keeps the selection on the same command when it is still listed.
 func (m *Model) refreshSuggestions() {
+	value := m.composer.Value()
+	if m.suggestDismissed && value != m.suggestDismissedValue {
+		// Editing the draft is a new intent; allow the panel to open
+		// again. Non-edit updates, such as a cursor blink, leave the
+		// dismissal intact.
+		m.suggestDismissed = false
+		m.suggestDismissedValue = ""
+	}
+	if m.suggestDismissed {
+		return
+	}
 	before := m.suggestRows()
-	items := suggestionList(m.composer.Value())
+	items := suggestionList(value)
 	selected := ""
 	if m.suggestOpen && m.suggestCursor >= 0 && m.suggestCursor < len(m.suggestItems) {
 		selected = m.suggestItems[m.suggestCursor].name
@@ -287,15 +298,26 @@ func (m *Model) refreshSuggestions() {
 	}
 }
 
+// dismissSuggestions hides the panel and suppresses it until the draft
+// changes. Esc is a deliberate dismissal, not an invitation to reopen on
+// the next cursor blink.
+func (m *Model) dismissSuggestions() {
+	m.closeSuggestions()
+	m.suggestDismissed = true
+	m.suggestDismissedValue = m.composer.Value()
+}
+
 // closeSuggestions hides the panel without touching the draft.
 func (m *Model) closeSuggestions() {
-	if !m.suggestOpen && len(m.suggestItems) == 0 {
-		return
-	}
+	changed := m.suggestOpen || len(m.suggestItems) > 0
 	m.suggestOpen = false
 	m.suggestItems = nil
 	m.suggestCursor = 0
-	m.resizeFrame()
+	m.suggestDismissed = false
+	m.suggestDismissedValue = ""
+	if changed {
+		m.resizeFrame()
+	}
 }
 
 // suggestionGap separates a command from its description.

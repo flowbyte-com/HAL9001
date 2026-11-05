@@ -24,16 +24,19 @@ func (m Model) renderMarkdown(text string, width int) string {
 	}
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithStyles(m.theme.glamourStyle()),
-		glamour.WithWordWrap(width-2),
+		glamour.WithWordWrap(width),
 	)
 	if err != nil {
-		return text
+		return strings.Trim(text, "\n")
 	}
 	out, err := renderer.Render(text)
 	if err != nil {
-		return text
+		return strings.Trim(text, "\n")
 	}
-	return strings.TrimRight(out, "\n")
+	// Headings use a zero-width prefix to keep glamour's heading style
+	// (and therefore the theme accent) on the text. The marker itself is
+	// never part of the transcript.
+	return strings.Trim(strings.ReplaceAll(out, "\u200b", ""), "\n")
 }
 
 // logicalWrapWidth is the width used for the unwrapped render, and the
@@ -76,7 +79,8 @@ func (m Model) renderMarkdownLogicalWidth(text string, width int) []string {
 	if err != nil {
 		return strings.Split(text, "\n")
 	}
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	out = strings.ReplaceAll(out, "\u200b", "")
+	lines := strings.Split(strings.Trim(out, "\n"), "\n")
 	logical := make([]string, 0, len(lines))
 	for _, line := range lines {
 		logical = append(logical, strings.TrimRight(ansi.Strip(line), " \t"))
@@ -496,8 +500,8 @@ func (m Model) themeRows() []string {
 	}
 	rows = append(rows, "", "Preview:")
 	rows = append(rows, st.header.Render("● HAL9001"))
-	rows = append(rows, st.user.Render("You > ")+"preview message")
-	rows = append(rows, st.hal.Render("HAL > ")+"preview reply")
+	rows = append(rows, strings.Repeat(" ", transcriptGutter)+st.user.Render("preview message"))
+	rows = append(rows, st.eye.Render("◉")+" "+"preview reply")
 	rows = append(rows, st.footer.Render(m.permissionLabel()+" · "+m.modelNameOr("model")))
 	if !m.color {
 		rows = append(rows, "", "Colour is disabled (NO_COLOR), so themes cannot be previewed.")
@@ -755,7 +759,11 @@ func (m Model) diagRows() []string {
 	if len(m.lastTools) > 0 {
 		rows = append(rows, "  "+padTo(st.active.Render("last tools"), 16))
 		for _, a := range m.lastTools {
-			rows = append(rows, "    "+toolActivityLine(a))
+			line := toolActivityLine(a, max(10, m.width-4))
+			if m.color {
+				line = st.footer.Render(line)
+			}
+			rows = append(rows, "    "+line)
 		}
 	}
 	if d, ok := m.lastRouting(); ok {

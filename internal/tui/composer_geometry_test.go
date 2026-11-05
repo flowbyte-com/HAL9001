@@ -292,7 +292,7 @@ func TestComposerGrowthKeepsTheReadingPosition(t *testing.T) {
 	if m.Viewport().AtBottom() {
 		t.Error("growing the composer jumped the conversation to the bottom")
 	}
-	if !strings.Contains(m.viewport.View(), topBefore) {
+	if !strings.Contains(stripANSI(m.viewport.View()), topBefore) {
 		t.Errorf("growing the composer lost the reading position %q", topBefore)
 	}
 
@@ -303,7 +303,7 @@ func TestComposerGrowthKeepsTheReadingPosition(t *testing.T) {
 	if m.Viewport().AtBottom() {
 		t.Error("collapsing the composer jumped the conversation to the bottom")
 	}
-	if !strings.Contains(m.viewport.View(), topBefore) {
+	if !strings.Contains(stripANSI(m.viewport.View()), topBefore) {
 		t.Errorf("collapsing the composer lost the reading position %q", topBefore)
 	}
 }

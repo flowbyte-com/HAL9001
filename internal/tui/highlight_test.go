@@ -269,9 +269,9 @@ func TestHighlightFollowsWrappedText(t *testing.T) {
 	}
 	// The copy is the paragraph as it was written: one line, no line
 	// break where the renderer wrapped it.
-	first := 1
+	first := 0
 	last := len(m.conv.rows) - 1
-	got := m.conv.extract(cellPos{row: first, cell: 8},
+	got := m.conv.extract(cellPos{row: first, cell: entryPrefixCells},
 		cellPos{row: last, cell: m.conv.rows[last].width})
 	if strings.Contains(got, "\n") {
 		t.Errorf("the copy has a line break: %q", got)
@@ -371,11 +371,11 @@ func TestDragCopiesStyledText(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 
-	row, ok := m.screenRowOf(1)
+	row, ok := m.screenRowOf(0)
 	if !ok {
 		t.Fatal("the answer is not on screen")
 	}
-	updated, _ = m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 8, Y: row})
+	updated, _ = m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: entryPrefixCells, Y: row})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.MouseMotionMsg{Button: tea.MouseLeft, X: 40, Y: row})
 	m = updated.(Model)

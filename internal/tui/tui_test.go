@@ -270,9 +270,14 @@ func TestMonochromeView(t *testing.T) {
 	if strings.Contains(view, "🦞") {
 		t.Error("view must never contain the lobster emoji")
 	}
-	for _, want := range []string{"● HAL9001", "You > hi", "hello", "444 READ ONLY"} {
+	for _, want := range []string{"● HAL9001", "hi", "◉ hello", "444 READ ONLY"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q:\n%s", want, view)
+		}
+	}
+	for _, unwanted := range []string{"You >", "HAL >"} {
+		if strings.Contains(view, unwanted) {
+			t.Errorf("view still carries the speaker label %q:\n%s", unwanted, view)
 		}
 	}
 }
@@ -861,8 +866,11 @@ func TestSetHistoryLoadsConversation(t *testing.T) {
 		t.Errorf("raw lines must keep original markdown: %q", m.Lines()[1])
 	}
 	view := string(m.View().Content)
-	if !strings.Contains(view, "You > hello?") || !strings.Contains(view, "there") {
+	if !strings.Contains(view, "hello?") || !strings.Contains(view, "there") {
 		t.Errorf("history not rendered:\n%s", view)
+	}
+	if strings.Contains(view, "You >") || strings.Contains(view, "HAL >") {
+		t.Errorf("history still carries speaker labels:\n%s", view)
 	}
 }
 
@@ -1845,8 +1853,9 @@ func TestEmptyAnswerExplanation(t *testing.T) {
 // firstVisibleLine returns the first non-blank row of a rendered view.
 func firstVisibleLine(view string) string {
 	for _, line := range strings.Split(view, "\n") {
-		if strings.TrimSpace(line) != "" {
-			return strings.TrimSpace(line)
+		plain := stripANSI(line)
+		if strings.TrimSpace(plain) != "" {
+			return strings.TrimSpace(plain)
 		}
 	}
 	return ""
@@ -1924,7 +1933,7 @@ func TestResizePreservesScrollPosition(t *testing.T) {
 	if m.Viewport().AtBottom() {
 		t.Fatal("resize jumped to the bottom")
 	}
-	view := m.viewport.View()
+	view := stripANSI(m.viewport.View())
 	if !strings.Contains(view, topBefore) {
 		t.Errorf("the line at the top before resize (%q) is not visible after:\n%s", topBefore, view)
 	}
@@ -1941,14 +1950,20 @@ func TestCollapseKeepsScrollPosition(t *testing.T) {
 		m.appendEntry("assistant", fmt.Sprintf("answer line %03d", i))
 	}
 	m = pressKey(m, tea.KeyHome, 0, "")
-	m = pressKey(m, tea.KeyPgDown, 0, "")
+	for i := 0; i < 3; i++ {
+		m = pressKey(m, tea.KeyPgDown, 0, "")
+	}
 	before := m.viewport.YOffset()
+	beforeTop := firstVisibleLine(m.viewport.View())
 	m = pressKey(m, 'o', tea.ModCtrl, "")
 	if m.Viewport().AtBottom() {
 		t.Fatal("collapse jumped to the bottom")
 	}
+	if afterTop := firstVisibleLine(m.viewport.View()); afterTop != beforeTop {
+		t.Errorf("collapse moved the reading position: %q -> %q", beforeTop, afterTop)
+	}
 	if after := m.viewport.YOffset(); after == 0 && before > 0 {
-		t.Error("collapse reset the offset to the top")
+		t.Errorf("collapse reset the offset to the top (before=%d after=%d rows=%d)", before, after, len(m.entries[0].rows))
 	}
 }
 
@@ -2386,7 +2401,7 @@ func TestShortConversationBottomAnchored(t *testing.T) {
 	// the top of the viewport.
 	messageRow := -1
 	for i := 0; i < top; i++ {
-		if strings.Contains(rows[i], "You > hello") {
+		if strings.Contains(rows[i], "  hello") {
 			messageRow = i
 		}
 	}

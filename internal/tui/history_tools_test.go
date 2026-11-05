@@ -67,8 +67,8 @@ func TestSessionSwitchRebindsHistoricalTools(t *testing.T) {
 		m.lastTools[1].Name != "bash" {
 		t.Fatalf("switch did not rebind historical tools: %#v", m.lastTools)
 	}
-	if len(m.entries) != 4 || !m.entries[1].note {
-		t.Fatalf("switch did not render historical evidence: %#v", m.entries)
+	if len(m.entries) != 2 || len(m.entries[1].tools) != 2 {
+		t.Fatalf("switch did not attach historical evidence: %#v", m.entries)
 	}
 }
 
@@ -77,20 +77,12 @@ func TestSetHistoryRendersVerifiedToolEvidenceOnce(t *testing.T) {
 	m.lastTools = []engine.ToolActivity{{Name: "stale", Status: "ok"}}
 	m.SetHistory(historicalLines(true))
 
-	if len(m.entries) != 4 {
-		t.Fatalf("entries = %d, want user + two notes + assistant: %#v", len(m.entries), m.entries)
+	if len(m.entries) != 2 {
+		t.Fatalf("entries = %d, want user + assistant: %#v", len(m.entries), m.entries)
 	}
-	for i := 1; i <= 2; i++ {
-		if !m.entries[i].note || !strings.HasPrefix(m.entries[i].text, "⚙ ") {
-			t.Errorf("entry %d is not a tool note: %#v", i, m.entries[i])
-		}
-		if m.entries[i].turnID != "turn-1" {
-			t.Errorf("note %d lost its turn id: %q", i, m.entries[i].turnID)
-		}
-	}
-	if m.entries[3].note || m.entries[3].role != "assistant" ||
-		m.entries[3].turnID != "turn-1" {
-		t.Errorf("assistant entry = %#v", m.entries[3])
+	if m.entries[1].note || m.entries[1].role != "assistant" ||
+		m.entries[1].turnID != "turn-1" || len(m.entries[1].tools) != 2 {
+		t.Errorf("assistant entry = %#v", m.entries[1])
 	}
 	if len(m.lastTools) != 2 {
 		t.Fatalf("lastTools = %#v", m.lastTools)
@@ -100,11 +92,13 @@ func TestSetHistoryRendersVerifiedToolEvidenceOnce(t *testing.T) {
 		t.Errorf("rebound lastTools = %#v", m.lastTools)
 	}
 
-	// Replaying the same history must replace, not append, the notes.
+	rowsBefore := append([]string(nil), m.entries[1].rows...)
+	// Replaying the same history must replace, not append, the activity.
 	m.SetHistory(historicalLines(true))
-	if len(m.entries) != 4 || len(m.lastTools) != 2 {
-		t.Fatalf("history replay duplicated activity: entries=%d tools=%d",
-			len(m.entries), len(m.lastTools))
+	if len(m.entries) != 2 || len(m.entries[1].tools) != 2 ||
+		len(m.entries[1].rows) != len(rowsBefore) {
+		t.Fatalf("history replay duplicated activity: entries=%d rows=%d/%d",
+			len(m.entries), len(m.entries[1].rows), len(rowsBefore))
 	}
 
 	rows := strings.Join(m.diagRows(), "\n")
@@ -115,18 +109,26 @@ func TestSetHistoryRendersVerifiedToolEvidenceOnce(t *testing.T) {
 	}
 }
 
-func TestHistoricalEvidenceStaysAboveItsAssistantAnswer(t *testing.T) {
+func TestHistoricalEvidenceStaysBeneathItsAssistantAnswer(t *testing.T) {
 	m := permissionModel()
 	m.SetHistory(historicalLines(true))
 	plain := stripANSI(strings.Join(m.layoutRows(), "\n"))
-	note := strings.Index(plain, "⚙ write")
 	answer := strings.Index(plain, "both completed")
-	if note < 0 || answer < 0 || note > answer {
-		t.Fatalf("tool evidence is not attached above the answer:\n%s", plain)
+	write := strings.Index(plain, "⚙ write")
+	bash := strings.Index(plain, "⚙ bash")
+	if answer < 0 || write < 0 || bash < 0 || write < answer || bash < answer {
+		t.Fatalf("tool evidence is not attached beneath the answer:\n%s", plain)
 	}
 	if strings.Count(plain, "⚙ write") != 1 ||
 		strings.Count(plain, "⚙ bash") != 1 {
 		t.Fatalf("tool activity was duplicated:\n%s", plain)
+	}
+	eye := strings.Index(plain, "◉")
+	if eye < 0 || eye > answer {
+		t.Fatalf("the assistant eye is missing or displaced:\n%s", plain)
+	}
+	if strings.Count(plain, "◉") != 1 {
+		t.Fatalf("an assistant response must carry exactly one eye:\n%s", plain)
 	}
 }
 

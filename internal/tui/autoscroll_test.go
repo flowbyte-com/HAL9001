@@ -54,13 +54,28 @@ func scrollTick(m Model) Model {
 	return updated.(Model)
 }
 
-// rowsText is the text of a range of conversation rows.
+// rowsText is the text of a range of content rows in the one-row-per-
+// message scroll fixture. Separator rows carry no text and are skipped.
 func rowsText(m Model, first, last int) string {
 	lines := make([]string, 0, last-first+1)
-	for i := first; i <= last; i++ {
-		lines = append(lines, m.entries[i].text)
+	for r := first; r <= last; r++ {
+		if r%2 != 0 || r/2 >= len(m.entries) {
+			continue
+		}
+		lines = append(lines, m.entries[r/2].text)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// bottomMessageRow returns a visible message row near the bottom of the
+// viewport. Even rows are messages; odd rows are separators.
+func bottomMessageRow(m Model) (int, bool) {
+	for r := len(m.conv.rows) - 1; r >= 0; r-- {
+		if r%2 == 0 {
+			return m.screenRowOf(r)
+		}
+	}
+	return 0, false
 }
 
 // textEnd is the column just after the text of a user row.
@@ -73,7 +88,8 @@ func TestSelectionAutoScrollsUp(t *testing.T) {
 	m := scrollFixture(t)
 	before := m.viewport.YOffset()
 
-	press, ok := m.screenRowOf(30)
+	pressRow := len(m.conv.rows) - 2
+	press, ok := m.screenRowOf(pressRow)
 	if !ok {
 		t.Fatal("the row is not on screen")
 	}
@@ -109,7 +125,7 @@ func TestSelectionAutoScrollsDown(t *testing.T) {
 	m.renderConversation()
 	before := m.viewport.YOffset()
 
-	press, ok := m.screenRowOf(5)
+	press, ok := m.screenRowOf(4)
 	if !ok {
 		t.Fatal("the row is not on screen")
 	}
@@ -144,7 +160,8 @@ func TestSelectionAutoScrollCopiesOffScreenText(t *testing.T) {
 		copied = s
 		return nil
 	}
-	press, ok := m.screenRowOf(30)
+	pressRow := len(m.conv.rows) - 2
+	press, ok := m.screenRowOf(pressRow)
 	if !ok {
 		t.Fatal("the row is not on screen")
 	}
@@ -156,7 +173,7 @@ func TestSelectionAutoScrollCopiesOffScreenText(t *testing.T) {
 	first := m.selFocus.row
 	m = releasePointer(m, entryPrefixCells, m.viewportTop())
 
-	want := rowsText(m, first, 30)
+	want := rowsText(m, first, pressRow)
 	if copied != want {
 		t.Errorf("copied:\n%q\nwant:\n%q", copied, want)
 	}
@@ -182,7 +199,7 @@ func TestSelectionAutoScrollCopiesOffScreenTextDown(t *testing.T) {
 		copied = s
 		return nil
 	}
-	press, ok := m.screenRowOf(5)
+	press, ok := m.screenRowOf(4)
 	if !ok {
 		t.Fatal("the row is not on screen")
 	}
@@ -195,7 +212,7 @@ func TestSelectionAutoScrollCopiesOffScreenTextDown(t *testing.T) {
 	last := m.selFocus.row
 	m = releasePointer(m, textEnd, bottom)
 
-	want := rowsText(m, 5, last)
+	want := rowsText(m, 4, last)
 	if copied != want {
 		t.Errorf("copied:\n%q\nwant:\n%q", copied, want)
 	}
@@ -205,7 +222,7 @@ func TestSelectionAutoScrollCopiesOffScreenTextDown(t *testing.T) {
 // with the selection: a tick that arrives afterwards moves nothing.
 func TestSelectionAutoScrollStopsOnRelease(t *testing.T) {
 	m := scrollFixture(t)
-	press, _ := m.screenRowOf(30)
+	press, _ := bottomMessageRow(m)
 	m = pressPointer(m, textEnd, press)
 	m = dragPointer(m, entryPrefixCells, m.viewportTop())
 	m = scrollTick(m)
@@ -225,7 +242,7 @@ func TestSelectionAutoScrollStopsOnRelease(t *testing.T) {
 // selection and its auto-scroll.
 func TestSelectionAutoScrollStopsOnCancel(t *testing.T) {
 	m := scrollFixture(t)
-	press, _ := m.screenRowOf(30)
+	press, _ := bottomMessageRow(m)
 	m = pressPointer(m, textEnd, press)
 	m = dragPointer(m, entryPrefixCells, m.viewportTop())
 	m = scrollTick(m)
@@ -245,7 +262,7 @@ func TestSelectionAutoScrollStopsOnCancel(t *testing.T) {
 // conversation ends the scroll with the selection.
 func TestSelectionAutoScrollStopsOnSessionChange(t *testing.T) {
 	m := scrollFixture(t)
-	press, _ := m.screenRowOf(30)
+	press, _ := bottomMessageRow(m)
 	m = pressPointer(m, textEnd, press)
 	m = dragPointer(m, entryPrefixCells, m.viewportTop())
 	m = scrollTick(m)
@@ -262,7 +279,7 @@ func TestSelectionAutoScrollStopsOnSessionChange(t *testing.T) {
 // scroll ends as soon as the pointer leaves the edge.
 func TestSelectionAutoScrollStopsWhenPointerLeavesEdge(t *testing.T) {
 	m := scrollFixture(t)
-	press, _ := m.screenRowOf(30)
+	press, _ := bottomMessageRow(m)
 	m = pressPointer(m, textEnd, press)
 	m = dragPointer(m, entryPrefixCells, m.viewportTop())
 	if m.selScrollDir != -1 {
@@ -302,7 +319,7 @@ func TestSelectionAutoScrollClampsAtTop(t *testing.T) {
 // the end of the history.
 func TestSelectionAutoScrollClampsAtBottom(t *testing.T) {
 	m := scrollFixture(t)
-	press, _ := m.screenRowOf(30)
+	press, _ := bottomMessageRow(m)
 	m = pressPointer(m, entryPrefixCells, press)
 	bottom := m.viewportTop() + m.frame.viewport - 1
 	m = dragPointer(m, textEnd, bottom)
@@ -345,7 +362,7 @@ func TestSelectionAutoScrollNeedsAMovedDrag(t *testing.T) {
 // instead of fighting it.
 func TestSelectionAutoScrollDoesNotFightTheWheel(t *testing.T) {
 	m := scrollFixture(t)
-	press, _ := m.screenRowOf(30)
+	press, _ := bottomMessageRow(m)
 	m = pressPointer(m, textEnd, press)
 	m = dragPointer(m, entryPrefixCells, m.viewportTop())
 	if m.selScrollDir != -1 {
@@ -377,7 +394,7 @@ func TestSelectionAutoScrollSpeed(t *testing.T) {
 		t.Errorf("the auto-scroll interval is %v, want a positive delay", selectionScrollInterval)
 	}
 	m := scrollFixture(t)
-	press, _ := m.screenRowOf(30)
+	press, _ := bottomMessageRow(m)
 	m = pressPointer(m, textEnd, press)
 	m = dragPointer(m, entryPrefixCells, m.viewportTop())
 	before := m.viewport.YOffset()

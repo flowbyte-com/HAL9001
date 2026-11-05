@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/cursor"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 )
@@ -128,7 +129,72 @@ func TestSuggestionCancelKeepsDraft(t *testing.T) {
 	}
 }
 
-// TestSuggestionColumnsUseDisplayCells checks that the label column and
+// TestSuggestionEscStaysClosedUntilEdit covers the reported defect:
+// Esc must close the panel and keep it closed even though the draft is
+// still "/", until the operator edits the draft again.
+func TestSuggestionEscStaysClosedUntilEdit(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/")
+	want := "/"
+
+	for i, next := range []string{"", "h", "e"} {
+		if next != "" {
+			m = typeText(m, next)
+			want += next
+		}
+		if !m.suggestOpen {
+			t.Fatalf("cycle %d: suggestions did not open (value=%q dismissed=%v dismissedValue=%q focused=%v)",
+				i, m.Composer().Value(), m.suggestDismissed, m.suggestDismissedValue, m.Composer().Focused())
+		}
+		m = pressKey(m, tea.KeyEscape, 0, "")
+		if m.suggestOpen {
+			t.Fatalf("cycle %d: Esc did not close suggestions", i)
+		}
+		if !m.Composer().Focused() {
+			t.Fatalf("cycle %d: Esc lost composer focus", i)
+		}
+		if got := m.Composer().Value(); got != want {
+			t.Fatalf("cycle %d: draft = %q, want %q", i, got, want)
+		}
+		// A non-edit update — the composer's cursor blink — must not
+		// reopen the panel the operator dismissed.
+		updated, _ = m.Update(cursor.BlinkMsg{})
+		m = updated.(Model)
+		if m.suggestOpen {
+			t.Fatalf("cycle %d: a cursor blink reopened suggestions", i)
+		}
+		m.refreshSuggestions()
+		if m.suggestOpen {
+			t.Fatalf("cycle %d: a refresh reopened dismissed suggestions", i)
+		}
+	}
+}
+
+// TestHelpEscReturnsFocusToComposer checks that Esc closes /help, leaves
+// the draft alone and hands focus back to the composer.
+func TestHelpEscReturnsFocusToComposer(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "/help")
+	m = enterCurrent(m)
+	if m.view != viewHelp {
+		t.Fatalf("/help opened view %d", m.view)
+	}
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	if m.view != viewChat {
+		t.Fatalf("Esc left help open (view %d)", m.view)
+	}
+	if !m.Composer().Focused() {
+		t.Fatal("Esc did not return focus to the composer")
+	}
+	if got := m.Composer().Value(); got != "" {
+		t.Fatalf("draft = %q, want empty", got)
+	}
+}
+
 // every description start at fixed terminal cells, including the long
 // /skill syntax, rather than merely fitting somewhere on the row.
 func TestSuggestionColumnsUseDisplayCells(t *testing.T) {

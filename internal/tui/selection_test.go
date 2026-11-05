@@ -11,9 +11,9 @@ import (
 // The selection map has to answer one question exactly: which characters
 // of the text the user wrote are on the screen cells they dragged over.
 
-// TestUserRowExcludesLabel checks that the "You > " label is interface
+// TestUserRowExcludesGutter checks that the eye gutter is interface
 // decoration and never part of a selection.
-func TestUserRowExcludesLabel(t *testing.T) {
+func TestUserRowExcludesGutter(t *testing.T) {
 	m := testModel()
 	m.SetMouse(true)
 	m.appendEntry("user", "hello world")
@@ -39,9 +39,8 @@ func TestAssistantWrappedLineJoins(t *testing.T) {
 	if len(m.conv.rows) < 2 {
 		t.Fatalf("expected the paragraph to wrap, got %d row(s)", len(m.conv.rows))
 	}
-	// The first row of an assistant turn is the empty "HAL > " line, so
-	// the text starts on the second row.
-	got := m.conv.extract(cellPos{row: 1, cell: 8}, cellPos{row: len(m.conv.rows) - 1, cell: m.conv.rows[len(m.conv.rows)-1].width})
+	// The text starts after the eye gutter on the first row.
+	got := m.conv.extract(cellPos{row: 0, cell: entryPrefixCells}, cellPos{row: len(m.conv.rows) - 1, cell: m.conv.rows[len(m.conv.rows)-1].width})
 	if got != text {
 		t.Errorf("selection = %q\nwant       %q", got, text)
 	}
@@ -89,7 +88,7 @@ func TestLongWordIsNotSplit(t *testing.T) {
 		t.Skip("the word fits on one row at this width")
 	}
 	last := m.conv.rows[len(m.conv.rows)-1]
-	got := m.conv.extract(cellPos{row: 1, cell: 8}, cellPos{row: len(m.conv.rows) - 1, cell: last.width})
+	got := m.conv.extract(cellPos{row: 0, cell: entryPrefixCells}, cellPos{row: len(m.conv.rows) - 1, cell: last.width})
 	if got != word {
 		t.Errorf("selection = %q, want %q", got, word)
 	}
