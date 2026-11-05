@@ -2180,11 +2180,11 @@ const (
 	transcriptGutter = 2
 	// transcriptRightMargin keeps the longest line off the terminal edge.
 	transcriptRightMargin = 2
-	// transcriptMaxContent is the soft reading measure for long-form
-	// prose. It is left-aligned, never centred: a wide terminal keeps a
-	// generous right margin rather than moving the conversation inward.
-	transcriptMaxContent = 116
 )
+
+// The transcript uses the full terminal width between two fixed side
+// margins. Long-form text is not capped: the terminal is the reading
+// width, and resizing it reflows the conversation immediately.
 
 // contentColumn is the display column where every conversation message
 // begins. The eye occupies the separate gutter to its left.
@@ -2196,9 +2196,6 @@ func (m Model) contentColumn() int {
 // in display cells, so wide glyphs and combining marks wrap correctly.
 func (m Model) contentWidth() int {
 	w := m.width - transcriptGutter - transcriptRightMargin
-	if w > transcriptMaxContent {
-		w = transcriptMaxContent
-	}
 	if w < 10 {
 		w = 10
 	}
@@ -2276,11 +2273,20 @@ func (m *Model) renderAssistant(e *entry) ([]string, []bool) {
 		rows = append(rows, prefix+line)
 	}
 	toolStart := len(rows)
+	tools := make([]engine.ToolActivity, 0, len(e.tools))
 	for _, a := range e.tools {
-		if !showToolActivity(a) {
-			continue
+		if showToolActivity(a) {
+			tools = append(tools, a)
 		}
-		rows = append(rows, prefix+m.toolLine(a))
+	}
+	if len(tools) > 0 {
+		// One clear blank row separates the final answer from the tool
+		// activity. The tool rows themselves stay compact.
+		rows = append(rows, "")
+		toolStart = len(rows) - 1
+		for _, a := range tools {
+			rows = append(rows, prefix+m.toolLine(a))
+		}
 	}
 	if e.hasMeta || e.attribution != nil {
 		if row := m.metaRow(e.meta, e.attribution); row != "" {

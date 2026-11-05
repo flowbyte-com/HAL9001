@@ -128,8 +128,9 @@ conversation follows it directly. The conversation has no speaker
 labels. User text and assistant text share one content column with a
 two-cell gutter to its left; the first assistant row carries the
 theme-red `◉` eye in that gutter. Wrapped rows and Markdown blocks keep
-the same content column, one blank row separates turns, and wide
-terminals use a left-aligned, soft reading measure. Tool activity and the
+the same content column, one blank row separates turns, and the
+transcript uses the full terminal width with a two-cell margin on each
+side. Tool activity and the
 right-aligned statistics line are the assistant block's supplementary
 rows, not answer text. The composer is framed by two rules
 rather than a box: there are no side borders and no corners, and the

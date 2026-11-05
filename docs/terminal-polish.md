@@ -8,26 +8,32 @@ permission model, the tool ledger and all tool execution are unchanged.
 
 ## Layout rules
 
-- User and assistant text share one content column.
+- User and assistant text share one content column, with a fixed
+  two-cell inset from the left edge.
+- The transcript uses the full usable terminal width: two cells on the
+  left and two on the right. There is no fixed maximum reading width.
 - The assistant's first row carries a theme-red `◉` in a two-cell gutter;
   wrapped rows and later paragraphs never repeat it.
-- Turns are separated by one blank row. There are no leading or trailing
-  blank rows in a message.
-- Tool activity and statistics are supplementary assistant rows. Tool
-  lines use the established status model; statistics are muted and
-  right-aligned to the response edge.
-- On wide terminals the reading measure is capped at 116 display cells
-  and stays left-aligned. The header, composer and footer keep the full
-  terminal width.
-- Decorations never enter `/copy`, a mouse selection or the model
-  context. Only the reply's own text is selected.
+- One blank row separates conversation turns. An assistant block has no
+  leading or trailing blank row.
+- Markdown paragraphs have one blank row between them. List items are
+  compact. Code blocks and tables have one predictable blank row before
+  and after the block, except that statistics follow the final table or
+  tool row immediately.
+- One blank row separates the final answer from tool activity. Tool rows
+  are compact with no blank rows between them, and statistics follow the
+  last tool row immediately.
+- Tool activity and statistics are supplementary assistant rows. The
+  eye, tool lines and statistics never enter `/copy`, a mouse selection
+  or the model context.
+- Header, composer and footer remain full width.
 
 ## Before and after
 
 ### 80x24, accepted baseline
 
 ```text
-● HAL9001 · 2026-11-05 09:49
+● HAL9001 · 2026-11-05 10:00
         ─────────────────────────────────┼────────────────────────────────
          Foundation                      │ verified
          Polish                          │ in progress
@@ -55,8 +61,7 @@ Enter send · Ctrl+J newline · /help
 ### 80x24, polished
 
 ```text
-● HAL9001 · 2026-11-05 09:49
-  fmt.Println("HAL")
+● HAL9001 · 2026-11-05 10:00
 
    Stage                                │ State
   ──────────────────────────────────────┼─────────────────────────────────────
@@ -67,6 +72,7 @@ Enter send · Ctrl+J newline · /help
   What ran?
 
 ◉ The command completed. One step failed and one was cancelled.
+
   ⚙ write notes/plan.md · completed · 13 bytes · 666
   ⚙ bash · failed · exit 17 · 666
   ⚙ bash · cancelled · 666
@@ -82,12 +88,60 @@ Enter send · Ctrl+J newline · /help
 
 ### 170x38, polished
 
-The wide terminal gets a left-aligned 116-cell reading measure rather
-than a 170-cell line and table. The extra space stays on the right; the
-conversation is never moved inward.
+The long paragraph and table use the full 166-cell content width; the
+two-cell right margin and the independent footer remain visible.
 
 ```text
 ● HAL9001 · 2026-11-05 10:00
+
+  Show me the plan.
+
+◉ Plan
+
+  A short paragraph with strong text and code.
+
+  This paragraph is deliberately long so the full-width layout is visible at every terminal size: word word word word word word word word word word word word word word
+  word word word word word word word word word word word word word word end.
+
+  • first item
+  • second item
+
+  fmt.Println("HAL")
+
+   Stage                                                                             │ State
+  ───────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────
+   Foundation                                                                        │ verified
+   Polish                                                                            │ in progress
+                                                                                                                                            2m 20s · 4.2k in / 12.8k out
+
+  What ran?
+
+◉ The command completed. One step failed and one was cancelled.
+
+  ⚙ write notes/plan.md · completed · 13 bytes · 666
+  ⚙ bash · failed · exit 17 · 666
+  ⚙ bash · cancelled · 666
+  ⚙ bash · refused · 444
+                                                                                                                     2s · 900 in / 300 out · skill: system-prompt-writer
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Enter send · Ctrl+J newline · /help
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+444 READ ONLY                                                   Tokens: 5.1k in / 13.1k out                                                    MiniMax-M3.1-Flash · medium
+```
+
+### 200x45, polished
+
+The content width is 196 cells at 200 columns. Prose, tables, tool rows
+and statistics scale with the terminal rather than stopping at an
+artificial measure.
+
+```text
+● HAL9001 · 2026-11-05 10:00
+
+
+
 
 
 
@@ -99,44 +153,48 @@ conversation is never moved inward.
 
   A short paragraph with strong text and code.
 
+  This paragraph is deliberately long so the full-width layout is visible at every terminal size: word word word word word word word word word word word word word word word word word word word word
+  word word word word word word word word end.
+
   • first item
   • second item
 
   fmt.Println("HAL")
 
-   Stage                                                    │ State
-  ──────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────
-   Foundation                                               │ verified
-   Polish                                                   │ in progress
-                                                                                          2m 20s · 4.2k in / 12.8k out
+   Stage                                                                                            │ State
+  ──────────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────
+   Foundation                                                                                       │ verified
+   Polish                                                                                           │ in progress
+                                                                                                                                                                          2m 20s · 4.2k in / 12.8k out
 
   What ran?
 
 ◉ The command completed. One step failed and one was cancelled.
+
   ⚙ write notes/plan.md · completed · 13 bytes · 666
   ⚙ bash · failed · exit 17 · 666
   ⚙ bash · cancelled · 666
   ⚙ bash · refused · 444
-                                                                   2s · 900 in / 300 out · skill: system-prompt-writer
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                                                   2s · 900 in / 300 out · skill: system-prompt-writer
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Enter send · Ctrl+J newline · /help
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-444 READ ONLY                                                   Tokens: 5.1k in / 13.1k out                                                    MiniMax-M3.1-Flash · medium
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+444 READ ONLY                                                                  Tokens: 5.1k in / 13.1k out                                                                   MiniMax-M3.1-Flash · medium
 ```
 
 ### 60x20, polished
 
 ```text
-● HAL9001 · 2026-11-05 09:48
-   Polish                     │ in progress
+● HAL9001 · 2026-11-05 10:00
                               2m 20s · 4.2k in / 12.8k out
 
   What ran?
 
 ◉ The command completed. One step failed and one was
   cancelled.
+
   ⚙ write notes/plan.md · completed · 13 bytes · 666
   ⚙ bash · failed · exit 17 · 666
   ⚙ bash · cancelled · 666
@@ -192,6 +250,13 @@ The presentation PTY suite checks all five at 80x24 and asserts that the
 eye is drawn with an ANSI colour in every theme. The Markdown body,
 headings, code and rules remain theme-derived.
 
+## Responsive layout
+
+A live 170 -> 80 -> 170 resize recalculates prose wrapping, code and
+table layout, tool-row truncation, statistics alignment and the content
+column without a restart. Long unbroken text is wrapped at the content
+width, not clipped. The same session and draft survive the resize.
+
 ## Verification
 
 ```sh
@@ -208,7 +273,7 @@ Results at the polish HEAD:
 
 - Go tests: all packages pass.
 - Race tests: tui, engine, session, permission, agenttools, knowledge pass.
-- Polish PTY checks: 89/89.
+- Polish PTY checks: 122/122.
 - Permission PTY checks: 24/24.
 - Help PTY checks: 47/47.
 - Lifecycle checks: 8/8.
@@ -220,10 +285,7 @@ Results at the polish HEAD:
   running transcript row; the renderer supports `running` for a future
   event without changing execution semantics.
 - Tables keep glamour's one-cell internal padding inside the content
-  column; the table text does not start exactly on the column, but its
-  block does and it never overflows.
+  column; the table block itself uses the full width and never overflows.
 - The footer keeps its existing narrow-terminal fallback, which can pack
   the three parts tightly at 60 cells. This was already the accepted
   footer behaviour and was not changed by this visual milestone.
-- The soft reading measure applies to the conversation only. The
-  composer rules, header and footer remain full width.

@@ -26,7 +26,7 @@ from termsim import render  # noqa: E402
 FAILURES = []
 BINARY = os.environ.get("HAL9001_BINARY", "/tmp/opencode/hal9001")
 THEMES = ["HAL Classic", "Midnight", "Amber", "Paper", "Monochrome"]
-SIZES = [(60, 20), (80, 24), (120, 30), (170, 38)]
+SIZES = [(60, 20), (80, 24), (120, 30), (170, 38), (200, 45)]
 
 
 def check(name, ok, detail=""):
@@ -57,8 +57,8 @@ def content_column(cols):
 
 
 def content_width(cols):
-    # Soft reading cap, left-aligned and never centred.
-    return min(cols - 4, 116)
+    # Full usable width: two cells inset on each side.
+    return cols - 4
 
 
 def row_with(screen, fragment):
@@ -66,6 +66,21 @@ def row_with(screen, fragment):
         if fragment in line:
             return line
     return ""
+
+
+def blank_between_indices(lines, a, b):
+    if a < 0 or b <= a:
+        return -1
+    return sum(1 for line in lines[a + 1:b] if not line.strip())
+
+
+def blank_between(lines, first, second):
+    try:
+        a = next(i for i, line in enumerate(lines) if first in line)
+        b = next(i for i, line in enumerate(lines) if i > a and second in line)
+    except StopIteration:
+        return -1
+    return blank_between_indices(lines, a, b)
 
 
 def no_overflow(screen, cols):
@@ -153,6 +168,12 @@ def write_fixture(home, store):
                     {"tool_ledger": ledger, "attribution": attribution}),
         ]:
             fh.write(json.dumps(item) + "\n")
+    with open(os.path.join(store, "widthtest.jsonl"), "w") as fh:
+        for item in [
+            message("user", "width test", "width-1"),
+            message("assistant", "Ruler:\n\n" + "X" * 240, "width-1"),
+        ]:
+            fh.write(json.dumps(item) + "\n")
     with open(os.path.join(home, "usage.json"), "w") as fh:
         json.dump({"sessions": {"polish": {
             "input_tokens": 5100, "output_tokens": 13100,
@@ -190,15 +211,15 @@ def main():
     pty_drive.SESSION = "polish"
     os.environ["HAL9001_MPM_BIN"] = os.path.join(root, "missing-mpm")
 
-    def capture(script, cols, rows, theme="HAL Classic"):
+    def capture(script, cols, rows, theme="HAL Classic", session="polish"):
         write_config(config, "http://127.0.0.1:9/v1")
         with open(config) as fh:
             data = json.load(fh)
         data["theme"] = theme
         with open(config, "w") as fh:
             json.dump(data, fh)
-        raw = pty_drive.run(script, cols=cols, rows=rows, timeout=10.0,
-                            fresh=False, session="polish",
+        raw = pty_drive.run(script, cols=cols, rows=rows, timeout=5.0,
+                            fresh=False, session=session,
                             args=["--workspace", workspace])
         return raw, render(raw, cols, rows)
 
@@ -218,6 +239,13 @@ def main():
             check("%s: rows fit the terminal" % label,
                   no_overflow(top, cols) and no_overflow(bottom, cols),
                   plain_top + plain_bottom)
+            _, ruler = capture([(2.2, b"")], cols, rows, session="widthtest")
+            ruler_rows = [line for line in ruler.text().split("\n")
+                          if line.strip() and set(line.strip()) == {"X"}]
+            expected_width = content_width(cols)
+            check("%s: long unbroken text uses the full content width" % label,
+                  any(cell_width(line.strip()) == expected_width for line in ruler_rows),
+                  ruler.text())
 
             user = row_with(top, "Show me the plan.")
             if user:
@@ -275,6 +303,70 @@ def main():
                 check("%s: statistics line is visible" % label, False, plain_bottom)
             check("%s: statistics carry the skill credit" % label,
                   bool(meta) and "skill: system-prompt-writer" in meta, plain_bottom)
+
+            if (cols, rows) == (80, 24):
+                lines = plain_bottom.split("\n")
+                tool_indices = [i for i, line in enumerate(lines)
+                                if line.strip().startswith("⚙")]
+                check("80x24: one blank between user and answer",
+                      blank_between(lines, "What ran?", "The command completed.") == 1,
+                      plain_bottom)
+                check("80x24: one blank between answer and tool activity",
+                      blank_between(lines, "The command completed.", "⚙") == 1,
+                      plain_bottom)
+                check("80x24: tool rows have no blank rows between them",
+                      len(tool_indices) == 4 and
+                      all(blank_between_indices(lines, tool_indices[i], tool_indices[i + 1]) == 0
+                          for i in range(len(tool_indices) - 1)),
+                      plain_bottom)
+                check("80x24: statistics follow the last tool immediately",
+                      blank_between(lines, "⚙", "2s · 900 in / 300 out") == 0,
+                      plain_bottom)
+
+            if (cols, rows) == (170, 38):
+                lines = plain_top.split("\n")
+                check("170x38: one blank between user and assistant",
+                      blank_between(lines, "Show me the plan.", "Plan") == 1,
+                      plain_top)
+                check("170x38: list items remain compact",
+                      blank_between(lines, "first item", "second item") == 0,
+                      plain_top)
+                check("170x38: one blank between turns",
+                      blank_between(lines, "2m 20s", "What ran?") == 1,
+                      plain_top)
+
+        # A live resize must recalculate width, wrapping, tables, tool
+        # truncation and statistics without restarting the application.
+        raw80 = pty_drive.run(
+            [(2.2, b""), (0.5, ("resize", 80, 24)), (0.8, b"")],
+            cols=170, rows=38, timeout=5.5, fresh=False, session="widthtest",
+            args=["--workspace", workspace])
+        frame80 = render(raw80, 80, 24)
+        text80 = frame80.text()
+        ruler80 = [line for line in text80.split("\n")
+                   if line.strip() and set(line.strip()) == {"X"}]
+        check("resize: 170 -> 80 reflows to 76 content cells",
+              no_overflow(frame80, 80) and
+              any(cell_width(line.strip()) == 76 for line in ruler80), text80)
+        check("resize: 170 -> 80 keeps the footer and composer",
+              "444 READ ONLY" in text80 and "Enter send" in text80, text80)
+
+        raw170 = pty_drive.run(
+            [(2.2, b""), (0.5, ("resize", 80, 24)),
+             (0.5, ("resize", 170, 38)), (0.8, b"")],
+            cols=170, rows=38, timeout=5.5, fresh=False, session="widthtest",
+            args=["--workspace", workspace])
+        frame170 = render(raw170, 170, 38)
+        text170 = frame170.text()
+        ruler170 = [line for line in text170.split("\n")
+                    if line.strip() and set(line.strip()) == {"X"}]
+        check("resize: 170 -> 80 -> 170 returns to full width",
+              no_overflow(frame170, 170) and
+              any(cell_width(line.strip()) == 166 for line in ruler170), text170)
+        check("resize: live round-trip keeps the left content column",
+              any(cell_column(line, "X") == 2 for line in ruler170), text170)
+        check("resize: live round-trip keeps footer and composer",
+              "444 READ ONLY" in text170 and "Enter send" in text170, text170)
 
         # Theme-aware red eye and the same readable transcript on every theme.
         for theme in THEMES:

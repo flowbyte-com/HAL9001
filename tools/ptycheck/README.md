@@ -133,7 +133,7 @@ python3 tools/ptycheck/polish_checks.py
 - The presentation suite checks a label-free transcript: user and
   assistant text share one display column, the assistant eye sits in its
   own two-cell gutter, wrapped Markdown/code/tables stay inside the
-  reading measure at 60x20, 80x24, 120x30 and 170x38, tool activity and
+  usable width at 60x20, 80x24, 120x30, 170x38 and 200x45, tool activity and
   right-aligned statistics sit beneath the answer, and all five themes
   render the eye in colour. It also covers slash Esc dismissal and the
   444/666 footer.

@@ -105,8 +105,8 @@ each assistant response carries a restrained red `◉` in that gutter; no
 label sits beside it. Wrapped lines, Markdown headings, lists, quotes,
 code fences and tables keep the same content column. One blank row
 separates turns, so consecutive messages stay readable without chrome.
-On wide terminals the reading measure is capped and left-aligned; the
-composer, header and footer keep the full width.
+The transcript uses the full usable terminal width with two-cell side
+margins; the composer, header and footer keep the full width.
 
 Verified tool activity sits beneath the answer that produced it in one
 compact line per call, for example `⚙ bash · completed · exit 0 · 666`.
