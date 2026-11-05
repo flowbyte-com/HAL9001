@@ -71,6 +71,17 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/permission_checks.py
 ```
 
+The presentation checks own their config, home, workspace and a static
+session with a verified tool ledger. They need no provider. They assert
+display-cell alignment at 60x20, 80x24, 120x30 and 170x38, all five
+themes, the red eye, tool and metadata order, slash dismissal and the
+444/666 footer:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/polish_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -119,6 +130,13 @@ python3 tools/ptycheck/permission_checks.py
   terminal colours and cursor.
 - The active conversation survives `/clear` and a relaunch, an empty new
   session stays selected, and `/sessions` recovers the previous one.
+- The presentation suite checks a label-free transcript: user and
+  assistant text share one display column, the assistant eye sits in its
+  own two-cell gutter, wrapped Markdown/code/tables stay inside the
+  reading measure at 60x20, 80x24, 120x30 and 170x38, tool activity and
+  right-aligned statistics sit beneath the answer, and all five themes
+  render the eye in colour. It also covers slash Esc dismissal and the
+  444/666 footer.
 - The permission suite runs the lifecycle end to end: 444 is the default;
   a model-invented `read` is refused; conversation text and a plain `y` do
   not enable 666; `Ctrl+P` then `Ctrl+Y` enables a red `666 UNRESTRICTED`
@@ -188,4 +206,5 @@ by hand in a real terminal.
 | `checks.py` | the shared assertions |
 | `help_checks.py` | isolated help and suggestion checks with their own temporary config, home, store and sessions |
 | `permission_checks.py` | isolated 444/666 enable, execution, disable, reset and audit checks with their own provider |
+| `polish_checks.py` | isolated transcript alignment, eye, tool/metadata and slash-dismissal checks with a static ledger fixture |
 | `fake_provider.py` | a local OpenAI-compatible streaming stub (`[[save]]`, `[[read]]`, `[[bash]]`) |

@@ -207,7 +207,7 @@ def short_layout_checks():
     text = run_fixture("shortchat")
     lines = text.split("\n")
     top, _ = composer_bounds(text)
-    msg = next((i for i, l in enumerate(lines) if "You > a short question" in l), -1)
+    msg = next((i for i, l in enumerate(lines) if "a short question" in l), -1)
     check("layout: a short conversation sits above the composer",
           msg > 0 and top > 0 and 0 < top - msg <= 4, "\n".join(lines))
 
@@ -514,9 +514,9 @@ def selection_checks():
     interface labels, no colours."""
     write_scroll_fixture()
     # SGR press and drag over three rows of the stored reply: row 10
-    # holds the "## Section 15" heading, rows 11 to 15 the paragraph
+    # holds the "Section 15" heading, rows 11 to 15 the paragraph
     # below it. The conversation starts directly under the header.
-    dragging = run([(2.5, b"\x1b[<0;9;11M"), (0.8, b"\x1b[<32;40;14M")],
+    dragging = run([(2.5, b"\x1b[<0;2;11M"), (0.8, b"\x1b[<32;40;14M")],
                    timeout=9.0, fresh=False, session="scrollfixture")
     spans = marked_spans(dragging.decode("utf-8", "replace"))
     conv = [s for s in spans if 10 <= s[0] <= 15]
@@ -537,8 +537,9 @@ def selection_checks():
         return
     copied = base64.b64decode(found.group(1)).decode("utf-8", "replace")
     check("mouse: the copy holds text", copied.strip() != "", repr(copied))
-    check("mouse: the copy has no interface labels",
-          "HAL >" not in copied and "You >" not in copied, repr(copied))
+    check("mouse: the copy has no interface decoration",
+          "HAL >" not in copied and "You >" not in copied and
+          "◉" not in copied and "⚙" not in copied, repr(copied))
     check("mouse: the copy has no escape sequences",
           "\x1b" not in copied, repr(copied))
     check("mouse: the copy is part of the reply",
@@ -555,7 +556,7 @@ def autoscroll_checks():
     # sixteen rows tall. The drag ends in its top row, so the history
     # scrolls up while the pointer rests there.
     before = run_fixture_text("scrollfixture")
-    visible = set(re.findall(r"## Section (\d+)", before))
+    visible = set(re.findall(r"Section (\d+)", before))
     raw = run([(2.5, b"\x1b[<0;9;15M"), (0.4, b"\x1b[<32;9;2M"),
                (1.2, b""), (0.3, b"\x1b[<0;9;2m")],
               timeout=10.0, fresh=False, session="scrollfixture")
@@ -567,12 +568,13 @@ def autoscroll_checks():
         copied = base64.b64decode(found.group(1)).decode("utf-8", "replace")
         # The history scrolled up while the pointer rested at the edge,
         # so the selection reaches sections that were never on screen.
-        reached = set(re.findall(r"## Section (\d+)", copied))
+        reached = set(re.findall(r"Section (\d+)", copied))
         check("mouse: the edge drag reaches text that was off screen",
               bool(reached - visible),
               "reached %s, visible %s" % (sorted(reached), sorted(visible)))
-        check("mouse: the edge drag copies no interface labels",
-              "HAL >" not in copied and "You >" not in copied, repr(copied))
+        check("mouse: the edge drag copies no interface decoration",
+              "HAL >" not in copied and "You >" not in copied and
+              "◉" not in copied and "⚙" not in copied, repr(copied))
     moved = render(raw).text()
     check("mouse: the edge drag scrolls the conversation",
           first_text(moved) != first_text(before), moved[:400])
@@ -589,8 +591,8 @@ def autoscroll_checks():
           found is not None, text[-300:])
     if found:
         copied = base64.b64decode(found.group(1)).decode("utf-8", "replace")
-        visible = set(re.findall(r"## Section (\d+)", render(raw).text()))
-        reached = set(re.findall(r"## Section (\d+)", copied))
+        visible = set(re.findall(r"Section (\d+)", render(raw).text()))
+        reached = set(re.findall(r"Section (\d+)", copied))
         check("mouse: the bottom edge drag reaches text that was off screen",
               bool(reached - visible),
               "reached %s, visible %s" % (sorted(reached), sorted(visible)))
@@ -1330,7 +1332,7 @@ def composer_mouse_checks():
           composer_rows(back) == composer_rows(before),
           "%r -> %r" % (composer_rows(before), composer_rows(back)))
     check("mouse: the composer wheel never submits the draft",
-          "You >" not in moved and "You >" not in back, moved[:400])
+          bool(composer_rows(moved)) and bool(composer_rows(back)), moved[:400])
 
 
 def exit_checks():
@@ -1374,7 +1376,10 @@ def ui_checks():
     check("commands: / opens suggestions", "Show available commands" in panel, panel)
     check("commands: the conversation stays visible",
           "I read your message" in panel, panel)
-    check("commands: nothing submitted", "You > /" not in panel, panel)
+    top, bottom = composer_bounds(panel)
+    composer_text = "".join(panel.split("\n")[top + 1:bottom]).strip()
+    check("commands: nothing submitted", composer_text == "/",
+          "composer = %r\n%s" % (composer_text, panel))
 
 
     filtered = screen(run([(2.0, b"/ef")], timeout=5.0)).text()
@@ -1469,21 +1474,21 @@ def main():
 
     # Enter sends the message.
     text = screen(run([(2.0, b"hello hal\r")], timeout=6.0)).text()
-    check("Enter sends", "You > hello hal" in text, text)
+    check("Enter sends", "hello hal" in text and "◉" in text, text)
 
     # Ctrl+J breaks the line instead of sending.
     text = screen(run([(2.0, b"first\x0a"), (0.5, b"second")], timeout=5.0)).text()
     check("Ctrl+J keeps the text in the composer",
           "first" in text and "second" in text, text)
-    check("Ctrl+J does not send", "You >" not in text, text)
+    check("Ctrl+J does not send", "◉" not in text, text)
 
     # Alt+Enter (ESC CR) breaks the line too.
     text = screen(run([(2.0, b"first\x1b\r"), (0.5, b"second")], timeout=5.0)).text()
-    check("Alt+Enter does not send", "You >" not in text, text)
+    check("Alt+Enter does not send", "◉" not in text, text)
 
     # Ctrl+S still sends.
     text = screen(run([(2.0, b"via ctrl s\x13")], timeout=6.0)).text()
-    check("Ctrl+S sends", "You > via ctrl s" in text, text)
+    check("Ctrl+S sends", "via ctrl s" in text and "◉" in text, text)
 
     # Slash commands run locally.
     text = screen(run([(2.0, b"/help\r")], timeout=5.0)).text()
@@ -1502,7 +1507,7 @@ def main():
     paste = b"\x1b[200~line one\nline two\n\n  indented\x1b[201~"
     text = screen(run([(2.0, paste)], timeout=5.0)).text()
     check("paste stays in the composer", "line one" in text and "indented" in text, text)
-    check("paste does not submit", "You >" not in text, text)
+    check("paste does not submit", "◉" not in text, text)
 
     ui_checks()
     scroll_checks()
