@@ -567,12 +567,15 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if eng != nil {
 				m.engine = eng
 			}
+			// Bind the new conversation before loading its history, so a
+			// session change clears the old tools and SetHistory can
+			// rebind the new ledger.
+			m.SetSessionID(item.ID)
 			m.SetHistory(lines)
 			m.title = item.Title
 			if m.title == "" {
 				m.title = item.ID
 			}
-			m.SetSessionID(item.ID)
 			m.refreshUsage()
 			m.view = viewChat
 			m.notice = "Resumed: " + m.title
@@ -1053,6 +1056,7 @@ func (m *Model) startFreshConversation(notice string) {
 	}
 	m.lastStats = nil
 	m.lastResponse = ""
+	m.lastTools = nil
 	m.refreshUsage()
 	m.renderConversation()
 	m.viewport.GotoBottom()

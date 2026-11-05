@@ -703,6 +703,8 @@ func sessionLines(history []session.Message) []tui.SessionLine {
 		lines = append(lines, tui.SessionLine{
 			Role:        role,
 			Text:        msg.Content,
+			TurnID:      msg.TurnID,
+			Tools:       msg.ToolExecutions(),
 			Attribution: msg.Attribution,
 		})
 	}

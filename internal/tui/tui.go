@@ -243,6 +243,13 @@ const (
 type SessionLine struct {
 	Role string
 	Text string
+	// TurnID is the identity of the exchange this line belongs to. It is
+	// preserved through history reconstruction so tool evidence can stay
+	// associated with the answer it belongs to.
+	TurnID string
+	// Tools is the verified tool evidence stored with this assistant
+	// answer. It is evidence, never current authority.
+	Tools []session.ToolExecution
 	// Attribution names the skills that shaped this answer, when the
 	// stored turn recorded any. It is presentation metadata and never
 	// part of Text.
@@ -306,6 +313,7 @@ const (
 type entry struct {
 	role     string // "user" or "assistant"
 	text     string
+	turnID   string
 	collapse collapseState
 	note     bool
 	meta     usage.Turn
@@ -616,6 +624,8 @@ func (m *Model) SetSessionID(id string) {
 			m.permission.Disable()
 			m.permission.SetSession(id)
 		}
+		// Tool activity belongs to the conversation that produced it.
+		m.lastTools = nil
 	}
 	m.sessionID = id
 }
@@ -657,17 +667,43 @@ func (m *Model) resetPermission() {
 func (m *Model) SetHistory(lines []SessionLine) {
 	m.cancelWrite("session changed")
 	m.resetPermission()
+	m.lastTools = nil
 	m.entries = nil
 	m.pending = ""
 	m.clearUndo()
 	m.clearSelection()
 	for _, line := range lines {
+		// Tool notes precede the answer, exactly as they did when the
+		// turn was live. They come from the verified ledger, not from
+		// the assistant's prose.
+		if line.Role == "assistant" && len(line.Tools) > 0 {
+			for _, e := range line.Tools {
+				m.entries = append(m.entries, entry{
+					role:   "assistant",
+					text:   toolActivityLine(historicalToolActivity(e)),
+					turnID: e.TurnID,
+					note:   true,
+				})
+			}
+		}
 		m.entries = append(m.entries, entry{
 			role:        line.Role,
 			text:        line.Text,
+			turnID:      line.TurnID,
 			collapse:    collapseShown,
 			attribution: line.Attribution,
 		})
+	}
+	// /diag describes the latest assistant turn, not an older turn that
+	// happened to use tools.
+	for i := len(lines) - 1; i >= 0; i-- {
+		if lines[i].Role != "assistant" {
+			continue
+		}
+		for _, e := range lines[i].Tools {
+			m.lastTools = append(m.lastTools, historicalToolActivity(e))
+		}
+		break
 	}
 	m.attachHistoryMeta()
 	m.rewrap()
@@ -1960,6 +1996,41 @@ func mergeToolActivity(list []engine.ToolActivity, next engine.ToolActivity) []e
 	return append(list, next)
 }
 
+// historicalToolActivity maps a durable ledger record onto the compact
+// presentation used for live activity. The historical marker keeps the
+// line clearly separate from current tool availability.
+func historicalToolActivity(e session.ToolExecution) engine.ToolActivity {
+	status := "failed"
+	switch e.Status {
+	case session.ToolSuccess:
+		status = "ok"
+	case session.ToolFailure:
+		status = "failed"
+	case session.ToolCancelled:
+		status = "cancelled"
+	case session.ToolRefused:
+		status = "denied"
+	}
+	mode := permission.Guarded
+	if e.Mode == "666" {
+		mode = permission.Unrestricted
+	}
+	return engine.ToolActivity{
+		CallID:     e.CallID,
+		Name:       e.Tool,
+		Action:     e.Action,
+		Target:     e.Target,
+		Status:     status,
+		Summary:    e.Summary,
+		Duration:   time.Duration(e.DurationMS) * time.Millisecond,
+		Bytes:      e.Bytes,
+		Truncated:  e.Truncated,
+		ExitCode:   e.ExitCode,
+		Mode:       mode,
+		Historical: true,
+	}
+}
+
 // toolActivityLine is the compact, content-free line shown in the
 // conversation and diagnostics.
 func toolActivityLine(a engine.ToolActivity) string {
@@ -1976,6 +2047,12 @@ func toolActivityLine(a engine.ToolActivity) string {
 			line += fmt.Sprintf(" · exit %d", *a.ExitCode)
 		} else {
 			line += " · ok"
+		}
+	case "failed":
+		if a.Name == "bash" && a.ExitCode != nil {
+			line += fmt.Sprintf(" · exit %d · failed", *a.ExitCode)
+		} else {
+			line += " · failed"
 		}
 	case "proposed":
 		line += " · awaiting approval"
@@ -1998,6 +2075,9 @@ func toolActivityLine(a engine.ToolActivity) string {
 	}
 	if a.Truncated {
 		line += " · truncated"
+	}
+	if a.Historical {
+		line += " · " + a.Mode.String()
 	}
 	return line
 }

@@ -21,6 +21,37 @@ import (
 
 // A missing API key must leave the engine without a provider, never with a
 // typed nil pointer that would crash on the first request.
+// A resumed line keeps the turn identity and the verified ledger so the
+// interface can associate historical tools with the answer they produced.
+func TestSessionLinesKeepTurnAndToolEvidence(t *testing.T) {
+	msg := session.Message{
+		Role: session.RoleAssistant, Content: "the answer", TurnID: "turn-1",
+		ToolLedger: &session.ToolLedger{
+			Version:   session.ToolLedgerVersion,
+			SessionID: "chat",
+			TurnID:    "turn-1",
+			Executions: []session.ToolExecution{{
+				TurnID: "turn-1", CallID: "call-1", Tool: "bash",
+				Mode: "666", Status: session.ToolSuccess, Summary: "exit 0",
+			}},
+		},
+	}
+	lines := sessionLines([]session.Message{msg})
+	if len(lines) != 1 {
+		t.Fatalf("lines = %d", len(lines))
+	}
+	if lines[0].TurnID != "turn-1" || len(lines[0].Tools) != 1 ||
+		lines[0].Tools[0].Tool != "bash" || lines[0].Tools[0].Mode != "666" {
+		t.Fatalf("line = %#v", lines[0])
+	}
+	old := sessionLines([]session.Message{{
+		Role: session.RoleAssistant, Content: "old", TurnID: "turn-old",
+	}})
+	if len(old[0].Tools) != 0 || old[0].TurnID != "turn-old" {
+		t.Fatalf("old line = %#v", old[0])
+	}
+}
+
 func TestRebuildEngineWithoutProviderIsSafe(t *testing.T) {
 	store, err := session.Open(t.TempDir(), "test")
 	if err != nil {

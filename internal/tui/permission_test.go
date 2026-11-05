@@ -124,11 +124,15 @@ func Test666ResetsOnNewConversation(t *testing.T) {
 	m = openPermission(t, m)
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	m = updated.(Model)
+	m.lastTools = []engine.ToolActivity{{Name: "bash", Status: "ok"}}
 
 	m = typeText(m, "/clear")
 	m = enterCurrent(m)
 	if m.PermissionMode() != permission.Guarded {
 		t.Fatal("/clear kept 666")
+	}
+	if len(m.lastTools) != 0 {
+		t.Fatalf("/clear kept the previous tool activity: %#v", m.lastTools)
 	}
 	if m.sessionID != "session-two" {
 		t.Errorf("session id = %q", m.sessionID)
