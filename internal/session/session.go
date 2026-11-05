@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Role is a conversation participant.
@@ -42,6 +44,269 @@ type Message struct {
 	// answer. It is metadata about the turn, never part of Content:
 	// the content is exactly what the model produced.
 	Attribution *Attribution `json:"attribution,omitempty"`
+	// ToolLedger is the verified record of tool executions that produced
+	// or accompanied this assistant answer. It is absent on user and
+	// system messages and on older sessions. It is evidence, never
+	// authority: nothing here can enable a tool or change the current
+	// permission.
+	ToolLedger *ToolLedger `json:"tool_ledger,omitempty"`
+}
+
+// ToolLedgerVersion is the explicit schema version of ToolLedger. A
+// ledger with any other version is ignored rather than guessed at.
+const ToolLedgerVersion = 1
+
+// Bounds keep one turn's evidence small even when a provider asks for many
+// tool calls. The ledger never stores raw stdout, file contents, command
+// text, environment or credentials.
+const (
+	MaxToolExecutionsPerTurn = 64
+	MaxToolSummaryBytes      = 512
+	MaxToolTargetBytes       = 1024
+	MaxToolIDBytes           = 128
+	MaxToolNameBytes         = 64
+)
+
+// ToolStatus is the outcome of one tool execution. It is intentionally
+// separate from the live UI status: a historical record says what happened,
+// not what is currently available.
+type ToolStatus string
+
+const (
+	ToolSuccess   ToolStatus = "success"
+	ToolFailure   ToolStatus = "failure"
+	ToolCancelled ToolStatus = "cancelled"
+	ToolRefused   ToolStatus = "refused"
+)
+
+// ToolExecution is one verified historical tool execution. TurnID binds it
+// to the assistant message that carries the ledger; CallID preserves the
+// provider's call-to-result association where one was available.
+type ToolExecution struct {
+	TurnID     string     `json:"turn_id"`
+	CallID     string     `json:"call_id,omitempty"`
+	Tool       string     `json:"tool"`
+	Action     string     `json:"action,omitempty"`
+	Target     string     `json:"target,omitempty"`
+	Mode       string     `json:"mode"`
+	Status     ToolStatus `json:"status"`
+	ExitCode   *int       `json:"exit_code,omitempty"`
+	DurationMS int64      `json:"duration_ms,omitempty"`
+	Bytes      int        `json:"bytes,omitempty"`
+	Truncated  bool       `json:"truncated,omitempty"`
+	// Summary is a short, redacted description of the outcome, for
+	// example "exit 17" or "wrote 13 bytes". It never contains the
+	// command text, file contents or raw output.
+	Summary string `json:"summary,omitempty"`
+}
+
+// ToolLedger is the versioned evidence record attached to one assistant
+// message. SessionID and TurnID make a copied or mismatched record
+// detectable instead of silently misattributed.
+type ToolLedger struct {
+	Version    int             `json:"version"`
+	SessionID  string          `json:"session_id"`
+	TurnID     string          `json:"turn_id"`
+	Executions []ToolExecution `json:"executions"`
+}
+
+// messageWire is the on-disk shape used by UnmarshalJSON. The ledger is
+// carried as raw JSON so a damaged optional ledger can be ignored without
+// losing the conversation around it.
+type messageWire struct {
+	Role        Role            `json:"role"`
+	Content     string          `json:"content"`
+	Timestamp   time.Time       `json:"ts"`
+	TurnID      string          `json:"turn_id,omitempty"`
+	Attribution *Attribution    `json:"attribution,omitempty"`
+	ToolLedger  json.RawMessage `json:"tool_ledger,omitempty"`
+}
+
+// UnmarshalJSON keeps old sessions and damaged optional ledgers loadable.
+// Core message fields still fail loudly if they are malformed; a malformed
+// or unsupported ledger is simply treated as absent evidence.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	var w messageWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*m = Message{
+		Role:        w.Role,
+		Content:     w.Content,
+		Timestamp:   w.Timestamp,
+		TurnID:      w.TurnID,
+		Attribution: w.Attribution,
+	}
+	if len(w.ToolLedger) > 0 {
+		m.ToolLedger = parseToolLedger(w.ToolLedger)
+	}
+	return nil
+}
+
+// ToolExecutions returns the valid evidence attached to this message. A
+// missing, older, mismatched or malformed ledger yields nil: evidence is
+// never inferred from assistant text.
+func (m Message) ToolExecutions() []ToolExecution {
+	if m.Role != RoleAssistant || m.ToolLedger == nil {
+		return nil
+	}
+	if m.ToolLedger.Version != ToolLedgerVersion {
+		return nil
+	}
+	if m.TurnID == "" || m.ToolLedger.TurnID != m.TurnID {
+		return nil
+	}
+	out := make([]ToolExecution, 0, len(m.ToolLedger.Executions))
+	for _, e := range m.ToolLedger.Executions {
+		if len(out) >= MaxToolExecutionsPerTurn {
+			break
+		}
+		if e.TurnID != m.TurnID {
+			continue
+		}
+		e = sanitizeToolExecution(e)
+		if e.Tool == "" || !validToolStatus(e.Status) || !validToolMode(e.Mode) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func parseToolLedger(raw json.RawMessage) *ToolLedger {
+	var w struct {
+		Version    int               `json:"version"`
+		SessionID  string            `json:"session_id"`
+		TurnID     string            `json:"turn_id"`
+		Executions []json.RawMessage `json:"executions"`
+	}
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return nil
+	}
+	if w.Version != ToolLedgerVersion {
+		return nil
+	}
+	ledger := &ToolLedger{
+		Version:   w.Version,
+		SessionID: w.SessionID,
+		TurnID:    w.TurnID,
+	}
+	for _, rawExec := range w.Executions {
+		var e ToolExecution
+		if err := json.Unmarshal(rawExec, &e); err != nil {
+			// One damaged entry must not discard the rest of the ledger.
+			continue
+		}
+		ledger.Executions = append(ledger.Executions, e)
+	}
+	if len(ledger.Executions) == 0 {
+		return nil
+	}
+	return ledger
+}
+
+func buildToolLedger(sessionID, turnID string, tools []ToolExecution) *ToolLedger {
+	if len(tools) == 0 {
+		return nil
+	}
+	ledger := &ToolLedger{
+		Version:   ToolLedgerVersion,
+		SessionID: sessionID,
+		TurnID:    turnID,
+	}
+	for _, e := range tools {
+		if len(ledger.Executions) >= MaxToolExecutionsPerTurn {
+			break
+		}
+		// The message this ledger is attached to is the authority for the
+		// association; do not accept a conflicting turn id.
+		e.TurnID = turnID
+		e = sanitizeToolExecution(e)
+		if e.Tool == "" || !validToolStatus(e.Status) || !validToolMode(e.Mode) {
+			continue
+		}
+		ledger.Executions = append(ledger.Executions, e)
+	}
+	if len(ledger.Executions) == 0 {
+		return nil
+	}
+	return ledger
+}
+
+func sanitizeToolExecution(e ToolExecution) ToolExecution {
+	e.CallID = safeEvidenceLabel(e.CallID)
+	e.Tool = safeEvidenceLabel(e.Tool)
+	e.Action = safeEvidenceLabel(e.Action)
+	e.Target = singleLine(strings.TrimSpace(e.Target))
+	e.Mode = strings.TrimSpace(e.Mode)
+	e.Summary = singleLine(strings.TrimSpace(e.Summary))
+	e.CallID = truncateUTF8(e.CallID, MaxToolIDBytes)
+	e.Tool = truncateUTF8(e.Tool, MaxToolNameBytes)
+	e.Action = truncateUTF8(e.Action, MaxToolNameBytes)
+	e.Target = truncateUTF8(e.Target, MaxToolTargetBytes)
+	e.Summary = truncateUTF8(e.Summary, MaxToolSummaryBytes)
+	if e.DurationMS < 0 {
+		e.DurationMS = 0
+	}
+	if e.Bytes < 0 {
+		e.Bytes = 0
+	}
+	return e
+}
+
+// safeEvidenceLabel keeps a tool or call name from introducing line breaks
+// or structural separators into the trusted resume note. Unknown model
+// tool names are still recorded, but only as a safe label.
+func safeEvidenceLabel(s string) string {
+	s = singleLine(strings.TrimSpace(s))
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) ||
+			strings.ContainsRune("_.:/-", r) {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('_')
+	}
+	return b.String()
+}
+
+func singleLine(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		// Control and format characters can break a line or spoof
+		// direction in the trusted resume note. They become spaces;
+		// the ledger is metadata, not a rendering channel.
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			b.WriteRune(' ')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func validToolStatus(s ToolStatus) bool {
+	switch s {
+	case ToolSuccess, ToolFailure, ToolCancelled, ToolRefused:
+		return true
+	}
+	return false
+}
+
+func validToolMode(mode string) bool {
+	return mode == "444" || mode == "666"
+}
+
+func truncateUTF8(s string, max int) string {
+	if max < 1 || len(s) <= max {
+		return s
+	}
+	s = s[:max]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // Attribution records which skills shaped one assistant answer.
@@ -85,6 +350,10 @@ type Turn struct {
 	// Attribution is the record of the skills that shaped the answer.
 	// It is nil for an exchange that used none.
 	Attribution *Attribution
+	// Tools is the verified evidence of tool executions from this
+	// exchange. It is attached to the assistant message and never used
+	// as authority.
+	Tools []ToolExecution
 }
 
 // NewTurnID mints a fresh, opaque turn identity.
@@ -105,6 +374,7 @@ func NewTurnID() string {
 type Store struct {
 	mu   sync.Mutex
 	path string
+	name string
 }
 
 // MaxTitleRunes bounds a display title. Titles are presentation only and
@@ -255,7 +525,7 @@ func Open(dir, session string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("session: %w", err)
 	}
-	return &Store{path: filepath.Join(dir, session+".jsonl")}, nil
+	return &Store{path: filepath.Join(dir, session+".jsonl"), name: session}, nil
 }
 
 // Append records one message. Empty content is rejected: the store keeps
@@ -285,6 +555,9 @@ func (s *Store) AppendTurn(role Role, content string, turn Turn) (Message, error
 		Content:   content,
 		Timestamp: time.Now().UTC(),
 		TurnID:    turn.ID,
+	}
+	if role == RoleAssistant && len(turn.Tools) > 0 {
+		msg.ToolLedger = buildToolLedger(s.name, turn.ID, turn.Tools)
 	}
 	if turn.Attribution != nil {
 		// The attribution repeats the turn identity it belongs to, so a
@@ -339,6 +612,11 @@ func (s *Store) History() ([]Message, error) {
 		var msg Message
 		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
 			return nil, fmt.Errorf("session: line %d: %w", line, err)
+		}
+		if msg.ToolLedger != nil && msg.ToolLedger.SessionID != s.name {
+			// A record copied from another conversation is not evidence
+			// for this one.
+			msg.ToolLedger = nil
 		}
 		out = append(out, msg)
 	}
