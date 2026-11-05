@@ -135,13 +135,14 @@ With reporting on HAL also owns the selection, the way Pi does. A left
 press starts it, the drag extends it, the release copies it through
 OSC 52. The selection is drawn in reverse video while it is dragged. HAL
 maps the cells the pointer crossed back to the text it rendered, so the
-copy is the reply's own text: no colours, no borders, no `You > ` or
-`HAL > ` labels, and no line break where the renderer wrapped a line.
+copy is the reply's own text: no colours, no borders, no eye gutter, no
+speaker labels, no tool activity, no metadata, and no line break where
+the renderer wrapped a line.
 
-The mark covers the text alone. The label in front of a row, the indent
-and the Markdown renderer's margin are interface, and the padding behind
-the text is not part of it, so none of them is painted — a selection
-never leaves a block in the margin. The mark is applied to each styled
+The mark covers the text alone. The eye gutter, the indent, the Markdown
+renderer's margin, the tool lines and the statistics row are interface,
+and the padding behind the text is not part of it, so none of them is
+painted — a selection never leaves a block in the margin. The mark is applied to each styled
 run of the row on its own, because the row resets its attributes between
 those runs and one mark around the whole row would be cancelled by the
 first reset.

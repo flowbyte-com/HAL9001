@@ -14,8 +14,9 @@ stream below is a synthetic MiniMax-style SSE stream served by
 ## A. Long prompts dominated the viewport
 
 **Root cause.** Every user message was rendered in full: the conversation
-model stored one string per turn (`"You > " + text`) and the viewport
-displayed it verbatim, soft-wrapped. Nothing collapsed it, so a pasted
+model stored one string per turn and the interface prefixed it with
+`You > `; the viewport displayed it verbatim, soft-wrapped. The current
+transcript no longer uses speaker labels. Nothing collapsed it, so a pasted
 page of prose occupied the whole conversation area and pushed HAL's
 answer out of view.
 

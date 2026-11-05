@@ -124,7 +124,14 @@ one-line status footer and a notice line.
 The header carries the identity marker and the title — shortened to
 whatever room the terminal has, because the header is one row and the
 immutable session identity stays in the diagnostics — and the
-conversation follows it directly. The composer is framed by two rules
+conversation follows it directly. The conversation has no speaker
+labels. User text and assistant text share one content column with a
+two-cell gutter to its left; the first assistant row carries the
+theme-red `◉` eye in that gutter. Wrapped rows and Markdown blocks keep
+the same content column, one blank row separates turns, and wide
+terminals use a capped, centred reading measure. Tool activity and the
+right-aligned statistics line are the assistant block's supplementary
+rows, not answer text. The composer is framed by two rules
 rather than a box: there are no side borders and no corners, and the
 draft sits one cell inside the terminal edge. The rule above the footer
 is deliberately the same weight. The composer's rules replace the old

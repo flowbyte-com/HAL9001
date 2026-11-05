@@ -84,7 +84,13 @@ bottom.
 
 ```text
 ● HAL9001 · the quarterly review
-  the conversation scrolls here
+  Summarize the plan.
+
+◉ The plan has three parts.
+  ⚙ read notes/plan.md · completed · 2.0 KiB · 666
+                        2s · 4.2k in / 12.8k out
+
+  What changed?
 ──────────────────────────────────────────────
  the draft
 ──────────────────────────────────────────────
@@ -92,6 +98,21 @@ Enter send · Ctrl+J newline · /help
 ──────────────────────────────────────────────
 444 READ ONLY    Tokens: 4.2k in / 2.8k out    MiniMax-M3.1-Flash · medium
 ```
+
+The conversation has no speaker labels. User text and assistant text share
+one content column, with a narrow gutter to its left. The first row of
+each assistant response carries a restrained red `◉` in that gutter; no
+label sits beside it. Wrapped lines, Markdown headings, lists, quotes,
+code fences and tables keep the same content column. One blank row
+separates turns, so consecutive messages stay readable without chrome.
+On wide terminals the reading measure is capped and centred; the
+composer, header and footer keep the full width.
+
+Verified tool activity sits beneath the answer that produced it in one
+compact line per call, for example `⚙ bash · completed · exit 0 · 666`.
+The per-response statistics line is the last row of the assistant block,
+right-aligned and muted. Neither the eye, the tool lines nor the
+statistics are part of the reply text, a selection or `/copy`.
 
 The footer is split in three: the permission on the left, the session's
 token usage in the middle and the model with its reasoning effort on the
@@ -230,11 +251,12 @@ choosing one.
   leaves the edge, the button is released, the selection is cancelled
   with `Esc`, or the conversation changes. The wheel takes over from it
   while you drag, and the composer is never touched.
-- The copied text is the reply's own text: no colours, no borders, no
-  `You > ` / `HAL > ` labels, and no artificial line breaks. A wrapped
-  paragraph comes back as the one line it was written as, and a word the
-  renderer had to break comes back whole. The interface's own lines —
-  the `Ctrl+O to expand` hint, the answer's metadata — are never copied.
+- The copied text is the reply's own text: no colours, no borders, no eye
+  gutter, no speaker labels, no tool activity and no metadata, and no
+  artificial line breaks. A wrapped paragraph comes back as the one line
+  it was written as, and a word the renderer had to break comes back
+  whole. The interface's own lines — the `Ctrl+O to expand` hint, the
+  answer's metadata and tool records — are never copied.
 - An ordinary click copies nothing.
 - The selection survives scrolling, so a selection can be made across a
   long reply; it is dropped when the conversation changes or the terminal
