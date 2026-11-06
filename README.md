@@ -131,27 +131,26 @@ destination. Mouse selection and
 `/copy` return the visible text without OSC 8 or other escape sequences.
 
 Verified tool activity sits beneath the answer that produced it in one
-compact line per call, for example `⚙ bash · completed · exit 0 · 666`.
+compact line per call, for example `💻 bash · completed · exit 0 · 666`.
 The per-response statistics line is the last row of the assistant block,
 right-aligned and muted. Neither the eye, the tool lines nor the
 statistics are part of the reply text, a selection or `/copy`.
 
-`/tool-icons emoji` is an opt-in presentation experiment that replaces the
-gear with an action icon: `🔎` search, `📄` read or scrape, `💡` MPM
-knowledge, `📝` write, `✏️` edit, `📦` package, `💻` shell, `🔪` explicit
-destructive action, `🚨` unexpected failure and `📍` expected failure. A
-failure is expected only when the tool call declared the expectation before
-execution (`expect_missing` for a read, or `expect_exit_code` for bash) and
-the actual result matched it. An after-the-fact explanation is never enough;
+Tool activity uses action icons by default: `🔎` search, `📄` read or
+scrape, `💡` MPM knowledge, `📝` write, `✏️` edit, `📦` package, `💻` shell,
+`🔪` explicit destructive action, `🚨` unexpected failure and `📍` expected
+failure. A failure is expected only when the tool call declared the
+expectation before execution (`expect_missing` for a read, or
+`expect_exit_code` for bash) and the actual result matched it. An after-the-fact explanation is never enough;
 a mismatch keeps its actual status and shows the unmet expectation.
 Expected failure wins as `📍`, any other failure as `🚨`, destructive wins
 over ordinary actions, and unknown tools keep `⚙`. The
 classifier reads structured tool identity and status only; shell command
 text is never parsed, so a `bash` line stays `💻` whatever it runs. The
-emoji gutter is fixed at two cells plus a separator, and `/tool-icons
-classic` restores the original look immediately. Both modes are
-session-local and neither changes tool execution, permissions or the
-stored evidence.
+icon gutter is fixed at two cells plus a separator. `/tool-icons classic`
+switches to the original `⚙` look and `/tool-icons emoji` switches back;
+both modes are session-local and neither changes tool execution,
+permissions or the stored evidence.
 
 The footer is split in three: the permission on the left, the session's
 token usage in the middle and the model with its reasoning effort on the

@@ -43,10 +43,10 @@ go build -o /tmp/hal9001 ./cmd/hal9001
 
 ## Tool activity icons
 
-- [ ] `/tool-icons` reports `Tool icons: classic` on a fresh session.
-- [ ] `/tool-icons emoji` changes already displayed tool rows and new
-      tool rows to the action icons; `/tool-icons classic` restores the
-      gear immediately.
+- [ ] A fresh session displays action icons automatically, and
+      `/tool-icons` reports `Tool icons: emoji`.
+- [ ] `/tool-icons classic` changes already displayed tool rows and new
+      tool rows to the gear; `/tool-icons emoji` switches back.
 - [ ] Consecutive tool rows share one icon gutter. `✏️` keeps its
       variation selector and does not split across cells.
 - [ ] A failed tool shows `🚨` even when its ordinary action has another

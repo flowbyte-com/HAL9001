@@ -282,8 +282,8 @@ def main():
               "666 UNRESTRICTED" in text, text)
         check("666: read returns content from outside the workspace",
               "READ RESULT:" in text and SECRET in text, text)
-        check("666: the tool activity is shown as metadata",
-              "\u2699 read" in text and "ok" in text, text)
+        check("666: the tool activity is shown with the default icon",
+              "\U0001f4c4 read" in text and "ok" in text, text)
 
         # bash runs and its stdout comes back to the model.
         s = capture([(2.0, b"\x10"), (0.5, b"\x19"),
@@ -293,7 +293,19 @@ def main():
         check("666: bash output is returned",
               "BASH RESULT:" in text and BASH_MARKER in text, text)
         check("666: bash activity reports the exit",
-              "\u2699 bash" in text and "exit 0" in text, text)
+              "\U0001f4bb bash" in text and "exit 0" in text, text)
+
+        # The icon command is local and works in 666 too, independently
+        # of the current mode.
+        s = capture([(2.0, b"\x10"), (0.5, b"\x19"),
+                     (0.5, b"/tool-icons classic\r"),
+                     (1.0, ("[[read %s]]\r" % outside).encode()), (3.0, b"")],
+                    **common)
+        text = s.text()
+        check("666: /tool-icons classic is accepted",
+              "\u2699 read" in text and "666 UNRESTRICTED" in text, text)
+        check("666: the classic switch does not change permission",
+              "444 READ ONLY" not in text, text)
 
         # Expected failures are declared in the tool call before
         # execution. The actual result must still match the specific

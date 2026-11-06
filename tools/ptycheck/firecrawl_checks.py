@@ -260,7 +260,7 @@ def main():
         check("search: provider received the ranked result",
               "SEARCH RESULT: 3 results; first: Release notes" in text, text)
         check("search: primary attribution is firecrawl",
-              "⚙ web_search · completed · 3 results · firecrawl · 444" in text, text)
+              "🔎 web_search · completed · 3 results · firecrawl · 444" in text, text)
         check("search: footer stays 444", "444 READ ONLY" in text, text)
 
         # A valid empty result is success, not a reason to try Exa or DDG.
@@ -299,7 +299,7 @@ def main():
         check("scrape: provider received the page title",
               "SCRAPE RESULT: Release notes" in text, text)
         check("scrape: compact activity line reports bytes",
-              "⚙ firecrawl_scrape https://example.com/release" in text and
+              "📄 firecrawl_scrape https://example.com/release" in text and
               "444" in text, text)
         check("scrape: footer stays 444", "444 READ ONLY" in text, text)
 
@@ -394,7 +394,7 @@ def main():
         screen = capture([(1.8, b"")], keep_session=True, **resume)
         text = screen_text(screen)
         check("resume: the compact search record survives",
-              "⚙ web_search · completed · 3 results · firecrawl · 444" in text, text)
+              "🔎 web_search · completed · 3 results · firecrawl · 444" in text, text)
     finally:
         for proc in (ddg, exa, firecrawl, provider):
             proc.terminate()

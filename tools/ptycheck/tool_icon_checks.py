@@ -3,9 +3,9 @@
 
 A fixture session supplies genuine historical HAL tool records, so the
 checks exercise the same activity renderer as a resumed conversation
-without executing a tool. The suite compares the default classic rows
-with emoji rows, checks the gutter and failure priority, switches back,
-and renders a narrow 80x9 frame.
+without executing a tool. The suite checks the default emoji rows, the
+classic opt-out, switching back, the gutter and failure priority, and a
+narrow 80x9 frame.
 
 Usage:
 
@@ -192,7 +192,19 @@ def main():
     os.environ["HAL9001_MPM_BIN"] = os.path.join(root, "missing-mpm")
 
     try:
-        classic = capture([(2.0, b"")], 80, 24, config)
+        default = capture([(2.0, b"")], 80, 24, config)
+        for name in ("web_search", "firecrawl_scrape", "mpm_memory", "read",
+                     "write", "edit", "bash"):
+            check("default: %s uses an action icon" % name,
+                  any(icon + " " + name in default
+                      for icon in ICONS if icon != "⚙"), default)
+        check("default: expected failures use the pin",
+              "📍 read" in default and "expected missing" in default, default)
+        check("default: no classic gear rows",
+              "⚙ read" not in default and "⚙ write" not in default, default)
+
+        classic = capture([(2.0, b"/tool-icons classic\r"), (0.8, b"")],
+                          80, 24, config)
         for name in ("web_search", "firecrawl_scrape", "mpm_memory", "read",
                      "write", "edit", "bash"):
             check("classic: %s keeps the gear" % name,
@@ -202,7 +214,8 @@ def main():
         check("classic: no emoji icons",
               not any(icon in classic for icon in ICONS), classic)
 
-        emoji = capture([(2.0, b"/tool-icons emoji\r"), (0.8, b"")],
+        emoji = capture([(2.0, b"/tool-icons classic\r"),
+                         (0.6, b"/tool-icons emoji\r"), (0.8, b"")],
                         80, 24, config)
         cases = [
             ("web_search", "🔎"), ("firecrawl_scrape", "📄"),
@@ -248,24 +261,28 @@ def main():
         check("emoji: rows fit 80 columns", not bad, str(bad))
 
         # The current setting is shown without an argument.
-        status = capture([(2.0, b"/tool-icons emoji\r"),
-                          (0.8, b"/tool-icons\r"), (0.8, b"")],
+        status = capture([(2.0, b"/tool-icons\r"), (0.8, b"")],
                          80, 24, config)
-        check("no argument displays the current setting",
+        check("no argument displays emoji on a fresh session",
               "Tool icons: emoji" in status, status)
+        status_classic = capture([(2.0, b"/tool-icons classic\r"),
+                                  (0.6, b"/tool-icons\r"), (0.8, b"")],
+                                 80, 24, config)
+        check("no argument displays classic after the opt-out",
+              "Tool icons: classic" in status_classic, status_classic)
 
-        # Switching back immediately restores the classic rows.
-        back = capture([(2.0, b"/tool-icons emoji\r"),
-                        (0.6, b"/tool-icons classic\r"), (0.8, b"")],
+        # Switching back immediately restores the emoji rows.
+        back = capture([(2.0, b"/tool-icons classic\r"),
+                        (0.6, b"/tool-icons emoji\r"), (0.8, b"")],
                        80, 24, config)
-        check("classic restores the gear",
-              "⚙ write" in back and "📝 write" not in back, back)
-        check("classic restores the failure gear",
-              "⚙ bash" in back and "🚨 bash" not in back, back)
+        check("switching back restores the emoji rows",
+              "📝 write" in back and "⚙ write" not in back, back)
+        check("switching back restores the expected pin",
+              "📍 read" in back and "⚙ read" not in back, back)
 
-        # Narrow frame: one edit row, with its variation selector intact.
-        narrow = capture([(2.0, b"/tool-icons emoji\r"), (0.8, b"")],
-                         80, 9, config, session=NARROW_SESSION)
+        # Narrow frame: the default emoji row, with its variation selector.
+        narrow = capture([(2.0, b"")], 80, 9, config,
+                         session=NARROW_SESSION)
         check("80x9: the edit icon is visible", "✏️ edit" in narrow, narrow)
         check("80x9: the variation selector survives", "\u270f\ufe0f" in narrow,
               narrow)
@@ -276,8 +293,7 @@ def main():
         # Themes: the glyphs and the alignment survive every palette.
         for theme in ("HAL Classic", "Midnight", "Amber", "Paper",
                       "Monochrome"):
-            themed = capture([(2.0, b"/tool-icons emoji\r"), (0.8, b"")],
-                             80, 24, config, theme=theme)
+            themed = capture([(2.0, b"")], 80, 24, config, theme=theme)
             check("theme %s: icons render" % theme,
                   "📝 write" in themed and "🚨 bash" in themed, themed)
             rows = known_rows(themed, ["write", "edit", "read"])

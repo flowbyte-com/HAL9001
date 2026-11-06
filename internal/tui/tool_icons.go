@@ -22,7 +22,8 @@ const (
 )
 
 const (
-	classicToolIcon = "⚙"
+	defaultToolIcons = toolIconsEmoji
+	classicToolIcon  = "⚙"
 	// emojiToolGutter is the fixed number of cells before the tool name
 	// when emoji icons are on: one two-cell emoji plus one separator.
 	// The classic gutter is the existing "⚙ " two-cell prefix.

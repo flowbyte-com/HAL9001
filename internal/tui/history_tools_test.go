@@ -102,7 +102,7 @@ func TestSetHistoryRendersVerifiedToolEvidenceOnce(t *testing.T) {
 	}
 
 	rows := strings.Join(m.diagRows(), "\n")
-	for _, want := range []string{"last tools", "⚙ write", "⚙ bash", "exit 17", "666"} {
+	for _, want := range []string{"last tools", "📝 write", "🚨 bash", "exit 17", "666"} {
 		if !strings.Contains(rows, want) {
 			t.Errorf("/diag is missing %q:\n%s", want, rows)
 		}
@@ -114,13 +114,13 @@ func TestHistoricalEvidenceStaysBeneathItsAssistantAnswer(t *testing.T) {
 	m.SetHistory(historicalLines(true))
 	plain := stripANSI(strings.Join(m.layoutRows(), "\n"))
 	answer := strings.Index(plain, "both completed")
-	write := strings.Index(plain, "⚙ write")
-	bash := strings.Index(plain, "⚙ bash")
+	write := strings.Index(plain, "📝 write")
+	bash := strings.Index(plain, "🚨 bash")
 	if answer < 0 || write < 0 || bash < 0 || write < answer || bash < answer {
 		t.Fatalf("tool evidence is not attached beneath the answer:\n%s", plain)
 	}
-	if strings.Count(plain, "⚙ write") != 1 ||
-		strings.Count(plain, "⚙ bash") != 1 {
+	if strings.Count(plain, "📝 write") != 1 ||
+		strings.Count(plain, "🚨 bash") != 1 {
 		t.Fatalf("tool activity was duplicated:\n%s", plain)
 	}
 	eye := strings.Index(plain, "◉")
@@ -144,7 +144,7 @@ func TestSetHistoryDoesNotShowOlderToolsAsLastTools(t *testing.T) {
 		t.Fatalf("the latest assistant turn used no tools, but lastTools = %#v", m.lastTools)
 	}
 	plain := stripANSI(strings.Join(m.layoutRows(), "\n"))
-	if strings.Count(plain, "⚙ write") != 1 {
+	if strings.Count(plain, "📝 write") != 1 {
 		t.Fatalf("older evidence was lost or duplicated:\n%s", plain)
 	}
 }
@@ -156,7 +156,9 @@ func TestSetHistoryWithoutToolsClearsLastTools(t *testing.T) {
 	if len(m.lastTools) != 0 {
 		t.Fatalf("lastTools leaked across history: %#v", m.lastTools)
 	}
-	if strings.Contains(stripANSI(strings.Join(m.layoutRows(), "\n")), "⚙ ") {
+	plain := stripANSI(strings.Join(m.layoutRows(), "\n"))
+	if strings.Contains(plain, "📝 ") || strings.Contains(plain, "🚨 ") ||
+		strings.Contains(plain, "⚙ ") {
 		t.Fatal("a tool note appeared for a turn without evidence")
 	}
 }

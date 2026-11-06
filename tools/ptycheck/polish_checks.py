@@ -281,20 +281,20 @@ def main():
 
             question = row_with(bottom, "What ran?")
             answer = row_with(bottom, "The command completed.")
-            tool = row_with(bottom, "⚙ write")
+            tool = row_with(bottom, "📝 write")
             meta = row_with(bottom, "2s · 900 in / 300 out · skill: system-prompt-writer")
             check("%s: later user text keeps the column" % label,
                   bool(question) and cell_column(question, "What ran?") == ccol, plain_bottom)
             check("%s: later assistant text keeps the column" % label,
                   bool(answer) and cell_column(answer, "The command completed.") == ccol, plain_bottom)
             check("%s: tool activity sits under the answer" % label,
-                  bool(tool) and cell_column(tool, "⚙ write") == ccol and
+                  bool(tool) and cell_column(tool, "📝 write") == ccol and
                   plain_bottom.find("The command completed.") <
-                  plain_bottom.find("⚙ write"), plain_bottom)
+                  plain_bottom.find("📝 write"), plain_bottom)
             check("%s: failed, cancelled and refused tools keep their outcome" % label,
-                  "⚙ bash · failed · exit 17 · 666" in plain_bottom and
-                  "⚙ bash · cancelled · 666" in plain_bottom and
-                  "⚙ bash · refused · 444" in plain_bottom, plain_bottom)
+                  "🚨 bash · failed · exit 17 · 666" in plain_bottom and
+                  "💻 bash · cancelled · 666" in plain_bottom and
+                  "💻 bash · refused · 444" in plain_bottom, plain_bottom)
             if meta:
                 check("%s: statistics end at the response edge" % label,
                       cell_column(meta, meta.strip()) + cell_width(meta.strip()) ==
@@ -307,12 +307,14 @@ def main():
             if (cols, rows) == (80, 24):
                 lines = plain_bottom.split("\n")
                 tool_indices = [i for i, line in enumerate(lines)
-                                if line.strip().startswith("⚙")]
+                                if line.strip().startswith(
+                                    ("⚙", "🔎", "📄", "💡", "📝", "✏️",
+                                     "📦", "💻", "🔪", "🚨", "📍"))]
                 check("80x24: one blank between user and answer",
                       blank_between(lines, "What ran?", "The command completed.") == 1,
                       plain_bottom)
                 check("80x24: one blank between answer and tool activity",
-                      blank_between(lines, "The command completed.", "⚙") == 1,
+                      blank_between(lines, "The command completed.", "📝") == 1,
                       plain_bottom)
                 check("80x24: tool rows have no blank rows between them",
                       len(tool_indices) == 4 and
@@ -320,7 +322,8 @@ def main():
                           for i in range(len(tool_indices) - 1)),
                       plain_bottom)
                 check("80x24: statistics follow the last tool immediately",
-                      blank_between(lines, "⚙", "2s · 900 in / 300 out") == 0,
+                      blank_between(lines, "💻 bash · refused",
+                                    "2s · 900 in / 300 out") == 0,
                       plain_bottom)
 
             if (cols, rows) == (170, 38):
@@ -373,7 +376,7 @@ def main():
             raw, frame = capture([(2.2, b"")], 80, 24, theme)
             text = frame.text()
             check("theme %s: transcript renders" % theme,
-                  "◉" in text and "⚙ bash" in text and "What ran?" in text, text)
+                  "◉" in text and "💻 bash" in text and "What ran?" in text, text)
             check("theme %s: the eye is coloured" % theme,
                   has_ansi_colour(raw, "◉"), theme)
             check("theme %s: rows fit" % theme, no_overflow(frame, 80), text)

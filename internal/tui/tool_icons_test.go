@@ -354,44 +354,92 @@ func TestToolIconGutterAndWidths(t *testing.T) {
 	}
 }
 
-// TestToolIconToggle re-renders existing evidence and switches new lines.
+// TestNewStartsWithEmojiIcons checks the startup default directly.
+func TestNewStartsWithEmojiIcons(t *testing.T) {
+	m := New(nil)
+	if m.toolIcons != toolIconsEmoji {
+		t.Fatalf("New() mode = %v, want emoji", m.toolIcons)
+	}
+	if got := m.toolIconsLabel(); got != "emoji" {
+		t.Errorf("New() label = %q, want emoji", got)
+	}
+}
+
+// TestToolIconToggle covers the new default and both directions of the
+// session-local switch. It also checks that new and live rows follow the
+// selected mode.
 func TestToolIconToggle(t *testing.T) {
 	m := transcriptModel(t, 100, 30)
 	m.SetHistory(historicalLines(true))
 
+	if m.toolIcons != toolIconsEmoji {
+		t.Fatalf("default mode = %v, want emoji", m.toolIcons)
+	}
+	emoji := stripANSI(strings.Join(allEntryRows(m), "\n"))
+	for _, want := range []string{"📝 write", "🚨 bash"} {
+		if !strings.Contains(emoji, want) {
+			t.Fatalf("default is not emoji (%q missing):\n%s", want, emoji)
+		}
+	}
+	if strings.Contains(emoji, "⚙ write") || strings.Contains(emoji, "⚙ bash") {
+		t.Errorf("default still used classic rows:\n%s", emoji)
+	}
+	m = typeText(m, "/tool-icons")
+	m = enterCurrent(m)
+	if !strings.Contains(m.Notice(), "Tool icons: emoji") {
+		t.Errorf("default status notice = %q", m.Notice())
+	}
+
+	// The opt-out restores the original gear for existing and new rows.
+	m = typeText(m, "/tool-icons classic")
+	m = enterCurrent(m)
+	if m.toolIcons != toolIconsClassic {
+		t.Fatalf("mode after /tool-icons classic = %v", m.toolIcons)
+	}
 	classic := stripANSI(strings.Join(allEntryRows(m), "\n"))
 	if !strings.Contains(classic, "⚙ write") || !strings.Contains(classic, "⚙ bash") {
-		t.Fatalf("default is not classic:\n%s", classic)
+		t.Errorf("classic was not restored:\n%s", classic)
 	}
-	if m.toolIcons != toolIconsClassic {
-		t.Fatalf("default mode = %v, want classic", m.toolIcons)
+	if strings.Contains(classic, "📝 write") || strings.Contains(classic, "🚨 bash") {
+		t.Errorf("emoji survived the switch to classic:\n%s", classic)
 	}
+	i := m.appendEntry("assistant", "classic turn")
+	m.entries[i].tools = []engine.ToolActivity{toolIconActivity("read", "read", "ok")}
+	m.renderEntry(i)
+	m.renderConversation()
+	if got := stripANSI(strings.Join(m.entries[i].rows, "\n")); !strings.Contains(got, "⚙ read") {
+		t.Errorf("new tool row did not use classic mode: %q", got)
+	}
+
+	live := permissionModel()
+	live.applyToolIcons(toolIconsClassic)
+	updated, _ := live.Update(streamToolMsg{id: 0,
+		activity: toolIconActivity("web_search", "web_search", "ok")})
+	live = updated.(Model)
+	if !strings.Contains(live.Notice(), "⚙ web_search") {
+		t.Errorf("live tool notice did not use classic mode: %q", live.Notice())
+	}
+
+	// No argument reports classic; switching back uses emoji again.
 	m = typeText(m, "/tool-icons")
 	m = enterCurrent(m)
 	if !strings.Contains(m.Notice(), "Tool icons: classic") {
 		t.Errorf("classic status notice = %q", m.Notice())
 	}
-
 	m = typeText(m, "/tool-icons emoji")
 	m = enterCurrent(m)
 	if m.toolIcons != toolIconsEmoji {
 		t.Fatalf("mode after /tool-icons emoji = %v", m.toolIcons)
 	}
-	if !strings.Contains(m.Notice(), "emoji") {
-		t.Errorf("toggle notice = %q", m.Notice())
+	back := stripANSI(strings.Join(allEntryRows(m), "\n"))
+	if !strings.Contains(back, "📝 write") || !strings.Contains(back, "🚨 bash") {
+		t.Errorf("emoji was not restored:\n%s", back)
 	}
-	emoji := stripANSI(strings.Join(allEntryRows(m), "\n"))
-	for _, want := range []string{"📝 write", "🚨 bash"} {
-		if !strings.Contains(emoji, want) {
-			t.Errorf("emoji mode is missing %q:\n%s", want, emoji)
-		}
-	}
-	if strings.Contains(emoji, "⚙ write") || strings.Contains(emoji, "⚙ bash") {
-		t.Errorf("existing rows were not re-rendered:\n%s", emoji)
+	if strings.Contains(back, "⚙ write") || strings.Contains(back, "⚙ bash") {
+		t.Errorf("classic survived the switch to emoji:\n%s", back)
 	}
 
-	// A new tool row uses the new mode too.
-	i := m.appendEntry("assistant", "another turn")
+	i = m.appendEntry("assistant", "emoji turn")
 	m.entries[i].tools = []engine.ToolActivity{toolIconActivity("read", "read", "ok")}
 	m.renderEntry(i)
 	m.renderConversation()
@@ -399,40 +447,19 @@ func TestToolIconToggle(t *testing.T) {
 		t.Errorf("new tool row did not use emoji mode: %q", got)
 	}
 
-	// The transient live-status line follows the same mode.
-	live := permissionModel()
+	live = permissionModel()
 	live.applyToolIcons(toolIconsEmoji)
-	updated, _ := live.Update(streamToolMsg{id: 0,
+	updated, _ = live.Update(streamToolMsg{id: 0,
 		activity: toolIconActivity("web_search", "web_search", "ok")})
 	live = updated.(Model)
 	if !strings.Contains(live.Notice(), "🔎 web_search") {
 		t.Errorf("live tool notice did not use emoji mode: %q", live.Notice())
 	}
 
-	// No argument displays the current setting.
-	m = typeText(m, "/tool-icons")
-	m = enterCurrent(m)
-	if !strings.Contains(m.Notice(), "Tool icons: emoji") {
-		t.Errorf("status notice = %q", m.Notice())
-	}
-
-	m = typeText(m, "/tool-icons classic")
-	m = enterCurrent(m)
-	if m.toolIcons != toolIconsClassic {
-		t.Fatalf("mode after /tool-icons classic = %v", m.toolIcons)
-	}
-	back := stripANSI(strings.Join(allEntryRows(m), "\n"))
-	if !strings.Contains(back, "⚙ write") || !strings.Contains(back, "⚙ bash") {
-		t.Errorf("classic was not restored:\n%s", back)
-	}
-	if strings.Contains(back, "📝 write") || strings.Contains(back, "🚨 bash") {
-		t.Errorf("emoji survived the switch back:\n%s", back)
-	}
-
 	// Unknown arguments leave the current appearance untouched.
 	m = typeText(m, "/tool-icons loud")
 	m = enterCurrent(m)
-	if m.toolIcons != toolIconsClassic || !strings.Contains(m.Notice(), "classic|emoji") {
+	if m.toolIcons != toolIconsEmoji || !strings.Contains(m.Notice(), "classic|emoji") {
 		t.Errorf("invalid argument changed mode/notice: %v %q", m.toolIcons, m.Notice())
 	}
 }

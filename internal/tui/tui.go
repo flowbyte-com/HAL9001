@@ -363,7 +363,8 @@ type Model struct {
 	color     bool
 	theme     Theme
 	// toolIcons is the display-only presentation of tool activity lines.
-	// It defaults to classic and is not part of the session record.
+	// New models start with emoji icons; the operator may switch to
+	// classic for this session. It is not part of the session record.
 	toolIcons toolIconsMode
 	view      View
 	sender    func(tea.Msg)
@@ -561,6 +562,7 @@ func NewWithHooks(engine Engine, hooks Hooks) Model {
 		viewport:        vp,
 		color:           ColorEnabled(),
 		theme:           ThemeHALClassic,
+		toolIcons:       defaultToolIcons,
 		now:             time.Now,
 		desiredComposer: minComposerRows,
 		permission:      permission.New(),

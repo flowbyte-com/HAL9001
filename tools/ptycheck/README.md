@@ -110,9 +110,9 @@ python3 tools/ptycheck/composer_checks.py
 ```
 
 The tool-icon checks use a fixture session with historical tool evidence.
-They compare the default classic rows with emoji rows, switch back, verify
-the failure priority, the `✏️` variation selector, the icon gutter and
-all five themes, including 80x9:
+They check the default emoji rows, the classic opt-out, switching back,
+the failure priority, the `✏️` variation selector, the icon gutter and all
+five themes, including 80x9:
 
 ```sh
 HAL9001_BINARY=/tmp/opencode/hal9001 \
@@ -193,8 +193,8 @@ python3 tools/ptycheck/tool_icon_checks.py
   five-line and a ten-line paste at 80x9. The first frame is asserted
   before any key is sent; the alternate raw-LF and bracketed-CRLF paths
   are checked at the same short size.
-- The tool-icon suite covers classic default, `/tool-icons emoji` and
-  `/tool-icons classic`, the no-argument status, historical evidence,
+- The tool-icon suite covers the emoji default, `/tool-icons classic` and
+  `/tool-icons emoji`, the no-argument status, historical evidence,
   failure and destructive priority, expected failures (📍) versus
   unexpected failures (🚨), the unknown fallback, `✏️`'s variation
   selector, the shared icon gutter, 80x9 and all five themes. The

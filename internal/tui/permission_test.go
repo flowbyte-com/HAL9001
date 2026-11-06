@@ -184,10 +184,10 @@ func TestToolActivityIsShownCompactlyAndNotAsContent(t *testing.T) {
 	m.renderEntry(i)
 	m.renderConversation()
 	rows := stripANSI(strings.Join(m.layoutRows(), "\n"))
-	if !strings.Contains(rows, "⚙ bash") || !strings.Contains(rows, "exit 0") {
+	if !strings.Contains(rows, "💻 bash") || !strings.Contains(rows, "exit 0") {
 		t.Errorf("tool activity is not visible:\n%s", rows)
 	}
-	if answer, tool := strings.Index(rows, "the answer"), strings.Index(rows, "⚙ bash"); answer < 0 || tool < answer {
+	if answer, tool := strings.Index(rows, "the answer"), strings.Index(rows, "💻 bash"); answer < 0 || tool < answer {
 		t.Errorf("tool activity is not beneath the answer:\n%s", rows)
 	}
 }

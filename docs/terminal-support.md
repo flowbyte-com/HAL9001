@@ -76,11 +76,11 @@ submission and never fails silently.
 
 ## Tool activity icons
 
-Tool activity lines use the classic `⚙` prefix by default. `/tool-icons`
-reports the current setting; `/tool-icons emoji` switches new and already
-displayed rows to the action vocabulary, and `/tool-icons classic`
-restores the original look immediately. The setting is session-local and
-is not written to the session or to a configuration file.
+Tool activity lines use the action icons by default. `/tool-icons` reports
+the current setting; `/tool-icons classic` switches new and already
+displayed rows to the original `⚙` look, and `/tool-icons emoji` switches
+back. The setting is session-local and is not written to the session or
+to a configuration file.
 
 The emoji gutter is measured in display cells: one two-cell glyph plus one
 separator. `✏️` is kept as one grapheme cluster, including its variation

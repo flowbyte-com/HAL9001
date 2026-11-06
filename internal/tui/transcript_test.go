@@ -142,7 +142,7 @@ func TestTranscriptToolAndMetadataOrder(t *testing.T) {
 	})
 	rows := m.layoutRows()
 	answerAt, answer := visibleRow(rows, "the answer is ready")
-	toolAt, tool := visibleRow(rows, "⚙ bash")
+	toolAt, tool := visibleRow(rows, "💻 bash")
 	metaAt, meta := visibleRow(rows, "1s · 10 in / 20 out")
 	if answerAt < 0 || toolAt < 0 || metaAt < 0 {
 		t.Fatalf("answer/tool/metadata missing:\n%s", stripANSI(strings.Join(rows, "\n")))
@@ -150,7 +150,7 @@ func TestTranscriptToolAndMetadataOrder(t *testing.T) {
 	if !(answerAt < toolAt && toolAt < metaAt) {
 		t.Fatalf("order is answer=%d tool=%d meta=%d", answerAt, toolAt, metaAt)
 	}
-	if got := displayColumn(tool, "⚙ bash"); got != m.contentColumn() {
+	if got := displayColumn(tool, "💻 bash"); got != m.contentColumn() {
 		t.Errorf("tool starts at %d, want %d", got, m.contentColumn())
 	}
 	if !strings.Contains(tool, "completed") || !strings.Contains(tool, "exit 0") ||
@@ -427,7 +427,13 @@ func TestTranscriptVerticalRhythm(t *testing.T) {
 	firstTool := -1
 	toolRows := make([]int, 0, 3)
 	for i, row := range tools {
-		if strings.HasPrefix(strings.TrimSpace(stripANSI(row)), "⚙") {
+		trimmed := strings.TrimSpace(stripANSI(row))
+		if strings.HasPrefix(trimmed, "⚙") || strings.HasPrefix(trimmed, "📝") ||
+			strings.HasPrefix(trimmed, "🚨") || strings.HasPrefix(trimmed, "💻") ||
+			strings.HasPrefix(trimmed, "📄") || strings.HasPrefix(trimmed, "✏️") ||
+			strings.HasPrefix(trimmed, "🔎") || strings.HasPrefix(trimmed, "💡") ||
+			strings.HasPrefix(trimmed, "📦") || strings.HasPrefix(trimmed, "🔪") ||
+			strings.HasPrefix(trimmed, "📍") {
 			toolRows = append(toolRows, i)
 			if firstTool < 0 {
 				firstTool = i

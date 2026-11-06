@@ -129,7 +129,7 @@ var commandTable = []*command{
 	{
 		name:        "/tool-icons",
 		usage:       "/tool-icons [classic|emoji]",
-		description: "Switch tool icons (classic or emoji)",
+		description: "Switch tool icons (emoji default)",
 		takesArgs:   true,
 		run: func(m *Model, args []string) tea.Cmd {
 			if len(args) == 0 {
