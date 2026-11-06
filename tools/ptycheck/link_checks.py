@@ -96,6 +96,12 @@ def main():
                             fresh=False, session=SESSION)
         screen = render(raw, 120, 40).text()
 
+        # The same frames with HAL's mouse reporting turned off. This is
+        # the terminal-native Ctrl+click path; the output must be identical.
+        raw_no_mouse = pty_drive.run([(2.5, b"")], cols=120, rows=40,
+                                     fresh=False, session=SESSION,
+                                     args=["--no-mouse"])
+
         for href in (
             "https://example.com/article",
             "https://example.org/bare",
@@ -121,6 +127,8 @@ def main():
               "https://example.com/code" in screen, screen)
         check("no raw control characters in the screen",
               "\x1b" not in screen and "\x07" not in screen, screen)
+        check("OSC 8 remains valid with mouse reporting off",
+              b";https://example.com/article\x07" in raw_no_mouse, screen)
     finally:
         shutil.rmtree(home, ignore_errors=True)
 

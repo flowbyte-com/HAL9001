@@ -156,9 +156,12 @@ rendering, so a label or destination cannot inject a terminal sequence.
 Fenced and inline code never become links. Unsafe spans left by Glamour
 are removed by a final OSC 8 validation pass.
 
-Activation is native to the terminal: Ctrl+click in Ghostty (or the
-terminal's equivalent) uses its own URL handler. HAL does not open links,
-install a browser command or intercept mouse clicks for URLs. Link
+Activation is native to the terminal. In Ghostty, while HAL has mouse
+reporting enabled, Ctrl+click is delivered to HAL and never reaches
+Ghostty's link handler; **Ctrl+Shift+click** is the native gesture because
+Shift bypasses the application's mouse capture. `--no-mouse` restores plain
+Ctrl+click but gives up HAL's wheel and drag selection. HAL does not open
+links, install a browser command or intercept mouse clicks for URLs. Link
 selection uses the existing conversation selection, which copies labels
 and visible URLs as plain text; `/copy` strips escape sequences before
 writing to the clipboard.

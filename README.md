@@ -122,8 +122,12 @@ margins; the composer, header and footer keep the full width.
 Links are OSC 8 hyperlinks. A labeled Markdown link shows its label, not a
 duplicated raw destination; a bare `http(s)://` URL stays visible. In a
 compatible terminal, Ctrl+click opens the destination in the system
-browser. Only HTTP/HTTPS destinations become clickable, and control
-characters cannot enter a link label or destination. Mouse selection and
+browser. Ghostty users must use **Ctrl+Shift+click** while HAL's mouse
+reporting is active: Shift bypasses the application's mouse capture and
+lets Ghostty activate the link. `--no-mouse` restores plain Ctrl+click but
+gives up HAL's wheel and drag selection. Only HTTP/HTTPS destinations
+become clickable, and control characters cannot enter a link label or
+destination. Mouse selection and
 `/copy` return the visible text without OSC 8 or other escape sequences.
 
 Verified tool activity sits beneath the answer that produced it in one

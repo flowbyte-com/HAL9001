@@ -35,6 +35,24 @@ func TestMarkdownLinkUsesLabelAndOSC8(t *testing.T) {
 	}
 }
 
+func TestExactOSC8Bytes(t *testing.T) {
+	out := renderLinkMarkdown("[label](https://example.com/exact)", 80)
+	start := "\x1b]8;;https://example.com/exact\x07"
+	if !strings.Contains(out, start) {
+		t.Fatalf("missing exact OSC 8 start %q in %q", start, out)
+	}
+	if !strings.Contains(out, "\x1b]8;;\x07") {
+		t.Fatalf("missing OSC 8 reset in %q", out)
+	}
+	if strings.Contains(out, "\x1b\x1b") {
+		t.Fatalf("doubled escape sequence in %q", out)
+	}
+	if strings.Contains(stripANSI(out), "\x1b") ||
+		strings.Contains(stripANSI(out), "\x07") {
+		t.Fatalf("control sequence survived stripping: %q", stripANSI(out))
+	}
+}
+
 func TestBareURLsAndPunctuationAreClickable(t *testing.T) {
 	out := renderLinkMarkdown("See https://example.com/a, then http://example.com/b. (https://example.com/c)", 100)
 	for _, href := range []string{
@@ -212,6 +230,25 @@ func TestHistoryResumeKeepsClickableLabel(t *testing.T) {
 	plain := stripANSI(out)
 	if !strings.Contains(plain, "Article title") || strings.Contains(plain, "https://example.com/article") {
 		t.Errorf("resumed link is not label-only: %q", plain)
+	}
+}
+
+func TestMouseReportingKeepsHyperlinkOutput(t *testing.T) {
+	m := transcriptModel(t, 80, 24)
+	m.SetColor(true)
+	m.SetMouse(true)
+	m.SetHistory([]SessionLine{
+		{Role: "assistant", Text: "Read [Article title](https://example.com/article).", TurnID: "t1"},
+	})
+	view := m.View()
+	if view.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("mouse mode = %v, want cell motion", view.MouseMode)
+	}
+	if !hasHyperlink(view.Content, "https://example.com/article") {
+		t.Errorf("mouse reporting removed the hyperlink: %q", view.Content)
+	}
+	if strings.Contains(stripANSI(view.Content), "https://example.com/article") {
+		t.Errorf("mouse reporting made the destination visible")
 	}
 }
 

@@ -1147,6 +1147,13 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Pasted text is inserted, never executed.
 		m.escapedAt = time.Time{}
 		m.composer.InsertString(clipboardText(msg.Content))
+		// Commit the new draft height before refreshing suggestions:
+		// opening or closing the panel can resize the frame, and that
+		// resize must see the new composer height rather than the
+		// previous one. Fit again afterwards so the final frame,
+		// textarea viewport and caret offset all agree without waiting
+		// for the next keypress.
+		m.fitComposer()
 		m.refreshSuggestions()
 		m.fitComposer()
 		return m, nil
@@ -2742,6 +2749,12 @@ func (m Model) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	if m.mouse {
+		// Cell-motion reporting is what gives HAL the wheel and drag
+		// selection. While it is active, Ghostty delivers Ctrl+click to
+		// HAL instead of its link handler; Ctrl+Shift+click lets Shift
+		// bypass the capture and activate the native link. `--no-mouse`
+		// restores plain Ctrl+click at the cost of HAL's pointer
+		// selection and wheel routing.
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	if m.color {

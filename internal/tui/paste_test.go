@@ -429,3 +429,81 @@ func TestDiagReportsTheComposerWithoutItsText(t *testing.T) {
 		}
 	}
 }
+
+// TestPasteIsFullyVisibleImmediately reproduces the field report without
+// sending any follow-up key: the frame right after the paste already has
+// the right height, visible rows and caret position.
+func TestPasteIsFullyVisibleImmediately(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{name: "two lines", body: "alpha\nbravo"},
+		{name: "three lines", body: "alpha\nbravo\ncharlie"},
+		{name: "five lines", body: numberedLines(5)},
+		{name: "long wrapped link and newline",
+			body: "intro\n[Example](https://example.com/a/very/long/path/that/wraps/over/the/width) and more\n"},
+		{name: "six lines", body: numberedLines(6)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testModel()
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+			m = updated.(Model)
+			m = pasteText(m, tc.body)
+			shown := composerRulesAt(t, m, 60)
+			lines := m.draftLines()
+			expected := lines
+			if len(expected) > maxComposerHeight {
+				// A longer draft intentionally keeps the caret's window,
+				// not every earlier row.
+				expected = expected[len(expected)-maxComposerHeight:]
+			}
+			for _, line := range expected {
+				want := strings.TrimRight(line, " ")
+				if !containsRow(shown, want) {
+					t.Errorf("line %q is not visible immediately: %q", want, shown)
+				}
+			}
+			cur := m.cursorDraftRow()
+			if cur < m.draftOffset || cur >= m.draftOffset+m.ComposerRows() {
+				t.Errorf("caret row %d is outside window %d..%d",
+					cur, m.draftOffset, m.draftOffset+m.ComposerRows())
+			}
+			if got := m.ComposerRows(); got != min(m.draftRows(), maxComposerHeight) {
+				t.Errorf("composer rows = %d, want %d", got, min(m.draftRows(), maxComposerHeight))
+			}
+			if cur >= len(m.draftLines()) {
+				t.Errorf("caret row %d is beyond %d draft rows", cur, len(m.draftLines()))
+			}
+		})
+	}
+}
+
+func containsRow(rows []string, want string) bool {
+	for _, row := range rows {
+		if row == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPasteIntoExistingDraftIsVisibleImmediately(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	m = updated.(Model)
+	m = typeText(m, "start ")
+	m = pasteText(m, "one\ntwo\nthree")
+	shown := composerRulesAt(t, m, 60)
+	text := strings.Join(shown, "\n")
+	for _, want := range []string{"start one", "two", "three"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("pasted text %q is not visible immediately: %q", want, shown)
+		}
+	}
+	cur := m.cursorDraftRow()
+	if cur < m.draftOffset || cur >= m.draftOffset+m.ComposerRows() {
+		t.Errorf("caret row %d is outside window %d..%d", cur, m.draftOffset, m.draftOffset+m.ComposerRows())
+	}
+}

@@ -100,6 +100,14 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/link_checks.py
 ```
 
+The composer checks send a bracketed paste and render the first frame
+after it, without sending an arrow key or any follow-up input:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/composer_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -166,6 +174,10 @@ python3 tools/ptycheck/link_checks.py
 - The link suite verifies OSC 8 destinations, label-only Markdown links,
   visible bare URLs, numbered lists, tables, unsafe-scheme rejection,
   fenced-code exclusion and plain reconstructed screen text.
+- The composer PTY suite covers two, three and five-line pastes, a
+  six-line paste whose caret window is the last five rows, a long wrapped
+  Markdown link followed by a newline, and the footer remaining visible
+  immediately after the paste.
 - The permission suite runs the lifecycle end to end: 444 is the default;
   a model-invented `read` is refused; conversation text and a plain `y` do
   not enable 666; `Ctrl+P` then `Ctrl+Y` enables a red `666 UNRESTRICTED`

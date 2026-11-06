@@ -143,9 +143,10 @@ sanitisation, code fences, tables, lists, selection and `/copy`. One
 manual terminal check remains:
 
 - [ ] Launch HAL in Ghostty, ask HAL to display a Markdown link to
-      `https://example.com`, then Ctrl+click the label. The default
-      browser opens the correct URL. HAL itself must not open anything
-      until that click.
+      `https://example.com`, then **Ctrl+Shift+click** the label. The
+      default browser opens the correct URL. Shift is the bypass while
+      HAL's mouse reporting is active; plain Ctrl+click requires
+      `--no-mouse`. HAL itself must not open anything until that click.
 
 ## Every theme
 

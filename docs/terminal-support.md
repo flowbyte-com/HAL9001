@@ -165,8 +165,11 @@ Terminal differences to check by hand:
 
 HAL emits OSC 8 hyperlinks for labeled Markdown links and for bare
 HTTP/HTTPS URLs. Ghostty, kitty, WezTerm, foot and recent Konsole support
-them natively: Ctrl+click (or the terminal's equivalent) opens the
-destination. Terminals that do not implement OSC 8 simply ignore the
+them natively. In Ghostty, while HAL's mouse reporting is active, use
+**Ctrl+Shift+click**: Shift bypasses the application's mouse capture and
+lets Ghostty activate the link. Plain Ctrl+click is available with
+`--no-mouse`, at the cost of HAL's wheel and drag selection. Other
+terminals use their own link modifier. Terminals that do not implement OSC 8 simply ignore the
 sequence and keep the visible label or URL; HAL does not open links
 itself. Selection and `/copy` are plain text and never contain the OSC 8
 control sequence.
