@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +77,50 @@ func TestRebuildEngineWithoutProviderIsSafe(t *testing.T) {
 func TestRunHelp(t *testing.T) {
 	if err := run([]string{"-h"}); err != nil {
 		t.Errorf("run(-h) = %v, want nil", err)
+	}
+}
+
+func TestWantsVersion(t *testing.T) {
+	for _, arg := range []string{"--version", "-version"} {
+		if !wantsVersion([]string{arg}) {
+			t.Errorf("wantsVersion(%q) = false", arg)
+		}
+	}
+	for _, args := range [][]string{{}, {"--help"}, {"--version=false"}} {
+		if wantsVersion(args) {
+			t.Errorf("wantsVersion(%v) = true", args)
+		}
+	}
+}
+
+func TestRunVersionDoesNotReadConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HAL9001_CONFIG", configPath)
+
+	old := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	runErr := run([]string{"--version"})
+	os.Stdout = old
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runErr != nil {
+		t.Fatalf("run --version = %v", runErr)
+	}
+	if !strings.Contains(string(out), "HAL9001") || !strings.Contains(string(out), "commit:") {
+		t.Fatalf("output = %q", out)
 	}
 }
 

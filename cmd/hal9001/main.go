@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/flowbyte-com/HAL9001/internal/agenttools"
+	"github.com/flowbyte-com/HAL9001/internal/buildinfo"
 	"github.com/flowbyte-com/HAL9001/internal/clipboard"
 	"github.com/flowbyte-com/HAL9001/internal/config"
 	"github.com/flowbyte-com/HAL9001/internal/engine"
@@ -42,12 +43,23 @@ func main() {
 }
 
 func run(args []string) error {
+	// Version reporting must work even when the configuration file is
+	// missing or damaged, so it is handled before any configuration is
+	// read.
+	if wantsVersion(args) {
+		fmt.Print(buildinfo.Report("HAL9001"))
+		return nil
+	}
 	cfg, err := config.LoadErr(args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // usage already printed
 		}
 		return err
+	}
+	if cfg.ShowVersion {
+		fmt.Print(buildinfo.Report("HAL9001"))
+		return nil
 	}
 	if cfg.NoColor {
 		os.Setenv("NO_COLOR", "1")
@@ -134,6 +146,18 @@ func run(args []string) error {
 		fmt.Fprintln(os.Stderr, "hal9001: skills unavailable:", err)
 	}
 	return app.run()
+}
+
+// wantsVersion recognizes the version flag before configuration is
+// loaded. The flag package would otherwise read ~/.hal9001/config.json
+// first, so a damaged config could make `hal --version` fail.
+func wantsVersion(args []string) bool {
+	for _, arg := range args {
+		if arg == "--version" || arg == "-version" {
+			return true
+		}
+	}
+	return false
 }
 
 func listSessions(storeDir string) error {

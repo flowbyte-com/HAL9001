@@ -24,6 +24,12 @@ workspace, available in 444. It is not the session mode. See
 
 ## Status
 
+Milestone 008: HAL installs as a native user-space command, `hal`, with a
+standalone `hal-update` that builds exact Git commits in isolation,
+installs immutable releases, switches an atomic pointer and can roll back
+without touching a running conversation. See [Installing and
+updating](#installing-and-updating).
+
 Milestone 007: one `web_search` interface now backs live web research with
 three independent providers in a fixed order: Firecrawl, Exa and keyless
 DuckDuckGo Lite. Results are normalized with source URL, excerpt,
@@ -61,8 +67,12 @@ does not import it.
 
 ## Quick start
 
+The managed command is `hal`; see [Installing and
+updating](#installing-and-updating). For an uninstalled development
+checkout, build the development binary as `hal9001`:
+
 ```sh
-go build ./...
+go build -o hal9001 ./cmd/hal9001
 ./hal9001 --help
 ```
 
@@ -74,15 +84,38 @@ A connection test runs against the provider's model list before saving;
 you may save anyway if it fails.
 
 ```sh
-hal9001                                    # chat (Enter sends, Ctrl+J adds a line)
-hal9001 --session work                     # resume or start a named session
-hal9001 --list-sessions                    # list stored conversations
-hal9001 --no-mouse                         # leave the pointer to the terminal
-hal9001 --workspace ~/HAL                  # where an approved write may land
-hal9001 --provider openai-compatible \
+./hal9001                                  # chat (Enter sends, Ctrl+J adds a line)
+./hal9001 --session work                   # resume or start a named session
+./hal9001 --list-sessions                  # list stored conversations
+./hal9001 --no-mouse                       # leave the pointer to the terminal
+./hal9001 --workspace ~/HAL                # where an approved write may land
+./hal9001 --provider openai-compatible \
   --endpoint https://api.minimax.io/v1 \
   --model MiniMax-M3.1-Flash               # flags win over the file
 ```
+
+## Installing and updating
+
+HAL9001 installs without root into `~/.hal`, with `hal` and `hal-update`
+in `~/.local/bin`. Updates build an exact Git commit in an isolated
+checkout, install an immutable release, and switch one symlink atomically.
+Running conversations are untouched; the new release is used on the next
+launch.
+
+```sh
+cd ~/projects/hal
+go run ./cmd/hal-update --bootstrap   # first installation from a clean checkout
+hal --version
+hal-update --status
+hal-update --check
+hal-update                            # update to the latest main commit
+hal-update --rollback                 # restore the previous release
+```
+
+Git and Go are required to build updates. Full layout, safety guarantees,
+recovery and uninstall instructions are in
+[`docs/installation.md`](docs/installation.md). `go run ./cmd/hal9001`
+remains supported for development.
 
 ## The interface
 

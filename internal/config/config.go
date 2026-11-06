@@ -263,6 +263,7 @@ type Config struct {
 	// time in the interface.
 	WorkspaceDir string
 	ShowHelp     bool
+	ShowVersion  bool
 	List         bool
 	Models       []ModelRecord
 	// MaxTokens caps one response. Zero means the provider default is
@@ -341,6 +342,7 @@ func LoadErr(args []string) (Config, error) {
 	fs.BoolVar(&mouseFlag, "mouse", false, "report mouse events (the default): the wheel scrolls and a drag selects text")
 	fs.BoolVar(&noMouseFlag, "no-mouse", false, "do not report mouse events: the terminal keeps its own text selection")
 	fs.BoolVar(&cfg.List, "list-sessions", false, "list stored sessions and exit")
+	fs.BoolVar(&cfg.ShowVersion, "version", false, "print the product version and build commit")
 	fs.IntVar(&cfg.MaxTokens, "max-tokens", cfg.MaxTokens, "cap one response (0 uses the default)")
 	fs.IntVar(&cfg.StreamIdleSeconds, "stream-idle-timeout", cfg.StreamIdleSeconds, "seconds of silence before a stream is closed")
 	fs.IntVar(&cfg.TurnTimeoutSeconds, "turn-timeout", cfg.TurnTimeoutSeconds, "seconds one turn may run")
