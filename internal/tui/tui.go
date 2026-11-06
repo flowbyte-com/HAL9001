@@ -1953,7 +1953,7 @@ func (f chatFrame) chrome() int {
 func (f chatFrame) total() int { return f.chrome() + f.composer + f.viewport }
 
 // computeChatFrame fits the frame to the terminal. When space runs out it
-// gives up the suggestion panel, the notice, the hint row, the divider
+// gives up the suggestion panel, the divider, the notice, the hint row
 // and finally the composer rules — never the header, the composer text or
 // the footer.
 func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
@@ -1971,20 +1971,28 @@ func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
 	if f.composer > maxComposerHeight {
 		f.composer = maxComposerHeight
 	}
+	// Optional chrome goes before the draft does. The composer's text is
+	// the content the operator is editing; a short terminal must not
+	// scroll it out of view to keep a suggestion panel, a divider, a
+	// notice, a hint or a rule. The divider is the first decoration to
+	// go: it is purely visual, and dropping it also avoids a hint-less
+	// composer rule being followed by a second, identical rule. Only when
+	// even the bare composer cannot fit more than one text row does the
+	// draft window shrink.
 	for height > 0 && f.chrome()+f.composer+1 > height {
 		switch {
-		case f.composer > 1:
-			f.composer--
 		case f.suggest > 0:
 			f.suggest = 0
+		case f.divider:
+			f.divider = false
 		case f.notice:
 			f.notice = false
 		case f.hint:
 			f.hint = false
-		case f.divider:
-			f.divider = false
 		case f.rules:
 			f.rules = false
+		case f.composer > 1:
+			f.composer--
 		default:
 			f.viewport = 1
 			return f

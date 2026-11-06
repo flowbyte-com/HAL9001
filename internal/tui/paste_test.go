@@ -395,6 +395,29 @@ func TestComposerWindowIgnoresAClampedView(t *testing.T) {
 	}
 }
 
+// TestComposerWindowIgnoresAScrolledTextarea covers the other stale
+// widget state: the textarea has scrolled its own view to the caret even
+// though HAL's window is at the top of a draft that fits. Trusting the
+// scrolled view would hide the first line; the draft's own rows win.
+func TestComposerWindowIgnoresAScrolledTextarea(t *testing.T) {
+	const first = "First line: testing HAL's multiline composer."
+	const second = "Second line: both lines should appear immediately."
+	m := testModel()
+	m = pasteText(m, first+"\n"+second)
+	// A frame has rendered: the textarea's viewport now holds the draft.
+	_ = m.View()
+	m.composer.SetHeight(1)
+	if got := m.Composer().ScrollYOffset(); got == 0 {
+		t.Fatalf("the test did not scroll the textarea")
+	}
+	m.frame.composer = 2
+	m.draftOffset = 0
+	rows := strings.Join(windowText(m), "\n")
+	if !strings.Contains(rows, first) || !strings.Contains(rows, second) {
+		t.Errorf("a scrolled textarea hid a line that fits: %q", rows)
+	}
+}
+
 // TestComposerCaretFollowsAResize checks that the window stays around the
 // caret and keeps showing text when the terminal changes size.
 func TestComposerCaretFollowsAResize(t *testing.T) {
@@ -477,6 +500,141 @@ func TestPasteIsFullyVisibleImmediately(t *testing.T) {
 				t.Errorf("caret row %d is beyond %d draft rows", cur, len(m.draftLines()))
 			}
 		})
+	}
+}
+
+// TestPasteIsFullyVisibleOnAShortTerminal is the field report at the
+// size that exposes it: the frame has to trade rows, and it used to give
+// up the composer's text rows before the optional chrome. A two-line
+// paste then showed only its caret row; Up scrolled the hidden line into
+// view. The first frame after the paste must already show both.
+func TestPasteIsFullyVisibleOnAShortTerminal(t *testing.T) {
+	const first = "First line: testing HAL's multiline composer."
+	const second = "Second line: both lines should appear immediately."
+	cases := []struct {
+		name string
+		body string
+		rows int
+	}{
+		{name: "eight rows", body: first + "\n" + second, rows: 8},
+		{name: "nine rows", body: first + "\n" + second, rows: 9},
+		{name: "nine rows trailing newline", body: first + "\n" + second + "\n", rows: 9},
+		{name: "ten rows trailing newline", body: first + "\n" + second + "\n", rows: 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testModel()
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: tc.rows})
+			m = updated.(Model)
+			m = pasteText(m, tc.body)
+			if got := len(m.layoutRows()); got != tc.rows {
+				t.Fatalf("the frame has %d rows, want %d", got, tc.rows)
+			}
+			shown := windowText(m)
+			text := strings.Join(shown, "\n")
+			if !strings.Contains(text, first) {
+				t.Errorf("the first line is not visible immediately: %q", shown)
+			}
+			if !strings.Contains(text, second) {
+				t.Errorf("the second line is not visible immediately: %q", shown)
+			}
+			if m.draftOffset != 0 {
+				t.Errorf("a draft that fits starts at window offset %d, want 0", m.draftOffset)
+			}
+			if got := m.Composer().ScrollYOffset(); got != 0 {
+				t.Errorf("the textarea scrolled its own view to %d, want 0", got)
+			}
+			if got := m.Composer().Height(); got < m.draftRows() {
+				t.Errorf("the textarea is %d rows tall for %d draft rows", got, m.draftRows())
+			}
+			cur := m.cursorDraftRow()
+			if cur < m.draftOffset || cur >= m.draftOffset+m.ComposerRows() {
+				t.Errorf("caret row %d is outside window %d..%d",
+					cur, m.draftOffset, m.draftOffset+m.ComposerRows())
+			}
+			if got, want := m.ComposerRows(), min(m.draftRows(), maxComposerHeight); got != want {
+				t.Errorf("composer rows = %d, want %d", got, want)
+			}
+
+			// Up must not be what makes the first line appear. It may move
+			// the caret, but the frame still shows both lines afterwards.
+			before := strings.Join(windowText(m), "\n")
+			up := pressKey(m, tea.KeyUp, 0, "")
+			after := strings.Join(windowText(up), "\n")
+			if !strings.Contains(after, first) || !strings.Contains(after, second) {
+				t.Errorf("after Up the frame lost a line: before=%q after=%q", before, after)
+			}
+		})
+	}
+}
+
+// TestPasteStartEndSequenceShowsBothLines follows the full message
+// sequence a real terminal produces: the bracketed-paste start, the
+// content, and the end marker. The end marker passes through the generic
+// key path, so it must not restore a taller frame or scroll the draft.
+func TestPasteStartEndSequenceShowsBothLines(t *testing.T) {
+	const first = "First line: testing HAL's multiline composer."
+	const second = "Second line: both lines should appear immediately."
+	m := testModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 9})
+	m = updated.(Model)
+	for _, msg := range []tea.Msg{
+		tea.PasteStartMsg{},
+		tea.PasteMsg{Content: first + "\n" + second},
+		tea.PasteEndMsg{},
+	} {
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+	}
+	text := strings.Join(windowText(m), "\n")
+	if !strings.Contains(text, first) || !strings.Contains(text, second) {
+		t.Errorf("the start/paste/end sequence hid a line: %q", text)
+	}
+	if m.draftOffset != 0 {
+		t.Errorf("window offset = %d, want 0", m.draftOffset)
+	}
+	if got := m.Composer().ScrollYOffset(); got != 0 {
+		t.Errorf("textarea scroll = %d, want 0", got)
+	}
+	if got := len(m.layoutRows()); got != 9 {
+		t.Errorf("the frame has %d rows, want 9", got)
+	}
+}
+
+// TestShortTerminalKeepsComposerText checks the frame budget directly:
+// optional chrome is dropped before the draft's text rows. At nine rows
+// a two-line draft keeps both rows and its rules; a five-line draft
+// keeps all five rows and gives up the rules instead.
+func TestShortTerminalKeepsComposerText(t *testing.T) {
+	two := computeChatFrame(9, 2, 0)
+	if two.composer != 2 {
+		t.Errorf("two-line composer = %d rows, want 2", two.composer)
+	}
+	if two.divider {
+		t.Errorf("the decorative divider survived before the composer text")
+	}
+	if !two.notice || !two.hint {
+		t.Errorf("the functional notice and hint rows should survive: %+v", two)
+	}
+	if !two.rules {
+		t.Errorf("the composer rules should survive for a two-line draft at nine rows")
+	}
+	if got := two.chrome() + two.composer + two.viewport; got != 9 {
+		t.Errorf("two-line frame uses %d rows, want 9", got)
+	}
+
+	five := computeChatFrame(9, 5, 0)
+	if five.composer != 5 {
+		t.Errorf("five-line composer = %d rows, want 5", five.composer)
+	}
+	if got := five.chrome() + five.composer + five.viewport; got != 9 {
+		t.Errorf("five-line frame uses %d rows, want 9", got)
+	}
+
+	normal := computeChatFrame(24, 5, 8)
+	if normal.composer != 5 || normal.suggest != 8 || !normal.notice ||
+		!normal.hint || !normal.divider || !normal.rules {
+		t.Errorf("a full-size frame lost chrome: %+v", normal)
 	}
 }
 

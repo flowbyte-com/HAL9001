@@ -27,6 +27,9 @@ go build -o /tmp/hal9001 ./cmd/hal9001
       one row.
 - [ ] Genuine line breaks and wrapped lines grow the composer by exactly
       the rows they need; a long paste stops at five and scrolls inside.
+- [ ] On a short terminal (for example 80×9), pasting two lines shows
+      both lines on the first frame. Up is not needed, and pressing it
+      never reveals a line that was hidden.
 - [ ] A paste whose lines end in CRLF does not add blank rows.
 - [ ] `Ctrl+U` collapses the composer to one row and `Ctrl+Z` restores
       the draft at its proper height.

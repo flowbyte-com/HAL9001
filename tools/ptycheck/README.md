@@ -100,8 +100,9 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/link_checks.py
 ```
 
-The composer checks send a bracketed paste and render the first frame
-after it, without sending an arrow key or any follow-up input:
+The composer checks send a paste and render the first frame after it,
+without sending an arrow key or any follow-up input. They cover bracketed
+paste, a raw LF alternate path and a bracketed CRLF path:
 
 ```sh
 HAL9001_BINARY=/tmp/opencode/hal9001 \
@@ -177,7 +178,11 @@ python3 tools/ptycheck/composer_checks.py
 - The composer PTY suite covers two, three and five-line pastes, a
   six-line paste whose caret window is the last five rows, a long wrapped
   Markdown link followed by a newline, and the footer remaining visible
-  immediately after the paste.
+  immediately after the paste. It also renders the exact two-line field
+  report on 8, 9 and 10-row terminals, before and after Up, plus a
+  five-line and a ten-line paste at 80x9. The first frame is asserted
+  before any key is sent; the alternate raw-LF and bracketed-CRLF paths
+  are checked at the same short size.
 - The permission suite runs the lifecycle end to end: 444 is the default;
   a model-invented `read` is refused; conversation text and a plain `y` do
   not enable 666; `Ctrl+P` then `Ctrl+Y` enables a red `666 UNRESTRICTED`

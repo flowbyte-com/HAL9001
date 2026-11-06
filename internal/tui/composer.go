@@ -218,6 +218,15 @@ func (m Model) composerWindow(visible int) []string {
 		visible = 1
 	}
 	total := m.draftRows()
+	if m.composer.ScrollYOffset() > 0 {
+		// HAL owns the draft window: the textarea is sized to the whole
+		// draft so it should never scroll. If it has scrolled anyway
+		// (a frame behind, a widget that clamped its own height), its
+		// view starts at the wrong row and trusting it hides the top of
+		// a draft that fits. Draw the draft's own rows instead; showing
+		// the text is more important than the widget's styling.
+		return m.draftWindow(visible)
+	}
 	if total <= visible {
 		// The whole draft fits: the textarea's own end-of-buffer rows
 		// fill the rest.
