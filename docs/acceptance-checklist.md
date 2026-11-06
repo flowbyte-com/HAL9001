@@ -55,6 +55,12 @@ go build -o /tmp/hal9001 ./cmd/hal9001
       historical 444/666 mode remain readable in both modes.
 - [ ] Switching icons does not change permission mode, the stored
       session, `/copy`, selection or the red `◉` assistant marker.
+- [ ] A read declared with `expect_missing` and a genuinely missing file
+      shows `📍`, while the same missing read without an expectation shows
+      `🚨`. A bash call declared with `expect_exit_code 17` shows `📍` for
+      exit 17 and `🚨` for exit 1. A command expected to fail but succeeding
+      keeps `💻` and records the unmet expectation.
+- [ ] Resuming the session preserves the `📍`/`🚨` distinction.
 
 ## The footer and the hints
 
@@ -107,6 +113,18 @@ zones, and only the middle one moves.
       same answer.
 - [ ] `/copy` copies the answer alone — no skill label, no hash.
 - [ ] Dragging over the reply with the mouse copies the answer alone.
+
+## Guarded 444 write
+
+- [ ] In 444, ask: “Create `~/HAL/guarded-write-test.txt` containing
+      `HAL444_WRITE_OK`. Request approval if required.”
+- [ ] The review names `~/HAL/guarded-write-test.txt`, not
+      `~/HAL/HAL/guarded-write-test.txt`.
+- [ ] Approving once creates the file at `~/HAL/guarded-write-test.txt`
+      with exactly `HAL444_WRITE_OK`, and the footer remains 444.
+- [ ] Rejecting leaves the file absent. A path outside the workspace, or
+      one that leaves through a symlink, is refused before any review.
+- [ ] A second write still waits for its own approval.
 
 ## The way back
 

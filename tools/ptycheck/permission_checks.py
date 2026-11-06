@@ -295,6 +295,84 @@ def main():
         check("666: bash activity reports the exit",
               "\u2699 bash" in text and "exit 0" in text, text)
 
+        # Expected failures are declared in the tool call before
+        # execution. The actual result must still match the specific
+        # expectation; an after-the-fact explanation is never enough.
+        missing = os.path.join(home, "missing-expected.txt")
+        try:
+            os.remove(missing)
+        except FileNotFoundError:
+            pass
+        s = capture([(2.0, b"/tool-icons emoji\r"), (0.5, b"\x10"),
+                     (0.5, b"\x19"),
+                     (1.0, ("[[readmissing %s]]\r" % missing).encode()),
+                     (3.0, b"")], **common)
+        text = s.text()
+        check("expected: missing read uses the pin",
+              "\U0001f4cd read" in text and "expected missing" in text, text)
+        check("expected: missing read keeps the failure details",
+              "failed" in text and "expected missing" in text, text)
+        check("expected: missing read is not marked unexpected",
+              "\U0001f6a8 read" not in text, text)
+
+        s = capture([(2.0, b"/tool-icons emoji\r"), (0.5, b"\x10"),
+                     (0.5, b"\x19"),
+                     (1.0, b"[[bashexpect 17 exit 17]]\r"), (3.0, b"")],
+                    **common)
+        text = s.text()
+        check("expected: matching exit 17 uses the pin",
+              "\U0001f4cd bash" in text and "expected exit 17" in text, text)
+        check("expected: matching exit 17 is not unexpected",
+              "\U0001f6a8 bash" not in text, text)
+
+        s = capture([(2.0, b"/tool-icons emoji\r"), (0.5, b"\x10"),
+                     (0.5, b"\x19"),
+                     (1.0, b"[[bashexpect 17 exit 1]]\r"), (3.0, b"")],
+                    **common)
+        text = s.text()
+        check("expected: unexpected exit 1 uses the alarm",
+              "\U0001f6a8 bash" in text and "exit 1" in text and
+              "expected exit 17 not met" in text, text)
+        check("expected: unexpected exit 1 is not the pin",
+              "\U0001f4cd bash" not in text, text)
+
+        s = capture([(2.0, b"/tool-icons emoji\r"), (0.5, b"\x10"),
+                     (0.5, b"\x19"),
+                     (1.0, b"[[bashexpect 17 exit 0]]\r"), (3.0, b"")],
+                    **common)
+        text = s.text()
+        check("expected: a successful command keeps the shell icon",
+              "\U0001f4bb bash" in text and "expected exit 17 not met" in text,
+              text)
+        check("expected: a successful command is not a failure icon",
+              "\U0001f4cd bash" not in text and
+              "\U0001f6a8 bash" not in text, text)
+
+        s = capture([(2.0, b"/tool-icons emoji\r"), (0.5, b"\x10"),
+                     (0.5, b"\x19"),
+                     (1.0, ("[[read %s]]\r" % missing).encode()), (3.0, b"")],
+                    **common)
+        text = s.text()
+        check("expected: an undeclared missing read uses the alarm",
+              "\U0001f6a8 read" in text and
+              "expected missing" not in text and "not met" not in text, text)
+
+        # The verified expectation survives a real session resume. The
+        # first run executes the call in 666; the second starts in 444,
+        # reconnects the stored ledger and renders the same pin.
+        history_session = "expectedhistory"
+        capture([(2.0, b"/tool-icons emoji\r"), (0.5, b"\x10"),
+                 (0.5, b"\x19"),
+                 (1.0, b"[[bashexpect 17 exit 17]]\r"), (3.0, b"")],
+                keep_session=True, session=history_session, **common)
+        s = capture([(2.0, b"/tool-icons emoji\r"), (0.8, b"")],
+                    keep_session=True, session=history_session, **common)
+        text = s.text()
+        check("expected: historical evidence keeps the pin after resume",
+              "\U0001f4cd bash" in text and "expected exit 17" in text, text)
+        check("expected: historical evidence is still in 444",
+              "444 READ ONLY" in text and "666 UNRESTRICTED" not in text, text)
+
         # The operator chord disables 666, and the same invented read is
         # refused again in the same process.
         s = capture([(2.0, b"\x10"), (0.5, b"\x19"), (0.5, b"\x10"),

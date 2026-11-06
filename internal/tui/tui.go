@@ -2070,18 +2070,20 @@ func historicalToolActivity(e session.ToolExecution) engine.ToolActivity {
 		mode = permission.Unrestricted
 	}
 	return engine.ToolActivity{
-		CallID:     e.CallID,
-		Name:       e.Tool,
-		Action:     e.Action,
-		Target:     e.Target,
-		Status:     status,
-		Summary:    e.Summary,
-		Duration:   time.Duration(e.DurationMS) * time.Millisecond,
-		Bytes:      e.Bytes,
-		Truncated:  e.Truncated,
-		ExitCode:   e.ExitCode,
-		Mode:       mode,
-		Historical: true,
+		CallID:      e.CallID,
+		Name:        e.Tool,
+		Action:      e.Action,
+		Target:      e.Target,
+		Status:      status,
+		Summary:     e.Summary,
+		Duration:    time.Duration(e.DurationMS) * time.Millisecond,
+		Bytes:       e.Bytes,
+		Truncated:   e.Truncated,
+		ExitCode:    e.ExitCode,
+		Expected:    e.Expected,
+		ExpectedMet: e.ExpectedMet,
+		Mode:        mode,
+		Historical:  true,
 	}
 }
 
@@ -2133,7 +2135,10 @@ func toolActivityLineMode(a engine.ToolActivity, width int, icons toolIconsMode)
 		label += " " + a.Action
 	}
 	status := " · " + toolStatusLabel(a.Status)
-	if a.Name == "bash" && a.ExitCode != nil {
+	expected := toolExpectedLabel(a.Expected)
+	expectedMet := expected != "" && a.ExpectedMet
+	if a.Name == "bash" && a.ExitCode != nil &&
+		!(expectedMet && strings.HasPrefix(a.Expected, "exit:")) {
 		status += fmt.Sprintf(" · exit %d", *a.ExitCode)
 	}
 	switch {
@@ -2164,6 +2169,16 @@ func toolActivityLineMode(a engine.ToolActivity, width int, icons toolIconsMode)
 	}
 	if a.Truncated {
 		status += " · truncated"
+	}
+	if expected != "" {
+		switch {
+		case expectedMet && toolIconFailed(a.Status):
+			// The expected label carries the actual exit code when the
+			// expectation is an exit code, so it is not repeated.
+			status += " · expected " + expected
+		case !expectedMet:
+			status += " · expected " + expected + " not met"
+		}
 	}
 	status += " · " + a.Mode.String()
 	// Reserve the status and mode first: a long model-supplied tool name

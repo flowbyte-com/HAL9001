@@ -23,6 +23,7 @@ import (
 var writeTool = provider.Tool{
 	Name: workspace.ToolName,
 	Description: "Propose saving one UTF-8 text file inside the operator's HAL workspace. " +
+		"The workspace root is already included; name the file inside it. " +
 		"This only prepares a proposal: the operator reviews the exact path and contents and " +
 		"approves or rejects it in the interface. Nothing is written before that approval.",
 	Parameters: `{
@@ -30,7 +31,7 @@ var writeTool = provider.Tool{
 		"properties": {
 			"path": {
 				"type": "string",
-				"description": "Destination relative to the workspace, for example notes/acc-fuel.md. No leading slash, no drive letter and no .. components."
+				"description": "Destination inside the workspace. Prefer the path exactly as the operator named it: ~/HAL/notes/acc-fuel.md, /home/you/HAL/notes/acc-fuel.md and notes/acc-fuel.md all resolve to the same file. A relative path starts at the workspace root. Do not prepend the workspace folder to a relative path unless the operator explicitly requested a nested HAL/HAL/... directory. It must not contain .. components or leave the workspace."
 			},
 			"content": {
 				"type": "string",

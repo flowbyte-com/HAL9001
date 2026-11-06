@@ -63,7 +63,8 @@ func Tools() []provider.Tool {
 				"properties": {
 					"path": {"type": "string", "description": "Absolute path, path with ~, or a path relative to HAL's working directory."},
 					"offset": {"type": "integer", "minimum": 1, "description": "First line to return, 1-based. Defaults to 1."},
-					"limit": {"type": "integer", "minimum": 1, "maximum": 400, "description": "Maximum lines to return. Defaults to 400."}
+					"limit": {"type": "integer", "minimum": 1, "maximum": 400, "description": "Maximum lines to return. Defaults to 400."},
+					"expect_missing": {"type": "boolean", "description": "Set true only when the operator explicitly asks you to verify that the file is absent. A missing-file result is then an expected failure; do not use this to excuse an ordinary read failure."}
 				},
 				"required": ["path"],
 				"additionalProperties": false
@@ -108,7 +109,8 @@ func Tools() []provider.Tool {
 				"properties": {
 					"command": {"type": "string", "description": "The command line passed to bash -c."},
 					"workdir": {"type": "string", "description": "Working directory. Defaults to HAL's current directory."},
-					"timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Wall-clock limit. Defaults to 120 seconds."}
+					"timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "description": "Wall-clock limit. Defaults to 120 seconds."},
+					"expect_exit_code": {"type": "integer", "minimum": 0, "maximum": 255, "description": "Set only when the operator explicitly asks for a command expected to exit with this code. The actual exit code is compared; do not use this to excuse an unexpected failure."}
 				},
 				"required": ["command"],
 				"additionalProperties": false
@@ -151,6 +153,15 @@ type Result struct {
 	Bytes     int
 	Truncated bool
 	ExitCode  *int
+	// Expected is the stable expectation code declared in the tool call
+	// before execution: "missing" or "exit:<code>". ExpectedMet reports
+	// whether the actual result matched it. Both are presentation
+	// metadata; the status and exit code remain the real outcome.
+	Expected    string
+	ExpectedMet bool
+	// NotFound records that a read failed specifically because the
+	// destination did not exist. It is used to evaluate expect_missing.
+	NotFound bool
 	// Mode is the permission mode captured at the execution boundary.
 	// A later revocation must not relabel a cancelled operation as 444.
 	Mode permission.Mode
@@ -172,6 +183,15 @@ func (e *Executor) Execute(ctx context.Context, call provider.ToolCall) Result {
 			Content: errorJSON(call.Name, "arguments are not valid JSON"),
 		}, start)
 	}
+	// Parse the expectation before any side effect. It comes only from
+	// the tool call itself, never from the model's later explanation.
+	expectation, err := parseToolExpectation(call)
+	if err != nil {
+		return e.finish(call, Result{
+			Tool: call.Name, Status: "failed", Action: "invalid", Mode: mode,
+			Content: errorJSON(call.Name, err.Error()),
+		}, start)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -190,8 +210,67 @@ func (e *Executor) Execute(ctx context.Context, call provider.ToolCall) Result {
 			Content: errorJSON(call.Name, "unknown tool")}
 		res.Summary = call.Name + " denied · unknown tool"
 	}
+	res.Expected = expectation.code
+	res.ExpectedMet = expectation.met(res)
 	res.Mode = mode
 	return e.finish(call, res, start)
+}
+
+// toolExpectation is one explicit outcome declared in the tool call
+// before the operation runs. The code is stable and safe for the audit
+// and the session ledger; the UI turns it into a human label.
+type toolExpectation struct {
+	code     string
+	exitCode int
+}
+
+func parseToolExpectation(call provider.ToolCall) (toolExpectation, error) {
+	if call.Arguments == nil {
+		return toolExpectation{}, nil
+	}
+	_, hasMissing := call.Arguments["expect_missing"]
+	_, hasExit := call.Arguments["expect_exit_code"]
+	if hasMissing && call.Name != "read" {
+		return toolExpectation{}, errors.New("expect_missing is only valid for read")
+	}
+	if hasExit && call.Name != "bash" {
+		return toolExpectation{}, errors.New("expect_exit_code is only valid for bash")
+	}
+	if hasMissing && hasExit {
+		return toolExpectation{}, errors.New("only one expectation may be declared")
+	}
+	if hasMissing {
+		missing, ok := call.Arguments["expect_missing"].(bool)
+		if !ok {
+			return toolExpectation{}, errors.New("expect_missing must be a boolean")
+		}
+		if missing {
+			return toolExpectation{code: "missing"}, nil
+		}
+		return toolExpectation{}, nil
+	}
+	if hasExit {
+		code, err := intArg(call.Arguments, "expect_exit_code", 0)
+		if err != nil {
+			return toolExpectation{}, errors.New("expect_exit_code must be an integer")
+		}
+		if code < 0 || code > 255 {
+			return toolExpectation{}, errors.New("expect_exit_code must be between 0 and 255")
+		}
+		return toolExpectation{code: "exit:" + strconv.Itoa(code), exitCode: code}, nil
+	}
+	return toolExpectation{}, nil
+}
+
+func (x toolExpectation) met(res Result) bool {
+	switch {
+	case x.code == "missing":
+		return res.Status == "failed" && res.NotFound
+	case strings.HasPrefix(x.code, "exit:"):
+		return res.ExitCode != nil && *res.ExitCode == x.exitCode
+	default:
+		return false
+	}
 }
 
 // denied turns a gate refusal into a tool result the model can explain
@@ -235,16 +314,18 @@ func (e *Executor) finish(call provider.ToolCall, res Result, start time.Time) R
 		mode = "666"
 	}
 	rec := workspace.ToolRecord{
-		Time:       start,
-		Mode:       mode,
-		Tool:       res.Tool,
-		Action:     res.Action,
-		Target:     res.Target,
-		Outcome:    res.Status,
-		ExitCode:   res.ExitCode,
-		Bytes:      res.Bytes,
-		DurationMS: res.Duration.Milliseconds(),
-		Truncated:  res.Truncated,
+		Time:        start,
+		Mode:        mode,
+		Tool:        res.Tool,
+		Action:      res.Action,
+		Target:      res.Target,
+		Outcome:     res.Status,
+		ExitCode:    res.ExitCode,
+		Bytes:       res.Bytes,
+		DurationMS:  res.Duration.Milliseconds(),
+		Truncated:   res.Truncated,
+		Expected:    res.Expected,
+		ExpectedMet: res.ExpectedMet,
 	}
 	if res.Status != "ok" {
 		rec.Reason = res.Status
@@ -305,8 +386,10 @@ func (e *Executor) read(ctx context.Context, call provider.ToolCall) Result {
 
 	f, err := os.Open(abs)
 	if err != nil {
-		return Result{Action: "read", Target: abs, Status: "failed",
+		res := Result{Action: "read", Target: abs, Status: "failed",
 			Content: errorJSON("read", err.Error())}
+		res.NotFound = errors.Is(err, os.ErrNotExist)
+		return res
 	}
 	defer f.Close()
 	info, err := f.Stat()

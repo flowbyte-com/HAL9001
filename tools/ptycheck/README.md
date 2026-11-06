@@ -195,8 +195,11 @@ python3 tools/ptycheck/tool_icon_checks.py
   are checked at the same short size.
 - The tool-icon suite covers classic default, `/tool-icons emoji` and
   `/tool-icons classic`, the no-argument status, historical evidence,
-  failure and destructive priority, the unknown fallback, `✏️`'s
-  variation selector, the shared icon gutter, 80x9 and all five themes.
+  failure and destructive priority, expected failures (📍) versus
+  unexpected failures (🚨), the unknown fallback, `✏️`'s variation
+  selector, the shared icon gutter, 80x9 and all five themes. The
+  permission suite also executes the expected read/bash cases and resumes
+  their verified evidence.
 - The permission suite runs the lifecycle end to end: 444 is the default;
   a model-invented `read` is refused; conversation text and a plain `y` do
   not enable 666; `Ctrl+P` then `Ctrl+Y` enables a red `666 UNRESTRICTED`
@@ -211,6 +214,10 @@ python3 tools/ptycheck/tool_icon_checks.py
   the reviewed bytes and returns to 444; `Ctrl+N` and `Esc` reject; typed
   text never decides it; paths outside the workspace are refused; overwrites
   are shown as such; and a second write needs its own approval.
+  `[[saveas PATH]]` uses the fixed `HAL444_WRITE_OK` body for the 444
+  workspace-path check: `~/HAL/...` writes directly to the requested file,
+  never to `~/HAL/HAL/...`; rejection, outside paths and symlink escapes
+  remain refused.
 - The review keeps its three zones at 80x24, 120x30 and 170x38: the header
   names the operation, the document scrolls, and the decisions
   (`Ctrl+Y Approve · Ctrl+N Reject · ↑/↓ Scroll · Esc Reject`) are on screen

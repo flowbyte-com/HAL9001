@@ -98,6 +98,12 @@ type ToolExecution struct {
 	// example "exit 17" or "wrote 13 bytes". It never contains the
 	// command text, file contents or raw output.
 	Summary string `json:"summary,omitempty"`
+	// Expected is the stable expectation declared by the tool call
+	// before execution, if any: "missing" or "exit:17". ExpectedMet
+	// records whether the verified result matched it. The fields are
+	// additive and optional; older ledgers simply have no expectation.
+	Expected    string `json:"expected,omitempty"`
+	ExpectedMet bool   `json:"expected_met,omitempty"`
 }
 
 // ToolLedger is the versioned evidence record attached to one assistant
@@ -233,6 +239,23 @@ func buildToolLedger(sessionID, turnID string, tools []ToolExecution) *ToolLedge
 	return ledger
 }
 
+// normalizeExpectedCode keeps only the two verified expectation codes.
+// It prevents malformed or hand-edited evidence from displaying an
+// expected-failure icon.
+func normalizeExpectedCode(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "missing" {
+		return code
+	}
+	if strings.HasPrefix(code, "exit:") {
+		n, err := strconv.Atoi(strings.TrimPrefix(code, "exit:"))
+		if err == nil && n >= 0 && n <= 255 {
+			return code
+		}
+	}
+	return ""
+}
+
 func sanitizeToolExecution(e ToolExecution) ToolExecution {
 	e.CallID = safeEvidenceLabel(e.CallID)
 	e.Tool = safeEvidenceLabel(e.Tool)
@@ -240,6 +263,10 @@ func sanitizeToolExecution(e ToolExecution) ToolExecution {
 	e.Target = singleLine(strings.TrimSpace(e.Target))
 	e.Mode = strings.TrimSpace(e.Mode)
 	e.Summary = singleLine(strings.TrimSpace(e.Summary))
+	e.Expected = normalizeExpectedCode(e.Expected)
+	if e.Expected == "" {
+		e.ExpectedMet = false
+	}
 	e.CallID = truncateUTF8(e.CallID, MaxToolIDBytes)
 	e.Tool = truncateUTF8(e.Tool, MaxToolNameBytes)
 	e.Action = truncateUTF8(e.Action, MaxToolNameBytes)

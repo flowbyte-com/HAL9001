@@ -28,7 +28,7 @@ FAILURES = []
 BINARY = os.environ.get("HAL9001_BINARY", "/tmp/opencode/hal9001")
 SESSION = "icons"
 NARROW_SESSION = "iconsnarrow"
-ICONS = ("🔎", "📄", "💡", "📝", "✏️", "📦", "💻", "🔪", "🚨")
+ICONS = ("🔎", "📄", "💡", "📝", "✏️", "📦", "💻", "🔪", "🚨", "📍")
 
 
 def check(name, ok, detail=""):
@@ -58,7 +58,8 @@ def message(role, content, turn, extra=None):
 
 
 def execution(tool, action, status, mode="666", target="", exit_code=None,
-              summary="", duration_ms=12, size=0, turn_id="tools"):
+              summary="", duration_ms=12, size=0, turn_id="tools",
+              expected="", expected_met=False):
     out = {
         "turn_id": turn_id,
         "call_id": "call-" + tool + "-" + action + "-" + status,
@@ -69,6 +70,9 @@ def execution(tool, action, status, mode="666", target="", exit_code=None,
         out["target"] = target
     if exit_code is not None:
         out["exit_code"] = exit_code
+    if expected:
+        out["expected"] = expected
+        out["expected_met"] = expected_met
     return out
 
 
@@ -87,6 +91,8 @@ def write_fixtures(store):
                       summary="3 results"),
             execution("read", "read", "success", target="README.md",
                       size=2048, summary="2.0 KiB"),
+            execution("read", "read", "failure", target="/missing.txt",
+                      summary="failed", expected="missing", expected_met=True),
             execution("write", "write", "success", target="notes.md",
                       size=13, summary="13 bytes", duration_ms=2000),
             execution("edit", "edit", "success", target="config.yaml",
@@ -94,7 +100,11 @@ def write_fixtures(store):
             execution("bash", "bash", "success", exit_code=0,
                       target="/tmp/work", summary="exit 0", size=64),
             execution("bash", "bash", "failure", exit_code=17,
-                      target="/tmp/work", summary="exit 17", size=64),
+                      target="/tmp/work", summary="exit 17", size=64,
+                      expected="exit:17", expected_met=True),
+            execution("bash", "bash", "failure", exit_code=1,
+                      target="/tmp/work", summary="exit 1", size=64,
+                      expected="exit:17", expected_met=False),
         ],
     }
     with open(os.path.join(store, SESSION + ".jsonl"), "w") as fh:
@@ -187,6 +197,8 @@ def main():
                      "write", "edit", "bash"):
             check("classic: %s keeps the gear" % name,
                   "⚙ " + name in classic, classic)
+        check("classic: expected failures keep the gear, not the pin",
+              "⚙ read" in classic and "📍" not in classic, classic)
         check("classic: no emoji icons",
               not any(icon in classic for icon in ICONS), classic)
 
@@ -204,13 +216,20 @@ def main():
             check("emoji: %s uses %s" % (name, icon),
                   icon + gap + name in emoji, emoji)
         bash_lines = [line for line in emoji.split("\n") if "bash" in line]
-        failure_line = next((line for line in bash_lines if "🚨 bash" in line), "")
+        expected_line = next((line for line in bash_lines
+                              if "📍 bash" in line), "")
+        unexpected_line = next((line for line in bash_lines
+                                if "🚨 bash" in line), "")
         success_line = next((line for line in bash_lines if "💻 bash" in line), "")
-        check("emoji: failed bash gets the failure icon",
-              "failed" in failure_line and "exit 17" in failure_line and
+        check("emoji: expected and unexpected bash failures are distinct",
+              "expected exit 17" in expected_line and
+              "failed" in expected_line and
+              "expected exit 17 not met" in unexpected_line and
               "completed" in success_line and
               not any("💻 bash" in line and "failed" in line
                       for line in bash_lines), emoji)
+        check("emoji: expected missing read uses the pin",
+              "📍 read" in emoji and "expected missing" in emoji, emoji)
         check("emoji: status details survive",
               "failed" in emoji and "exit 17" in emoji and
               "completed" in emoji and "444" in emoji and "666" in emoji and

@@ -84,9 +84,14 @@ is not written to the session or to a configuration file.
 
 The emoji gutter is measured in display cells: one two-cell glyph plus one
 separator. `✏️` is kept as one grapheme cluster, including its variation
-selector. A failure (`🚨`) wins over every action; an explicit structured
-destructive verb (`🔪`) wins over an ordinary action; an unknown tool keeps
-the `⚙` fallback. The classifier reads structured tool names, actions and
+selector. An expected failure (`📍`) requires an expectation declared in
+the tool call before execution (`expect_missing` for read, or
+`expect_exit_code` for bash) and an actual result that matches it. An
+unexpected failure is `🚨`; an after-the-fact explanation never changes the
+icon. If a declared failure expectation is not met, the ordinary action
+icon remains and the row records the unmet expectation. An explicit
+structured destructive verb (`🔪`) wins over an ordinary action; an unknown
+tool keeps the `⚙` fallback. The classifier reads structured tool names, actions and
 status only. It never parses a shell command, so a `bash` row remains
 `💻` whatever text the command contains; the icon is decoration, not a
 security classification. No current HAL tool reports a package or an

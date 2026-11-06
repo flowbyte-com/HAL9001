@@ -98,10 +98,175 @@ func TestToolEmojiPriority(t *testing.T) {
 	}
 }
 
+// TestExpectedFailurePresentation checks that 📍 requires a declared,
+// matched expectation. An after-the-fact explanation in Summary is not
+// an expectation.
+func TestExpectedFailurePresentation(t *testing.T) {
+	expectedRead := toolIconActivity("read", "read", "failed")
+	expectedRead.Expected = "missing"
+	expectedRead.ExpectedMet = true
+	expectedRead.Mode = permission.Unrestricted
+	if got := toolEmojiFor(expectedRead); got != "📍" {
+		t.Errorf("expected missing read icon = %q, want 📍", got)
+	}
+	line := toolActivityLineMode(expectedRead, 80, toolIconsEmoji)
+	for _, want := range []string{"📍 read", "failed", "expected missing", "666"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("expected read line is missing %q: %q", want, line)
+		}
+	}
+	if strings.Contains(line, "🚨") {
+		t.Errorf("expected read kept the unexpected-failure icon: %q", line)
+	}
+
+	expectedBash := toolIconActivity("bash", "bash", "failed")
+	expectedBash.Expected = "exit:17"
+	expectedBash.ExpectedMet = true
+	expectedBash.ExitCode = intPointer(17)
+	expectedBash.Mode = permission.Unrestricted
+	if got := toolEmojiFor(expectedBash); got != "📍" {
+		t.Errorf("expected exit icon = %q, want 📍", got)
+	}
+	bashLine := toolActivityLineMode(expectedBash, 80, toolIconsEmoji)
+	if !strings.Contains(bashLine, "📍 bash") ||
+		!strings.Contains(bashLine, "expected exit 17") ||
+		strings.Count(bashLine, "exit 17") != 1 {
+		t.Errorf("expected bash line = %q", bashLine)
+	}
+
+	// A failure with a mismatched expectation is unexpected.
+	unexpected := toolIconActivity("bash", "bash", "failed")
+	unexpected.Expected = "exit:17"
+	unexpected.ExpectedMet = false
+	unexpected.ExitCode = intPointer(1)
+	if got := toolEmojiFor(unexpected); got != "🚨" {
+		t.Errorf("mismatched exit icon = %q, want 🚨", got)
+	}
+	unexpectedLine := toolActivityLineMode(unexpected, 80, toolIconsEmoji)
+	for _, want := range []string{"🚨 bash", "exit 1", "expected exit 17 not met"} {
+		if !strings.Contains(unexpectedLine, want) {
+			t.Errorf("unexpected line is missing %q: %q", want, unexpectedLine)
+		}
+	}
+
+	// A declared failure expectation that succeeds keeps the ordinary
+	// action icon and records the mismatch.
+	surprise := toolIconActivity("bash", "bash", "ok")
+	surprise.Expected = "exit:17"
+	surprise.ExpectedMet = false
+	surprise.ExitCode = intPointer(0)
+	surprise.Mode = permission.Unrestricted
+	if got := toolEmojiFor(surprise); got != "💻" {
+		t.Errorf("unexpected success icon = %q, want 💻", got)
+	}
+	surpriseLine := toolActivityLineMode(surprise, 80, toolIconsEmoji)
+	for _, want := range []string{"💻 bash", "completed", "exit 0", "expected exit 17 not met"} {
+		if !strings.Contains(surpriseLine, want) {
+			t.Errorf("unexpected success line is missing %q: %q", want, surpriseLine)
+		}
+	}
+
+	// A model's explanation after the fact is not an expectation.
+	explained := toolIconActivity("bash", "bash", "failed")
+	explained.Summary = "this was expected to exit 17"
+	if got := toolEmojiFor(explained); got != "🚨" {
+		t.Errorf("explanation-only failure icon = %q, want 🚨", got)
+	}
+	if line := toolActivityLineMode(explained, 80, toolIconsEmoji); strings.Contains(line, "expected") {
+		t.Errorf("explanation-only failure gained an expectation: %q", line)
+	}
+
+	// Failure still wins over destructive when the expectation matched.
+	expectedDelete := toolIconActivity("delete", "delete", "failed")
+	expectedDelete.Expected = "exit:17"
+	expectedDelete.ExpectedMet = true
+	expectedDelete.ExitCode = intPointer(17)
+	if got := toolEmojiFor(expectedDelete); got != "📍" {
+		t.Errorf("expected destructive failure icon = %q, want 📍", got)
+	}
+
+	// Classic keeps the gear while retaining the new diagnostic.
+	classic := toolActivityLineMode(expectedBash, 80, toolIconsClassic)
+	if !strings.HasPrefix(classic, "⚙ bash") ||
+		!strings.Contains(classic, "expected exit 17") {
+		t.Errorf("classic expected line = %q", classic)
+	}
+}
+
+// TestExpectedFailureHistoricalResume checks that the verified ledger
+// metadata survives a resume and still distinguishes expected from
+// unexpected failures.
+func TestExpectedFailureHistoricalResume(t *testing.T) {
+	lines := []SessionLine{{
+		Role: "assistant", Text: "ran", TurnID: "expected",
+		Tools: []session.ToolExecution{
+			{
+				TurnID: "expected", CallID: "read-1", Tool: "read", Action: "read",
+				Mode: "666", Status: session.ToolFailure,
+				Expected: "missing", ExpectedMet: true, Summary: "failed",
+			},
+			{
+				TurnID: "expected", CallID: "bash-1", Tool: "bash", Action: "bash",
+				Mode: "666", Status: session.ToolFailure, ExitCode: intPointer(17),
+				Expected: "exit:17", ExpectedMet: true, Summary: "exit 17",
+			},
+			{
+				TurnID: "expected", CallID: "bash-2", Tool: "bash", Action: "bash",
+				Mode: "666", Status: session.ToolFailure, ExitCode: intPointer(1),
+				Expected: "exit:17", ExpectedMet: false, Summary: "exit 1",
+			},
+			{
+				TurnID: "expected", CallID: "bash-3", Tool: "bash", Action: "bash",
+				Mode: "666", Status: session.ToolFailure, ExitCode: intPointer(9),
+				Summary: "exit 9",
+			},
+		},
+	}}
+	m := transcriptModel(t, 100, 30)
+	m.applyToolIcons(toolIconsEmoji)
+	m.SetHistory(lines)
+	plain := stripANSI(strings.Join(m.layoutRows(), "\n"))
+	for _, want := range []string{
+		"📍 read", "expected missing",
+		"📍 bash", "expected exit 17",
+		"🚨 bash", "expected exit 17 not met",
+		"🚨 bash · failed · exit 9",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("resumed expected rows are missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "📍 read · failed · expected missing · 666") == false {
+		t.Errorf("expected read row lost a detail:\n%s", plain)
+	}
+
+	diag := stripANSI(strings.Join(m.diagRows(), "\n"))
+	if !strings.Contains(diag, "📍 read") || !strings.Contains(diag, "expected missing") {
+		t.Errorf("/diag does not show the expected outcome:\n%s", diag)
+	}
+	for _, line := range m.Lines() {
+		if strings.Contains(line, "📍") || strings.Contains(line, "expected") {
+			t.Errorf("expectation metadata entered stored text: %q", line)
+		}
+	}
+
+	m.applyToolIcons(toolIconsClassic)
+	classic := stripANSI(strings.Join(m.layoutRows(), "\n"))
+	if !strings.Contains(classic, "⚙ bash") ||
+		!strings.Contains(classic, "expected exit 17") ||
+		strings.Contains(classic, "📍") {
+		t.Errorf("classic mode did not preserve the original icon: \n%s", classic)
+	}
+}
+
 // TestToolIconGutterAndWidths checks the fixed two-cell emoji plus one
 // separator, the variation selector in ✏️, and that every line stays
 // inside the display width.
 func TestToolIconGutterAndWidths(t *testing.T) {
+	expected := toolIconActivity("bash", "bash", "failed")
+	expected.Expected = "exit:17"
+	expected.ExpectedMet = true
+	expected.ExitCode = intPointer(17)
 	activities := []engine.ToolActivity{
 		toolIconActivity("web_search", "web_search", "ok"),
 		toolIconActivity("firecrawl_scrape", "firecrawl_scrape", "ok"),
@@ -112,6 +277,7 @@ func TestToolIconGutterAndWidths(t *testing.T) {
 		toolIconActivity("bash", "bash", "ok"),
 		toolIconActivity("delete", "delete", "ok"),
 		toolIconActivity("mystery", "mystery", "ok"),
+		expected,
 	}
 	for _, a := range activities {
 		prefix, gutter := toolIconPrefix(a, toolIconsEmoji)

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 
 	lipgloss "charm.land/lipgloss/v2"
@@ -60,6 +62,9 @@ func (m *Model) applyToolIcons(mode toolIconsMode) {
 // it runs, because the icon is decoration, not a security classification.
 func toolEmojiFor(a engine.ToolActivity) string {
 	if toolIconFailed(a.Status) {
+		if toolExpectedFailure(a) {
+			return "📍"
+		}
 		return "🚨"
 	}
 	name := strings.ToLower(strings.TrimSpace(a.Name))
@@ -87,6 +92,31 @@ func toolEmojiFor(a engine.ToolActivity) string {
 	default:
 		return classicToolIcon
 	}
+}
+
+// toolExpectedLabel turns the stable expectation code into the short
+// label shown beside the result. An unknown or malformed code has no
+// presentation effect.
+func toolExpectedLabel(code string) string {
+	switch code {
+	case "missing":
+		return "missing"
+	}
+	if strings.HasPrefix(code, "exit:") {
+		n, err := strconv.Atoi(strings.TrimPrefix(code, "exit:"))
+		if err == nil && n >= 0 && n <= 255 {
+			return fmt.Sprintf("exit %d", n)
+		}
+	}
+	return ""
+}
+
+// toolExpectedFailure reports the only case that earns 📍: the call
+// declared an expectation before running, the operation actually failed,
+// and the verified result matched that expectation.
+func toolExpectedFailure(a engine.ToolActivity) bool {
+	return toolIconFailed(a.Status) && a.ExpectedMet &&
+		toolExpectedLabel(a.Expected) != ""
 }
 
 // toolIconFailed maps the terminal result states that mean the operation

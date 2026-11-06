@@ -269,13 +269,66 @@ func (s *Store) displayPath(rel string) string {
 	return full
 }
 
+// proposePath accepts the three forms the operator and the model may
+// naturally use: a workspace-relative path, a path beginning with ~, or
+// an absolute path. Tilde and absolute forms must resolve inside the
+// workspace; they are converted to the same workspace-relative path the
+// review and the executor use. A relative path is never stripped of a
+// workspace-name component: HAL/HAL/... can be a legitimate nested
+// destination.
+func (s *Store) proposePath(raw string) (string, error) {
+	if s == nil {
+		return "", ErrClosed
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ErrPath
+	}
+	if strings.HasPrefix(raw, "~") {
+		home := s.homeDir
+		if home == "" {
+			var err error
+			home, err = os.UserHomeDir()
+			if err != nil || home == "" {
+				return "", ErrClosed
+			}
+		}
+		switch {
+		case raw == "~":
+			raw = home
+		case strings.HasPrefix(raw, "~/") || strings.HasPrefix(raw, `~\`):
+			raw = filepath.Join(home, raw[2:])
+		default:
+			// ~user is not supported; treating it as a relative name
+			// would silently create a literal tilde directory.
+			return "", ErrPath
+		}
+	}
+	// Treat either slash form as a path separator for the absolute
+	// check, so a Windows-style absolute path is classified consistently
+	// on every platform. cleanRelPath still rejects drive letters.
+	forAbs := strings.ReplaceAll(raw, `\`, "/")
+	if filepath.IsAbs(filepath.FromSlash(forAbs)) {
+		abs := filepath.Clean(filepath.FromSlash(forAbs))
+		if !within(s.root, abs) {
+			return "", ErrPath
+		}
+		rel, err := filepath.Rel(s.root, abs)
+		if err != nil || rel == "." || rel == "" {
+			return "", ErrPath
+		}
+		return cleanRelPath(filepath.ToSlash(rel))
+	}
+	return cleanRelPath(raw)
+}
+
 // Prepare validates a proposed write and returns the immutable record the
 // operator reviews. It never creates, modifies or removes anything.
 func (s *Store) Prepare(op Op) (Proposal, error) {
 	if s == nil {
 		return Proposal{}, ErrClosed
 	}
-	rel, err := cleanRelPath(op.Path)
+	rel, err := s.proposePath(op.Path)
 	if err != nil {
 		return Proposal{}, err
 	}

@@ -66,6 +66,48 @@ func TestToolLedgerRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExpectedFailureMetadataRoundTripsAndIsValidated(t *testing.T) {
+	st, err := Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendLedgerTurn(t, st, []ToolExecution{
+		{
+			CallID: "call-bash", Tool: "bash", Action: "bash",
+			Mode: "666", Status: ToolFailure, ExitCode: intPtr(17),
+			Expected: "exit:17", ExpectedMet: true, Summary: "exit 17",
+		},
+		{
+			CallID: "call-read", Tool: "read", Action: "read",
+			Mode: "666", Status: ToolFailure,
+			Expected: "missing", ExpectedMet: true, Summary: "failed",
+		},
+		{
+			CallID: "call-bad", Tool: "bash", Action: "bash",
+			Mode: "666", Status: ToolFailure, ExitCode: intPtr(1),
+			Expected: "exit:999", ExpectedMet: true, Summary: "exit 1",
+		},
+	})
+	history, err := st.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	execs := history[0].ToolExecutions()
+	if len(execs) != 3 {
+		t.Fatalf("executions = %#v", execs)
+	}
+	if execs[0].Expected != "exit:17" || !execs[0].ExpectedMet ||
+		execs[0].ExitCode == nil || *execs[0].ExitCode != 17 {
+		t.Errorf("bash expectation = %#v", execs[0])
+	}
+	if execs[1].Expected != "missing" || !execs[1].ExpectedMet {
+		t.Errorf("read expectation = %#v", execs[1])
+	}
+	if execs[2].Expected != "" || execs[2].ExpectedMet {
+		t.Errorf("invalid expectation survived sanitisation: %#v", execs[2])
+	}
+}
+
 func TestOldAndMalformedLedgersDoNotBreakHistory(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(dir, "chat")

@@ -139,8 +139,13 @@ statistics are part of the reply text, a selection or `/copy`.
 `/tool-icons emoji` is an opt-in presentation experiment that replaces the
 gear with an action icon: `🔎` search, `📄` read or scrape, `💡` MPM
 knowledge, `📝` write, `✏️` edit, `📦` package, `💻` shell, `🔪` explicit
-destructive action and `🚨` failure. Failure wins over every action,
-destructive wins over ordinary actions, and unknown tools keep `⚙`. The
+destructive action, `🚨` unexpected failure and `📍` expected failure. A
+failure is expected only when the tool call declared the expectation before
+execution (`expect_missing` for a read, or `expect_exit_code` for bash) and
+the actual result matched it. An after-the-fact explanation is never enough;
+a mismatch keeps its actual status and shows the unmet expectation.
+Expected failure wins as `📍`, any other failure as `🚨`, destructive wins
+over ordinary actions, and unknown tools keep `⚙`. The
 classifier reads structured tool identity and status only; shell command
 text is never parsed, so a `bash` line stays `💻` whatever it runs. The
 emoji gutter is fixed at two cells plus a separator, and `/tool-icons
@@ -381,20 +386,25 @@ a pasted instruction cannot enable it.
 
 **One approved write (666).** This is the 444 transaction, separate from
 the session mode. HAL's authority stays 444. When a model asks to save a
-file, it can only *propose*: HAL prepares the operation — one
-workspace-relative path and the exact bytes — and shows it for review. Nothing
+file, it can only *propose*: HAL prepares the operation — one destination
+inside the workspace and the exact bytes — and shows it for review. Nothing
 touches the filesystem until the operator approves that one operation.
 
 - The workspace is `~/HAL` by default (`--workspace` or `HAL9001_WORKSPACE`
   changes it). Proposed writes can never reach `~/.hal9001/`, a system
-  directory or anything outside the workspace.
+  directory or anything outside the workspace. The guarded path accepts
+  the operator's exact form — `~/HAL/note.md`, an absolute path inside the
+  workspace, or a workspace-relative path such as `note.md`. A relative
+  path is not silently stripped of a `HAL/` component; `HAL/HAL/note.md`
+  is a legitimate nested destination when that is what was requested.
 - Every write is resolved through a handle on the workspace directory, so a
   directory replaced by a symbolic link between the review and the write
   cannot redirect it. Symbolic links are refused outright, and the reviewed
   file must still be the same file when the write happens.
 - The review shows the destination, whether it creates or **overwrites** a
   file, the size, the SHA-256 digest, the conversation turn and the full
-  contents. The header and the decisions stay on screen while the document
+  contents. The displayed destination is the normalized destination that
+  will actually be written. The header and the decisions stay on screen while the document
   scrolls: `Ctrl+Y Approve · Ctrl+N Reject · ↑/↓ Scroll · Esc Reject` is
   the last row, at the beginning of a long document and at its end.
 - `↑`/`↓`/`PgUp`/`PgDn`/`Home`/`End` and the wheel scroll the document, and

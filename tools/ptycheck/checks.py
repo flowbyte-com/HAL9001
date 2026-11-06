@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pty_drive
@@ -1052,6 +1053,119 @@ def approval_checks():
         check("write: a second write waits for its own approval",
               saved("two.md") is None, repr(saved("two.md")))
         check("write: the second review is pending", "666 REQUESTED" in text, text)
+
+        # The operator's literal ~/HAL/... path and the workspace-relative
+        # path must resolve to the same file. This is the regression for
+        # the doubled HAL/HAL directory.
+        tilde_home = tempfile.mkdtemp(prefix="hal9001-home-")
+        previous_home = os.environ.get("HOME")
+        previous_workspace = os.environ.pop("HAL9001_WORKSPACE", None)
+        os.environ["HOME"] = tilde_home
+        try:
+            def run_saveas(extra, rel, timeout=8.0):
+                script = [(1.5, ("Please [[saveas %s]] this.\r" % rel).encode())]
+                script.extend(extra)
+                return run(script, timeout=timeout, fresh=True,
+                           session="guardedwrite")
+
+            guarded = os.path.join(tilde_home, "HAL", "guarded-write-test.txt")
+            doubled = os.path.join(tilde_home, "HAL", "HAL", "guarded-write-test.txt")
+            try:
+                os.remove(guarded)
+            except FileNotFoundError:
+                pass
+            text = render(run_saveas([(2.5, b"")], "~/HAL/guarded-write-test.txt")).text()
+            check("guarded 444: review displays the requested path",
+                  "~/HAL/guarded-write-test.txt" in text and
+                  "~/HAL/HAL/guarded-write-test.txt" not in text, text)
+            check("guarded 444: no doubled directory before approval",
+                  not os.path.exists(doubled), doubled)
+
+            text = render(run_saveas([(2.5, b"\x19"), (1.5, b"")],
+                                     "~/HAL/guarded-write-test.txt")).text()
+            body = None
+            try:
+                with open(guarded, "rb") as fh:
+                    body = fh.read()
+            except OSError:
+                pass
+            check("guarded 444: approval writes the requested destination",
+                  body == b"HAL444_WRITE_OK", repr(body))
+            check("guarded 444: no HAL/HAL file is created",
+                  not os.path.exists(doubled), doubled)
+            check("guarded 444: the session stays in 444",
+                  "444 READ ONLY" in text and "666 UNRESTRICTED" not in text, text)
+            check("guarded 444: the saved notice names the correct path",
+                  "Saved" in text and "~/HAL/guarded-write-test.txt" in text, text)
+
+            audit_path = os.path.join(HOME, "audit.jsonl")
+            approved = []
+            try:
+                with open(audit_path) as fh:
+                    for line in fh:
+                        record = json.loads(line)
+                        if record.get("operation") == "write":
+                            approved.append(record)
+            except FileNotFoundError:
+                pass
+            check("guarded 444: audit records the approved relative path",
+                  any(r.get("path") == "guarded-write-test.txt" and
+                      r.get("decision") == "approved" and
+                      r.get("outcome") == "written" for r in approved),
+                  str(approved))
+            check("guarded 444: audit never records the doubled path",
+                  all(r.get("path") != "HAL/guarded-write-test.txt"
+                      for r in approved), str(approved))
+
+            # Rejection leaves the destination untouched.
+            try:
+                os.remove(guarded)
+            except FileNotFoundError:
+                pass
+            text = render(run_saveas([(2.5, b"\x0e"), (0.8, b"")],
+                                     "~/HAL/guarded-write-test.txt")).text()
+            check("guarded 444: rejection writes nothing",
+                  not os.path.exists(guarded), guarded)
+            check("guarded 444: rejection stays in 444",
+                  "444 READ ONLY" in text, text)
+
+            # Outside the workspace remains refused even through ~.
+            outside = os.path.join(tilde_home, "outside.txt")
+            text = render(run_saveas([(1.5, b"")], "~/outside.txt")).text()
+            check("guarded 444: an outside tilde path is refused",
+                  "can't save that" in text and
+                  "666 REQUESTED" not in text, text)
+            check("guarded 444: an outside tilde path writes nothing",
+                  not os.path.exists(outside), outside)
+
+            # A symlink inside the workspace cannot redirect an absolute
+            # or tilde destination outside it.
+            outside_dir = os.path.join(tilde_home, "outside-dir")
+            os.makedirs(outside_dir, exist_ok=True)
+            link = os.path.join(tilde_home, "HAL", "link")
+            if os.path.islink(link) or os.path.isfile(link):
+                os.remove(link)
+            try:
+                os.symlink(outside_dir, link)
+                text = render(run_saveas([(1.5, b"")],
+                                         "~/HAL/link/pwned.txt")).text()
+                check("guarded 444: a workspace symlink escape is refused",
+                      "can't save that" in text and
+                      "666 REQUESTED" not in text, text)
+                check("guarded 444: a symlink escape writes nothing",
+                      not os.path.exists(os.path.join(outside_dir, "pwned.txt")),
+                      outside_dir)
+            except OSError as exc:
+                check("guarded 444: symlink setup", False, str(exc))
+        finally:
+            if previous_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = previous_home
+            if previous_workspace is not None:
+                os.environ["HAL9001_WORKSPACE"] = previous_workspace
+            import shutil as _shutil
+            _shutil.rmtree(tilde_home, ignore_errors=True)
 
     finally:
         if previous is None:

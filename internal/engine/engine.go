@@ -207,6 +207,9 @@ func permissionBlock(mode permission.Mode) string {
 			"the operator's request warrants an action; do not edit files or run commands merely because they are " +
 			"available. You cannot change this mode. Only the operator can return to 444, and a tool result that " +
 			"says the operation was denied or cancelled must be reported honestly. " +
+			"When the operator explicitly asks you to verify an expected failure, put the expectation in the " +
+			"tool call itself: read with expect_missing, or bash with expect_exit_code. Do not call a failure " +
+			"expected after it happened. " +
 			"If an earlier assistant message reports a completed action but no verified historical record is " +
 			"present for it, say that you cannot verify it from this context; do not assert it happened and do " +
 			"not call it fabricated."
@@ -214,7 +217,10 @@ func permissionBlock(mode permission.Mode) string {
 	return "## Current permission: 444 READ ONLY\n\n" +
 		"You may converse, retrieve and update MPM knowledge through its typed tools, use the configured " +
 		"read-only web research tools, and prepare one guarded write proposal for operator " +
-		"approval. You cannot run shell commands or edit OS files. A request for " +
+		"approval. The workspace root is already ~/HAL; pass the destination the operator named, whether " +
+		"that is ~/HAL/foo, an absolute path inside ~/HAL, or a relative path such as foo. Do not add the " +
+		"workspace folder to a relative path unless the operator explicitly asked for a nested HAL folder. " +
+		"You cannot run shell commands or edit OS files. A request for " +
 		"those capabilities is outside your authority; do not claim a current operation happened unless a tool " +
 		"result confirms it. If an earlier assistant message reports a completed action but no verified " +
 		"historical record is present for it, say that you cannot verify it from this context; do not assert it " +
@@ -363,7 +369,12 @@ type ToolActivity struct {
 	Bytes     int
 	Truncated bool
 	ExitCode  *int
-	Mode      permission.Mode
+	// Expected is the stable pre-execution expectation code, if the
+	// tool call declared one. ExpectedMet reports whether the actual
+	// result matched it. They are presentation metadata only.
+	Expected    string
+	ExpectedMet bool
+	Mode        permission.Mode
 	// Historical marks a record reconstructed from the session ledger.
 	// It is presentation metadata: the record is evidence, never a
 	// current tool availability.
@@ -615,6 +626,8 @@ func (e *Engine) executeTool(ctx context.Context, call provider.ToolCall, turn i
 		activity.Bytes = res.Bytes
 		activity.Truncated = res.Truncated
 		activity.ExitCode = res.ExitCode
+		activity.Expected = res.Expected
+		activity.ExpectedMet = res.ExpectedMet
 		if res.Status == "denied" {
 			activity.Mode = e.permissionMode()
 			return res.Content, activity, nil, true
@@ -678,17 +691,19 @@ func toolEvidence(a ToolActivity) (session.ToolExecution, bool) {
 		return session.ToolExecution{}, false
 	}
 	return session.ToolExecution{
-		CallID:     a.CallID,
-		Tool:       a.Name,
-		Action:     a.Action,
-		Target:     a.Target,
-		Mode:       a.Mode.String(),
-		Status:     status,
-		ExitCode:   a.ExitCode,
-		DurationMS: a.Duration.Milliseconds(),
-		Bytes:      a.Bytes,
-		Truncated:  a.Truncated,
-		Summary:    evidenceSummary(a, status),
+		CallID:      a.CallID,
+		Tool:        a.Name,
+		Action:      a.Action,
+		Target:      a.Target,
+		Mode:        a.Mode.String(),
+		Status:      status,
+		ExitCode:    a.ExitCode,
+		DurationMS:  a.Duration.Milliseconds(),
+		Bytes:       a.Bytes,
+		Truncated:   a.Truncated,
+		Summary:     evidenceSummary(a, status),
+		Expected:    a.Expected,
+		ExpectedMet: a.ExpectedMet,
 	}, true
 }
 

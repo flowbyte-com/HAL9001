@@ -3,12 +3,15 @@
 
 Besides the ordinary echo reply, a prompt containing a ``[[save PATH]]``
 directive makes the stub answer like a model that proposes a write: a
-short sentence plus a streamed ``write_file`` tool call. The interface
+short sentence plus a streamed ``write_file`` tool call. ``[[saveas PATH]]``
+uses the fixed ``HAL444_WRITE_OK`` body. The interface
 must show the approval review, and only an operator key may save it.
 
 A ``[[read PATH]]`` or ``[[bash COMMAND]]`` directive makes the stub
-propose the corresponding real tool. A ``[[fcsearch QUERY]]`` or
-``[[fcscrape URL]]`` directive proposes the corresponding 444 web tool. On the second provider round, when the tool result is present, it
+propose the corresponding real tool. ``[[readmissing PATH]]`` and
+``[[bashexpect CODE COMMAND]]`` add a pre-execution expected outcome.
+A ``[[fcsearch QUERY]]`` or ``[[fcscrape URL]]`` directive proposes the
+corresponding 444 web tool. On the second provider round, when the tool result is present, it
 answers with the result instead of asking again. The stub never executes
 anything: the engine and the permission gate decide.
 """
@@ -36,8 +39,11 @@ SAVE_BODY = (
 LONG_SAVE_BODY = "\n".join("document line %03d" % i for i in range(1, 61))
 
 SAVE_RE = re.compile(r"\[\[save\s+([^\]]+)\]\]")
+SAVE_AS_RE = re.compile(r"\[\[saveas\s+([^\]]+)\]\]")
 READ_RE = re.compile(r"\[\[read\s+([^\]]+)\]\]")
+READ_MISSING_RE = re.compile(r"\[\[readmissing\s+([^\]]+)\]\]")
 BASH_RE = re.compile(r"\[\[bash\s+([^\]]+)\]\]")
+BASH_EXPECT_RE = re.compile(r"\[\[bashexpect\s+(\d+)\s+([^\]]+)\]\]")
 FCSEARCH_RE = re.compile(r"\[\[fcsearch\s+([^\]]+)\]\]")
 FCSCRAPE_RE = re.compile(r"\[\[fcscrape\s+([^\]]+)\]\]")
 
@@ -114,6 +120,11 @@ class Handler(BaseHTTPRequestHandler):
             self.propose_write(save.group(1))
             return
 
+        saveas = SAVE_AS_RE.search(last)
+        if saveas:
+            self.propose_write(saveas.group(1), "HAL444_WRITE_OK")
+            return
+
         read = READ_RE.search(last)
         if read:
             if tool_results(request):
@@ -121,6 +132,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.answer("READ RESULT: " + body.strip()[:120])
             else:
                 self.propose_tool("read", {"path": read.group(1)})
+            return
+
+        missing = READ_MISSING_RE.search(last)
+        if missing:
+            if tool_results(request):
+                self.answer("READ RESULT: missing file observed")
+            else:
+                self.propose_tool("read", {
+                    "path": missing.group(1), "expect_missing": True,
+                })
+            return
+
+        expected_bash = BASH_EXPECT_RE.search(last)
+        if expected_bash:
+            if tool_results(request):
+                out = result_field(request, "bash", "stdout")
+                self.answer("BASH RESULT: " + out.strip()[:120])
+            else:
+                self.propose_tool("bash", {
+                    "command": expected_bash.group(2),
+                    "expect_exit_code": int(expected_bash.group(1)),
+                })
             return
 
         command = BASH_RE.search(last)
@@ -179,13 +212,14 @@ class Handler(BaseHTTPRequestHandler):
         self.event({"choices": [{"delta": {}, "finish_reason": "stop"}]})
         self.usage()
 
-    def propose_write(self, path):
+    def propose_write(self, path, body=None):
         """Stream a short sentence and one write_file call, in pieces.
 
         The arguments are split across chunks on purpose: the adapter
         must reassemble them, exactly as a real provider sends them.
         """
-        body = LONG_SAVE_BODY if "long" in path else SAVE_BODY
+        if body is None:
+            body = LONG_SAVE_BODY if "long" in path else SAVE_BODY
         arguments = json.dumps({"path": path, "content": body})
         time.sleep(0.1)
         self.event({"choices": [{"delta": {"content": "I've prepared that for you."}, "index": 0}]})

@@ -58,6 +58,11 @@ type Record struct {
 	Truncated bool `json:"truncated,omitempty"`
 	// CommandHash identifies a shell command without storing it.
 	CommandHash string `json:"command_hash,omitempty"`
+	// Expected is the pre-execution expectation code, if one was
+	// declared ("missing" or "exit:17"). ExpectedMet records whether the
+	// actual result matched it.
+	Expected    string `json:"expected,omitempty"`
+	ExpectedMet bool   `json:"expected_met,omitempty"`
 }
 
 // ToolRecord is one execution-boundary record for a model-callable tool.
@@ -77,6 +82,8 @@ type ToolRecord struct {
 	DurationMS  int64
 	Truncated   bool
 	CommandHash string
+	Expected    string
+	ExpectedMet bool
 }
 
 // AppendTool records one tool invocation in the same bounded trail as the
@@ -101,6 +108,8 @@ func (a *Audit) AppendTool(r ToolRecord) error {
 		Bytes:       r.Bytes,
 		Truncated:   r.Truncated,
 		CommandHash: r.CommandHash,
+		Expected:    r.Expected,
+		ExpectedMet: r.ExpectedMet,
 	})
 }
 
