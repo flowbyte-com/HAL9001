@@ -776,7 +776,7 @@ func (m Model) diagRows() []string {
 	if len(m.lastTools) > 0 {
 		rows = append(rows, "  "+padTo(st.active.Render("last tools"), 16))
 		for _, a := range m.lastTools {
-			line := toolActivityLine(a, max(10, m.width-4))
+			line := toolActivityLineMode(a, max(10, m.width-4), m.toolIcons)
 			if m.color {
 				line = st.footer.Render(line)
 			}

@@ -362,6 +362,9 @@ type Model struct {
 	noticeSeq int
 	color     bool
 	theme     Theme
+	// toolIcons is the display-only presentation of tool activity lines.
+	// It defaults to classic and is not part of the session record.
+	toolIcons toolIconsMode
 	view      View
 	sender    func(tea.Msg)
 	cancel    context.CancelFunc
@@ -1179,7 +1182,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.lastTools = mergeToolActivity(m.lastTools, msg.activity)
-		m.notice = toolActivityLine(msg.activity, m.width)
+		m.notice = toolActivityLineMode(msg.activity, m.width, m.toolIcons)
 		return m, nil
 	case streamDeltaMsg:
 		if !m.currentTurn(msg.id) {
@@ -2091,7 +2094,7 @@ func showToolActivity(a engine.ToolActivity) bool {
 
 // toolLine is the muted, compact transcript form of one tool record.
 func (m Model) toolLine(a engine.ToolActivity) string {
-	line := toolActivityLine(a, m.contentWidth())
+	line := toolActivityLineMode(a, m.contentWidth(), m.toolIcons)
 	if !m.color {
 		return line
 	}
@@ -2104,19 +2107,28 @@ func isWebTool(name string) bool {
 	return name == "web_search" || strings.HasPrefix(name, "firecrawl_")
 }
 
-// toolActivityLine renders one tool result in the established compact
+// toolActivityLine renders one tool result in the established classic
 // form, for example "⚙ bash · completed · exit 0 · 666". The width is in
 // display cells; long targets are shortened so the status and mode stay
 // readable.
 func toolActivityLine(a engine.ToolActivity, width int) string {
+	return toolActivityLineMode(a, width, toolIconsClassic)
+}
+
+// toolActivityLineMode renders one tool result with the selected icon
+// presentation. The rest of the line is identical in both modes, so the
+// tool name, outcome, exit code, size, duration and mode stay readable.
+// The icon gutter is reserved before the label is shortened.
+func toolActivityLineMode(a engine.ToolActivity, width int, icons toolIconsMode) string {
 	if width < 8 {
 		width = 8
 	}
+	prefix, prefixWidth := toolIconPrefix(a, icons)
 	name := strings.TrimSpace(a.Name)
 	if name == "" {
 		name = "tool"
 	}
-	label := "⚙ " + name
+	label := prefix + name
 	if a.Action != "" && a.Action != a.Name {
 		label += " " + a.Action
 	}
@@ -2155,10 +2167,16 @@ func toolActivityLine(a engine.ToolActivity, width int) string {
 	}
 	status += " · " + a.Mode.String()
 	// Reserve the status and mode first: a long model-supplied tool name
-	// must never push the outcome out of the line.
+	// must never push the outcome out of the line. The icon and its
+	// gutter stay whole even when the label itself has to shrink.
 	if maxLabel := width - lipgloss.Width(status) - 2; maxLabel >= 4 &&
 		lipgloss.Width(label) > maxLabel {
-		label = truncateCells(label, maxLabel)
+		room := maxLabel - prefixWidth
+		if room >= 1 {
+			label = prefix + truncateToolCells(strings.TrimPrefix(label, prefix), room)
+		} else {
+			label = prefix
+		}
 	}
 	target := a.Target
 	if target == a.Name+"/"+a.Action {
@@ -2167,12 +2185,12 @@ func toolActivityLine(a engine.ToolActivity, width int) string {
 	if target != "" {
 		budget := width - lipgloss.Width(label) - lipgloss.Width(status) - 2
 		if budget >= 4 {
-			label += " " + truncateMiddle(target, budget)
+			label += " " + truncateToolMiddle(target, budget)
 		}
 	}
 	line := label + status
 	if lipgloss.Width(line) > width {
-		line = truncateCells(line, width)
+		line = truncateToolCells(line, width)
 	}
 	return line
 }

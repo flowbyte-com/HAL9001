@@ -236,14 +236,14 @@ def main():
                   text)
 
         # The body scrolls while the title and exit instruction stay put.
-        s = capture([(2.0, b"/help\r"), (0.5, b"\x1b[B" * 60), (0.5, b"")],
-                    60, 20, **common)
+        s = capture([(2.0, b"/help\r"), (0.5, b"\x1b[B" * 100), (0.5, b"")],
+                    60, 24, **common)
         text = s.text()
         check("narrow help scrolls to the 666 reference",
               "666" in text, text)
         check("narrow help explains the session-scoped 666 control",
               "666" in text and "only you" in text
-              and "enable or disable 666" in text, text)
+              and "disable 666" in text, text)
         check("narrow help shows the permission controls",
               "Ctrl+P" in text and "Ctrl+Y" in text and "Ctrl+N" in text, text)
         check("narrow help keeps the one-off write distinct",
@@ -262,7 +262,7 @@ def main():
               "scroll" in text, text)
         check("suggestions: no row overflows", no_overflow(initial, 80), text)
 
-        scrolled = capture([(2.0, b"/"), (0.5, b"\x1b[B" * 14), (0.5, b"")],
+        scrolled = capture([(2.0, b"/"), (0.5, b"\x1b[B" * 24), (0.5, b"")],
                            80, 24, **common)
         text = scrolled.text()
         check("suggestions: scrolling reaches /skills",

@@ -127,6 +127,33 @@ var commandTable = []*command{
 		},
 	},
 	{
+		name:        "/tool-icons",
+		usage:       "/tool-icons [classic|emoji]",
+		description: "Switch tool icons (classic or emoji)",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			if len(args) == 0 {
+				m.notice = "Tool icons: " + m.toolIconsLabel() + " · choose classic or emoji."
+				return nil
+			}
+			if len(args) > 1 {
+				m.notice = "Usage: /tool-icons [classic|emoji]"
+				return nil
+			}
+			switch strings.ToLower(args[0]) {
+			case "classic":
+				m.applyToolIcons(toolIconsClassic)
+				m.notice = "Tool icons: classic."
+			case "emoji":
+				m.applyToolIcons(toolIconsEmoji)
+				m.notice = "Tool icons: emoji."
+			default:
+				m.notice = "Usage: /tool-icons [classic|emoji]"
+			}
+			return nil
+		},
+	},
+	{
 		name:        "/sessions",
 		description: "Resume a conversation",
 		run: func(m *Model, _ []string) tea.Cmd {

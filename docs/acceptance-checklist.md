@@ -41,6 +41,21 @@ go build -o /tmp/hal9001 ./cmd/hal9001
 - [ ] The notification line is under the footer, in a muted colour, and
       the composer and footer do not move when it appears or expires.
 
+## Tool activity icons
+
+- [ ] `/tool-icons` reports `Tool icons: classic` on a fresh session.
+- [ ] `/tool-icons emoji` changes already displayed tool rows and new
+      tool rows to the action icons; `/tool-icons classic` restores the
+      gear immediately.
+- [ ] Consecutive tool rows share one icon gutter. `✏️` keeps its
+      variation selector and does not split across cells.
+- [ ] A failed tool shows `🚨` even when its ordinary action has another
+      icon. A shell command that looks destructive still shows `💻`.
+- [ ] Tool names, results, exit codes, output sizes, duration and the
+      historical 444/666 mode remain readable in both modes.
+- [ ] Switching icons does not change permission mode, the stored
+      session, `/copy`, selection or the red `◉` assistant marker.
+
 ## The footer and the hints
 
 - [ ] `444 READ ONLY` stays visible while you type.

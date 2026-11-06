@@ -74,6 +74,32 @@ submission and never fails silently.
 - **Drafts survive overlays.** Opening and dismissing the model, theme,
   help or session panel keeps the composer text and its focus.
 
+## Tool activity icons
+
+Tool activity lines use the classic `⚙` prefix by default. `/tool-icons`
+reports the current setting; `/tool-icons emoji` switches new and already
+displayed rows to the action vocabulary, and `/tool-icons classic`
+restores the original look immediately. The setting is session-local and
+is not written to the session or to a configuration file.
+
+The emoji gutter is measured in display cells: one two-cell glyph plus one
+separator. `✏️` is kept as one grapheme cluster, including its variation
+selector. A failure (`🚨`) wins over every action; an explicit structured
+destructive verb (`🔪`) wins over an ordinary action; an unknown tool keeps
+the `⚙` fallback. The classifier reads structured tool names, actions and
+status only. It never parses a shell command, so a `bash` row remains
+`💻` whatever text the command contains; the icon is decoration, not a
+security classification. No current HAL tool reports a package or an
+explicit destructive structured verb; `📦` and `🔪` are reserved for
+evidence from a tool that does, and are never inferred from shell text.
+
+Emoji appearance depends on the terminal font. A terminal without a
+colour emoji font may draw monochrome glyphs; if a glyph cannot supply the
+expected two cells, HAL falls back to the plain gear in the same gutter.
+`/tool-icons classic` is always available as the conservative fallback.
+The five themes, mouse selection, OSC 52 copying and OSC 8 links are
+unaffected by the choice.
+
 ## Clipboard
 
 - `/copy` and `/copy code` write OSC 52 (`CSI 52;c;<base64> BEL`) to

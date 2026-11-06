@@ -136,6 +136,18 @@ The per-response statistics line is the last row of the assistant block,
 right-aligned and muted. Neither the eye, the tool lines nor the
 statistics are part of the reply text, a selection or `/copy`.
 
+`/tool-icons emoji` is an opt-in presentation experiment that replaces the
+gear with an action icon: `🔎` search, `📄` read or scrape, `💡` MPM
+knowledge, `📝` write, `✏️` edit, `📦` package, `💻` shell, `🔪` explicit
+destructive action and `🚨` failure. Failure wins over every action,
+destructive wins over ordinary actions, and unknown tools keep `⚙`. The
+classifier reads structured tool identity and status only; shell command
+text is never parsed, so a `bash` line stays `💻` whatever it runs. The
+emoji gutter is fixed at two cells plus a separator, and `/tool-icons
+classic` restores the original look immediately. Both modes are
+session-local and neither changes tool execution, permissions or the
+stored evidence.
+
 The footer is split in three: the permission on the left, the session's
 token usage in the middle and the model with its reasoning effort on the
 right. Narrow terminals shed detail in a fixed order — the effort, then
@@ -164,6 +176,7 @@ UNRESTRICTED` for the whole time the operator-enabled window is active.
 | `Ctrl+Y` | Enable 666 on the permission screen; approve the one-off write on the approval screen |
 | `Ctrl+N` | Disable 666 on the permission screen; reject the one-off write on the approval screen |
 | `/skills` | List the skills MPM offers |
+| `/tool-icons [classic\|emoji]` | Switch tool activity icons |
 | `/permission` | Switch between 444 and session-scoped 666 |
 | `/skill <name>` | Pin a skill for the writing task (`/skill auto` restores routing) |
 | mouse wheel | Scroll history (eight rows a notch), or the draft |
@@ -186,7 +199,7 @@ the terminal reports modifier combinations and says so in `/help`.
 Slash commands run locally and never reach the model: `/help`,
 `/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/clear`, `/sessions`,
 `/effort`, `/expand`, `/collapse`, `/diag`, `/usage`, `/permission`,
-`/q`, `/quit`, `/exit`.
+`/tool-icons`, `/q`, `/quit`, `/exit`.
 Typing `/` opens a suggestion
 panel above the composer: keep typing to filter, `Up`/`Down` to move,
 `Tab` to complete, `Enter` to run (a complete command runs as typed, a
