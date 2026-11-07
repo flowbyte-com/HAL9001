@@ -27,7 +27,8 @@ workspace, available in 444. It is not the session mode. See
 Milestone 009: the assistant identity is the stationary two-cell `🔴`
 marker, and an opt-out activity heartbeat shows a 24-frame clock,
 elapsed time and provider silence without changing provider timeouts.
-The experiment is on `feature/hal-heartbeat` pending visual acceptance.
+The feature is integrated on `main` and available in the published
+checkpoint.
 
 Milestone 008: HAL installs as a native user-space command, `hal`, with a
 standalone `hal-update` that builds exact Git commits in isolation,
