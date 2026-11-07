@@ -72,6 +72,55 @@ func hasTool(tools []provider.Tool, name string) bool {
 	return false
 }
 
+func TestToolStartPrecedesVerifiedResult(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "outside.txt")
+	if err := os.WriteFile(path, []byte("data\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := session.Open(t.TempDir(), "chat")
+	perm := permission.New()
+	perm.SetSession("chat")
+	_ = perm.Enable("chat")
+	p := &stepProvider{responses: []provider.Response{
+		{
+			Content: "I'll look.",
+			ToolCalls: []provider.ToolCall{{
+				ID: "call_read", Name: "read",
+				Arguments: map[string]any{"path": path},
+			}},
+		},
+		{Content: "Done."},
+	}}
+	eng := New(st, p, provider.Model{ID: "m"}).
+		WithPermission(perm).
+		WithExecution(agenttools.New(perm, nil))
+	var starts, results int
+	_, err := eng.RespondStreamEvents(context.Background(), "read it", func(ev Event) {
+		if ev.ToolStart != nil {
+			starts++
+			if ev.ToolStart.Status != "running" || ev.ToolStart.Name != "read" {
+				t.Errorf("tool start = %#v", ev.ToolStart)
+			}
+			if results != 0 {
+				t.Error("the start event arrived after a verified result")
+			}
+		}
+		if ev.Tool != nil {
+			results++
+			if ev.Tool.Status != "ok" {
+				t.Errorf("tool result = %#v", ev.Tool)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 || results != 1 {
+		t.Fatalf("starts=%d results=%d", starts, results)
+	}
+}
+
 func Test444OffersGuardedWriteAndKnowledgeButNotPrivilegedTools(t *testing.T) {
 	st, _ := session.Open(t.TempDir(), "chat")
 	perm := permission.New()

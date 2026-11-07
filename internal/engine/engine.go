@@ -355,6 +355,10 @@ type Event struct {
 	// contents or command text; the interface uses it for the compact
 	// activity line and the diagnostics panel.
 	Tool *ToolActivity
+	// ToolStart is the same call immediately before execution. It is
+	// presentation-only: the interface uses it to show that a tool is
+	// running, while Tool remains the verified result.
+	ToolStart *ToolActivity
 }
 
 // ToolActivity is one tool call as the interface and diagnostics see it.
@@ -528,6 +532,13 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 		for i, call := range resp.ToolCalls {
 			if call.ID == "" {
 				call.ID = fmt.Sprintf("call-%d-%d", step, i)
+			}
+			if emit != nil {
+				start := ToolActivity{
+					CallID: call.ID, Name: call.Name, Action: call.Name,
+					Mode: e.permissionMode(), Status: "running",
+				}
+				emit(Event{ToolStart: &start})
 			}
 			content, activity, prepared, halt := e.executeTool(ctx, call, turn, turnID)
 			if emit != nil {

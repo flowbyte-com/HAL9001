@@ -24,6 +24,11 @@ workspace, available in 444. It is not the session mode. See
 
 ## Status
 
+Milestone 009: the assistant identity is the stationary two-cell `🔴`
+marker, and an opt-out activity heartbeat shows a 24-frame clock,
+elapsed time and provider silence without changing provider timeouts.
+The experiment is on `feature/hal-heartbeat` pending visual acceptance.
+
 Milestone 008: HAL installs as a native user-space command, `hal`, with a
 standalone `hal-update` that builds exact Git commits in isolation,
 installs immutable releases, switches an atomic pointer and can roll back
@@ -121,20 +126,20 @@ remains supported for development.
 
 HAL9001 takes over the terminal with the alternate screen buffer: the
 shell output is hidden while HAL runs and the previous screen comes back
-when it exits. A fixed header (`● HAL9001` and the session title) sits at
+when it exits. A fixed header (`🔴 HAL9001` and the session title) sits at
 the top, the conversation scrolls in the middle, and the composer, one
 row of keyboard hints, a thin divider and the status footer stay at the
 bottom.
 
 ```text
-● HAL9001 · the quarterly review
-  Summarize the plan.
+🔴 HAL9001 · the quarterly review
+   Summarize the plan.
 
-◉ The plan has three parts.
-  ⚙ read notes/plan.md · completed · 2.0 KiB · 666
+🔴 The plan has three parts.
+   ⚙ read notes/plan.md · completed · 2.0 KiB · 666
                         2s · 4.2k in / 12.8k out
 
-  What changed?
+   What changed?
 ──────────────────────────────────────────────
  the draft
 ──────────────────────────────────────────────
@@ -145,12 +150,13 @@ Enter send · Ctrl+J newline · /help
 
 The conversation has no speaker labels. User text and assistant text share
 one content column, with a narrow gutter to its left. The first row of
-each assistant response carries a restrained red `◉` in that gutter; no
+each assistant response carries a restrained red `🔴` in that gutter; no
 label sits beside it. Wrapped lines, Markdown headings, lists, quotes,
 code fences and tables keep the same content column. One blank row
 separates turns, so consecutive messages stay readable without chrome.
-The transcript uses the full usable terminal width with two-cell side
-margins; the composer, header and footer keep the full width.
+The transcript uses the full usable terminal width with a three-cell
+left gutter and a two-cell right margin; the composer, header and footer
+keep the full width.
 
 Links are OSC 8 hyperlinks. A labeled Markdown link shows its label, not a
 duplicated raw destination; a bare `http(s)://` URL stays visible. In a
@@ -172,7 +178,21 @@ statistics are part of the reply text, a selection or `/copy`.
 Tool activity uses action icons by default: `🔎` search, `📄` read or
 scrape, `💡` MPM knowledge, `📝` write, `✏️` edit, `📦` package, `💻` shell,
 `🔪` explicit destructive action, `🚨` unexpected failure and `📍` expected
-failure. A failure is expected only when the tool call declared the
+failure.
+
+While a turn is active, the notice row under the footer becomes a
+heartbeat: a 24-frame Unicode clock advances about every 140 ms through
+`Waiting for model`, `Thinking`, `Streaming` and `Tool` phases, with
+elapsed time and a `no new data for Ns` suffix when the provider has
+been quiet for at least five seconds. The clock is scheduled by the interface's event loop, not
+an animation goroutine; it stops at completion, failure or cancellation,
+and the old turn's ticks are ignored. A moving clock shows the interface
+is responsive, not that the provider is making progress. `/animation off`
+freezes it to the static `🕛` and stops the scheduled visual updates;
+`/animation on` resumes them. The setting is session-local and defaults
+to on for an interactive terminal.
+
+A failure is expected only when the tool call declared the
 expectation before execution (`expect_missing` for a read, or
 `expect_exit_code` for bash) and the actual result matched it. An after-the-fact explanation is never enough;
 a mismatch keeps its actual status and shows the unmet expectation.
@@ -214,6 +234,7 @@ UNRESTRICTED` for the whole time the operator-enabled window is active.
 | `Ctrl+N` | Disable 666 on the permission screen; reject the one-off write on the approval screen |
 | `/skills` | List the skills MPM offers |
 | `/tool-icons [classic\|emoji]` | Switch tool activity icons |
+| `/animation [on\|off]` | Turn the activity clock on or off |
 | `/permission` | Switch between 444 and session-scoped 666 |
 | `/skill <name>` | Pin a skill for the writing task (`/skill auto` restores routing) |
 | mouse wheel | Scroll history (eight rows a notch), or the draft |
@@ -236,7 +257,7 @@ the terminal reports modifier combinations and says so in `/help`.
 Slash commands run locally and never reach the model: `/help`,
 `/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/clear`, `/sessions`,
 `/effort`, `/expand`, `/collapse`, `/diag`, `/usage`, `/permission`,
-`/tool-icons`, `/q`, `/quit`, `/exit`.
+`/tool-icons`, `/animation`, `/q`, `/quit`, `/exit`.
 Typing `/` opens a suggestion
 panel above the composer: keep typing to filter, `Up`/`Down` to move,
 `Tab` to complete, `Enter` to run (a complete command runs as typed, a

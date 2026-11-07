@@ -154,6 +154,51 @@ var commandTable = []*command{
 		},
 	},
 	{
+		name:        "/animation",
+		usage:       "/animation [on|off]",
+		description: "Turn the activity clock on or off",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			if len(args) == 0 {
+				m.notice = "Animation: " + animationLabel(m.animation) + "."
+				return nil
+			}
+			if len(args) > 1 {
+				m.notice = "Usage: /animation [on|off]"
+				return nil
+			}
+			switch strings.ToLower(args[0]) {
+			case "on":
+				if m.animation {
+					m.notice = "Animation: on."
+					return nil
+				}
+				m.animation = true
+				m.activityGen++
+				if m.sending {
+					m.notice = m.activityNotice()
+					return m.animationTickCmd()
+				}
+				m.notice = "Animation: on."
+			case "off":
+				if !m.animation {
+					m.notice = "Animation: off."
+					return nil
+				}
+				m.animation = false
+				m.activityGen++
+				if m.sending {
+					m.notice = m.activityNotice()
+				} else {
+					m.notice = "Animation: off."
+				}
+			default:
+				m.notice = "Usage: /animation [on|off]"
+			}
+			return nil
+		},
+	},
+	{
 		name:        "/sessions",
 		description: "Resume a conversation",
 		run: func(m *Model, _ []string) tea.Cmd {

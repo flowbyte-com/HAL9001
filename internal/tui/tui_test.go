@@ -270,7 +270,7 @@ func TestMonochromeView(t *testing.T) {
 	if strings.Contains(view, "🦞") {
 		t.Error("view must never contain the lobster emoji")
 	}
-	for _, want := range []string{"● HAL9001", "hi", "◉ hello", "444 READ ONLY"} {
+	for _, want := range []string{"🔴 HAL9001", "hi", "🔴 hello", "444 READ ONLY"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q:\n%s", want, view)
 		}
@@ -1370,7 +1370,7 @@ func TestThinkingIndicator(t *testing.T) {
 	m.streamStarted = m.clock()
 	updated, _ = m.Update(streamThinkingMsg{id: 1})
 	m = updated.(Model)
-	if !strings.Contains(m.Notice(), "thinking") {
+	if !strings.Contains(m.Notice(), "Thinking") {
 		t.Errorf("notice = %q, want a thinking indicator", m.Notice())
 	}
 	if !m.reasoningSeen {
@@ -1383,7 +1383,7 @@ func TestThinkingIndicator(t *testing.T) {
 	// Once visible text arrives the indicator says streaming.
 	updated, _ = m.Update(streamDeltaMsg{id: 1, text: "hello"})
 	m = updated.(Model)
-	if !strings.Contains(m.Notice(), "streaming") {
+	if !strings.Contains(m.Notice(), "Streaming") {
 		t.Errorf("notice = %q, want streaming", m.Notice())
 	}
 }
@@ -1397,9 +1397,11 @@ func TestStreamingNoticeShowsElapsedTime(t *testing.T) {
 	m.streamID = 1
 	m.sending = true
 	m.streamStarted = m.clock().Add(-42 * time.Second)
-	updated, _ = m.Update(tickMsg(m.clock()))
+	m.activityPhase = activityStreaming
+	m.lastProviderEvent = m.clock()
+	updated, _ = m.Update(animationTickMsg{gen: m.activityGen, turn: 1})
 	m = updated.(Model)
-	if !strings.Contains(m.Notice(), "42s") {
+	if !strings.Contains(m.Notice(), "42.0s") {
 		t.Errorf("notice = %q, want the elapsed time", m.Notice())
 	}
 	if !strings.Contains(m.Notice(), "Esc cancels") {
@@ -2828,25 +2830,6 @@ func TestMetadataRestoredOnResume(t *testing.T) {
 	}
 	if got := m2.Lines(); len(got) != 4 || got[1] != "HAL > a1" {
 		t.Errorf("history polluted: %v", got)
-	}
-}
-
-func TestLiveEstimateMarkedApproximate(t *testing.T) {
-	m := testModel()
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
-	m.sending = true
-	m.streamStarted = m.clock()
-	m.pending = strings.Repeat("x", 400)
-	if got := m.liveProgress(); !strings.HasPrefix(got, "~") {
-		t.Errorf("live estimate must be marked approximate: %q", got)
-	}
-	if !strings.Contains(m.streamingNotice(), "~") {
-		t.Errorf("notice must show the estimate: %q", m.streamingNotice())
-	}
-	m.reasoningSeen = true
-	if got := m.liveProgress(); !strings.Contains(got, "reasoning") {
-		t.Errorf("reasoning presence must be shown: %q", got)
 	}
 }
 

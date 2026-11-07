@@ -119,10 +119,26 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/tool_icon_checks.py
 ```
 
+The heartbeat checks start their own fake provider on port 8127 and own
+their config, home, workspace and session store. They verify the stationary
+red marker, independently moving frames, `/animation off`/`on`, the
+five-second silence suffix, completion, 80x9 and all five themes:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/heartbeat_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
   restoring the cursor and disabling bracketed paste.
+- The header and assistant blocks carry the stationary two-cell `🔴`
+  marker; the activity row advances through the 24 clock frames while a
+  provider response is quiet, shows `no new data for Ns` after five
+  seconds, and stops at completion or cancellation. `/animation off`
+  freezes it to `🕛`, `/animation on` resumes it, and 80x9 stays exactly
+  nine rows.
 - The header stays on the first row and the footer at the bottom at
   80x24, 120x40 and 160x50, and after a resize.
 - `Enter` sends, `Ctrl+J` and `Alt+Enter` break the line, `Ctrl+S`
@@ -168,9 +184,9 @@ python3 tools/ptycheck/tool_icon_checks.py
 - The active conversation survives `/clear` and a relaunch, an empty new
   session stays selected, and `/sessions` recovers the previous one.
 - The presentation suite checks a label-free transcript: user and
-  assistant text share one display column, the assistant eye sits in its
-  own two-cell gutter, wrapped Markdown/code/tables stay inside the
-  usable width at 60x20, 80x24, 120x30, 170x38 and 200x45, tool activity and
+  assistant text share one display column, the two-cell assistant eye sits
+  in its own three-cell gutter, wrapped Markdown/code/tables stay inside
+  the usable width at 60x20, 80x24, 120x30, 170x38 and 200x45, tool activity and
   right-aligned statistics sit beneath the answer, and all five themes
   render the eye in colour. It also covers slash Esc dismissal and the
   444/666 footer.

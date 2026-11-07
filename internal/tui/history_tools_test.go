@@ -123,11 +123,11 @@ func TestHistoricalEvidenceStaysBeneathItsAssistantAnswer(t *testing.T) {
 		strings.Count(plain, "🚨 bash") != 1 {
 		t.Fatalf("tool activity was duplicated:\n%s", plain)
 	}
-	eye := strings.Index(plain, "◉")
+	eye := strings.Index(plain, "🔴")
 	if eye < 0 || eye > answer {
 		t.Fatalf("the assistant eye is missing or displaced:\n%s", plain)
 	}
-	if strings.Count(plain, "◉") != 1 {
+	if strings.Count(plain, "\n🔴") != 1 {
 		t.Fatalf("an assistant response must carry exactly one eye:\n%s", plain)
 	}
 }

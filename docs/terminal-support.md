@@ -83,8 +83,9 @@ back. The setting is session-local and is not written to the session or
 to a configuration file.
 
 The emoji gutter is measured in display cells: one two-cell glyph plus one
-separator. `✏️` is kept as one grapheme cluster, including its variation
-selector. An expected failure (`📍`) requires an expectation declared in
+separator. The assistant eye uses the same two-cell rule, so the
+transcript content column is three cells wide. `✏️` is kept as one
+grapheme cluster, including its variation selector. An expected failure (`📍`) requires an expectation declared in
 the tool call before execution (`expect_missing` for read, or
 `expect_exit_code` for bash) and an actual result that matches it. An
 unexpected failure is `🚨`; an after-the-fact explanation never changes the
@@ -104,6 +105,29 @@ expected two cells, HAL falls back to the plain gear in the same gutter.
 `/tool-icons classic` is always available as the conservative fallback.
 The five themes, mouse selection, OSC 52 copying and OSC 8 links are
 unaffected by the choice.
+
+## Activity heartbeat
+
+The header and each assistant block use the stationary two-cell `🔴`
+marker. While a turn is in flight, the reserved notice row shows a
+24-frame clock (`🕛` through `🕦`) and one of `Waiting for model`,
+`Thinking`, `Streaming` or `Tool`, with elapsed time. The frame advances
+about every 140 ms independently of provider tokens; the clock is a
+responsiveness signal, not evidence that the provider is making progress.
+
+After five seconds without a meaningful provider event the line adds
+`no new data for Ns`. The provider's own idle and turn timeouts remain
+unchanged, and silence is never treated as a failed connection. While a
+tool is running the silence suffix is suppressed because the operation is
+active; after its result returns, the ordinary model wait is measured
+again.
+
+`/animation off` stops scheduled frame updates and freezes the clock at
+`🕛`; `/animation on` resumes them. `/animation` reports the current
+setting. The choice is session-local and defaults to on in an interactive
+terminal. Headless runs do not schedule animation ticks. When a turn
+finishes or is cancelled, stale ticks are discarded, so a completed clock
+cannot restart.
 
 ## Clipboard
 

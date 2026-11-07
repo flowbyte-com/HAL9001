@@ -486,6 +486,8 @@ def marked_spans(text):
                 parts = [p for p in params.split(";") if p]
                 row = int(parts[0]) if parts else 1
                 col = int(parts[1]) if len(parts) > 1 else 1
+            elif final == "G":
+                col = int(params) if params else 1
             elif final == "J":
                 marked = {}
                 row, col = 1, 1
@@ -517,14 +519,14 @@ def selection_checks():
     # SGR press and drag over three rows of the stored reply: row 10
     # holds the "Section 15" heading, rows 11 to 15 the paragraph
     # below it. The conversation starts directly under the header.
-    dragging = run([(2.5, b"\x1b[<0;2;11M"), (0.8, b"\x1b[<32;40;14M")],
+    dragging = run([(2.5, b"\x1b[<0;4;11M"), (0.8, b"\x1b[<32;40;14M")],
                    timeout=9.0, fresh=False, session="scrollfixture")
     spans = marked_spans(dragging.decode("utf-8", "replace"))
     conv = [s for s in spans if 10 <= s[0] <= 15]
     check("mouse: the selection is highlighted while it is dragged",
           bool(conv), str(spans[:6]))
     check("mouse: the mark never starts in the margin",
-          all(s[1] > 1 for s in conv), str(spans[:6]))
+          all(s[1] > 2 for s in conv), str(spans[:6]))
     check("mouse: the mark covers the whole styled line",
           any("Section 15" in s[2] for s in conv), str(spans[:6]))
     raw = run([(2.5, b"\x1b[<0;9;11M"), (0.5, b"\x1b[<32;40;14M"),
@@ -540,7 +542,7 @@ def selection_checks():
     check("mouse: the copy holds text", copied.strip() != "", repr(copied))
     check("mouse: the copy has no interface decoration",
           "HAL >" not in copied and "You >" not in copied and
-          "◉" not in copied and "⚙" not in copied, repr(copied))
+          "🔴" not in copied and "⚙" not in copied, repr(copied))
     check("mouse: the copy has no escape sequences",
           "\x1b" not in copied, repr(copied))
     check("mouse: the copy is part of the reply",
@@ -575,7 +577,7 @@ def autoscroll_checks():
               "reached %s, visible %s" % (sorted(reached), sorted(visible)))
         check("mouse: the edge drag copies no interface decoration",
               "HAL >" not in copied and "You >" not in copied and
-              "◉" not in copied and "⚙" not in copied, repr(copied))
+              "🔴" not in copied and "⚙" not in copied, repr(copied))
     moved = render(raw).text()
     check("mouse: the edge drag scrolls the conversation",
           first_text(moved) != first_text(before), moved[:400])
@@ -1588,21 +1590,21 @@ def main():
 
     # Enter sends the message.
     text = screen(run([(2.0, b"hello hal\r")], timeout=6.0)).text()
-    check("Enter sends", "hello hal" in text and "◉" in text, text)
+    check("Enter sends", "hello hal" in text and "\n🔴 " in text, text)
 
     # Ctrl+J breaks the line instead of sending.
     text = screen(run([(2.0, b"first\x0a"), (0.5, b"second")], timeout=5.0)).text()
     check("Ctrl+J keeps the text in the composer",
           "first" in text and "second" in text, text)
-    check("Ctrl+J does not send", "◉" not in text, text)
+    check("Ctrl+J does not send", "\n🔴 " not in text, text)
 
     # Alt+Enter (ESC CR) breaks the line too.
     text = screen(run([(2.0, b"first\x1b\r"), (0.5, b"second")], timeout=5.0)).text()
-    check("Alt+Enter does not send", "◉" not in text, text)
+    check("Alt+Enter does not send", "\n🔴 " not in text, text)
 
     # Ctrl+S still sends.
     text = screen(run([(2.0, b"via ctrl s\x13")], timeout=6.0)).text()
-    check("Ctrl+S sends", "via ctrl s" in text and "◉" in text, text)
+    check("Ctrl+S sends", "via ctrl s" in text and "\n🔴 " in text, text)
 
     # Slash commands run locally.
     text = screen(run([(2.0, b"/help\r")], timeout=5.0)).text()
@@ -1621,7 +1623,7 @@ def main():
     paste = b"\x1b[200~line one\nline two\n\n  indented\x1b[201~"
     text = screen(run([(2.0, paste)], timeout=5.0)).text()
     check("paste stays in the composer", "line one" in text and "indented" in text, text)
-    check("paste does not submit", "◉" not in text, text)
+    check("paste does not submit", "\n🔴 " not in text, text)
 
     ui_checks()
     scroll_checks()

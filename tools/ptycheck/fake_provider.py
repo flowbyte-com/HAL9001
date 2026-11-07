@@ -203,11 +203,13 @@ class Handler(BaseHTTPRequestHandler):
         # A prompt that asks the provider to hold the line is answered
         # slowly, so the interface can be watched while it is working.
         hold = "hold the line" in last
+        hold_long = "hold the line long" in last
         chunks = ["I read ", "your message: ", last[:40], "."]
         if applied:
             chunks.append(" [skill: " + applied + "]")
         for i, chunk in enumerate(chunks):
-            time.sleep(1.2 if hold and i == 0 else (0.4 if hold else 0.05))
+            delay = 7.0 if hold_long and i == 0 else (1.2 if hold and i == 0 else (0.4 if hold else 0.05))
+            time.sleep(delay)
             self.event({"choices": [{"delta": {"content": chunk}, "index": 0}]})
         self.event({"choices": [{"delta": {}, "finish_reason": "stop"}]})
         self.usage()

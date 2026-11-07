@@ -115,7 +115,7 @@ output is hidden while HAL runs and the previous screen is restored on
 exit. The frame is assembled as exactly one row per terminal row, so the
 terminal never scrolls.
 
-Layout: a one-line `● HAL9001` header carrying the session title, the
+Layout: a one-line `🔴 HAL9001` header carrying the session title, the
 scrollable Markdown conversation, an optional command suggestion panel, a
 composer framed by two full-width rules with one text row by default
 (growing to five), one reserved row of keyboard hints, a thin divider, a
@@ -126,11 +126,11 @@ whatever room the terminal has, because the header is one row and the
 immutable session identity stays in the diagnostics — and the
 conversation follows it directly. The conversation has no speaker
 labels. User text and assistant text share one content column with a
-two-cell gutter to its left; the first assistant row carries the
-theme-red `◉` eye in that gutter. Wrapped rows and Markdown blocks keep
-the same content column, one blank row separates turns, and the
-transcript uses the full terminal width with a two-cell margin on each
-side. Tool activity and the
+three-cell gutter to its left; the first assistant row carries the
+two-cell theme-red `🔴` eye and its separator in that gutter. Wrapped
+rows and Markdown blocks keep the same content column, one blank row
+separates turns, and the transcript uses the full terminal width with a
+two-cell right margin. Tool activity and the
 right-aligned statistics line are the assistant block's supplementary
 rows, not answer text. The composer is framed by two rules
 rather than a box: there are no side borders and no corners, and the

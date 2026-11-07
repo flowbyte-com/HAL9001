@@ -50,7 +50,7 @@ func TestTranscriptSharesOneContentColumn(t *testing.T) {
 			rows := m.layoutRows()
 			_, user := visibleRow(rows, "user words here")
 			_, assistant := visibleRow(rows, "assistant words here")
-			_, eye := visibleRow(rows, "◉")
+			_, eye := visibleRow(rows, "🔴")
 			if user == "" || assistant == "" || eye == "" {
 				t.Fatalf("%dx%d: transcript rows missing:\n%s", size[0], size[1],
 					stripANSI(strings.Join(rows, "\n")))
@@ -61,8 +61,8 @@ func TestTranscriptSharesOneContentColumn(t *testing.T) {
 			if got := displayColumn(assistant, "assistant words here"); got != m.contentColumn() {
 				t.Errorf("assistant starts at %d, want %d", got, m.contentColumn())
 			}
-			if got := displayColumn(eye, "◉"); got != m.contentColumn()-2 {
-				t.Errorf("eye starts at %d, want %d", got, m.contentColumn()-2)
+			if got := displayColumn(eye, "🔴"); got != 0 {
+				t.Errorf("eye starts at %d, want 0", got)
 			}
 			if strings.Contains(stripANSI(strings.Join(rows, "\n")), "You >") ||
 				strings.Contains(stripANSI(strings.Join(rows, "\n")), "HAL >") {
@@ -86,10 +86,10 @@ func TestTranscriptEyeMarksOnlyAssistantRows(t *testing.T) {
 		{Role: "assistant", Text: "second answer", TurnID: "t2"},
 	})
 	plain := stripANSI(strings.Join(m.layoutRows(), "\n"))
-	if got := strings.Count(plain, "◉"); got != 2 {
+	if got := strings.Count(plain, "\n🔴"); got != 2 {
 		t.Fatalf("eyes = %d, want one per assistant response:\n%s", got, plain)
 	}
-	if strings.Index(plain, "◉") > strings.Index(plain, "first answer") {
+	if strings.Index(plain, "🔴") > strings.Index(plain, "first answer") {
 		t.Error("the first eye is not at the start of its assistant block")
 	}
 	if strings.Count(plain, "first answer") != 1 || strings.Count(plain, "second answer") != 1 {
@@ -291,7 +291,7 @@ func TestTranscriptSelectionExcludesEyeToolsAndMetadata(t *testing.T) {
 			if !strings.Contains(got, "run it") || !strings.Contains(got, "the answer") {
 				t.Errorf("selection lost the conversation: %q", got)
 			}
-			for _, unwanted := range []string{"◉", "⚙", "666", " in / "} {
+			for _, unwanted := range []string{"🔴", "⚙", "666", " in / "} {
 				if strings.Contains(got, unwanted) {
 					t.Errorf("selection copied %q: %q", unwanted, got)
 				}
@@ -303,10 +303,10 @@ func TestTranscriptSelectionExcludesEyeToolsAndMetadata(t *testing.T) {
 func TestTranscriptUsesFullUsableWidth(t *testing.T) {
 	for _, width := range []int{60, 80, 120, 170, 200} {
 		m := transcriptModel(t, width, 45)
-		if got := m.contentColumn(); got != 2 {
-			t.Errorf("%d: content column = %d, want 2", width, got)
+		if got := m.contentColumn(); got != 3 {
+			t.Errorf("%d: content column = %d, want 3", width, got)
 		}
-		if got, want := m.contentWidth(), width-4; got != want {
+		if got, want := m.contentWidth(), width-5; got != want {
 			t.Errorf("%d: content width = %d, want %d", width, got, want)
 		}
 		m.SetUsage(usage.Session{History: []usage.Turn{{
@@ -321,8 +321,8 @@ func TestTranscriptUsesFullUsableWidth(t *testing.T) {
 		if answer == "" {
 			t.Fatalf("%d: answer missing", width)
 		}
-		if got := displayColumn(answer, "the answer"); got != 2 {
-			t.Errorf("%d: answer starts at %d, want 2", width, got)
+		if got := displayColumn(answer, "the answer"); got != 3 {
+			t.Errorf("%d: answer starts at %d, want 3", width, got)
 		}
 		last := m.entries[len(m.entries)-1].rows
 		if len(last) == 0 {
@@ -386,7 +386,7 @@ func TestTranscriptVerticalRhythm(t *testing.T) {
 	}
 	body := m.entries[1].rows
 	if len(body) == 0 || strings.TrimSpace(stripANSI(body[0])) == "" ||
-		!strings.Contains(stripANSI(body[0]), "◉") {
+		!strings.Contains(stripANSI(body[0]), "🔴") {
 		t.Fatalf("assistant block starts without the eye: %#v", body)
 	}
 	if !strings.Contains(stripANSI(body[len(body)-1]), "1s · 10 in / 20 out") {
@@ -420,7 +420,7 @@ func TestTranscriptVerticalRhythm(t *testing.T) {
 	}
 
 	tools := m.entries[3].rows
-	if len(tools) == 0 || !strings.Contains(stripANSI(tools[0]), "◉") {
+	if len(tools) == 0 || !strings.Contains(stripANSI(tools[0]), "🔴") {
 		t.Fatalf("second answer starts without the eye: %#v", tools)
 	}
 	answer := rowIndex(tools, "answer text")
@@ -483,14 +483,14 @@ func TestTranscriptResizeRecomputesWidthAndWrapping(t *testing.T) {
 		{Role: "assistant", Text: long, TurnID: "t1"},
 	})
 	largeRows := len(m.entries[1].rows)
-	if got := m.contentWidth(); got != 166 {
-		t.Fatalf("170 width = %d, want 166", got)
+	if got := m.contentWidth(); got != 165 {
+		t.Fatalf("170 width = %d, want 165", got)
 	}
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	smallRows := len(m.entries[1].rows)
-	if got := m.contentWidth(); got != 76 {
-		t.Fatalf("80 width = %d, want 76", got)
+	if got := m.contentWidth(); got != 75 {
+		t.Fatalf("80 width = %d, want 75", got)
 	}
 	if smallRows <= largeRows {
 		t.Errorf("wrapping did not change: %d -> %d rows", largeRows, smallRows)
@@ -502,8 +502,8 @@ func TestTranscriptResizeRecomputesWidthAndWrapping(t *testing.T) {
 	}
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 170, Height: 38})
 	m = updated.(Model)
-	if got := m.contentWidth(); got != 166 {
-		t.Fatalf("back to 170: width = %d, want 166", got)
+	if got := m.contentWidth(); got != 165 {
+		t.Fatalf("back to 170: width = %d, want 165", got)
 	}
 	if got := len(m.entries[1].rows); got != largeRows {
 		t.Errorf("rows after round-trip = %d, want %d", got, largeRows)

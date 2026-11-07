@@ -52,13 +52,14 @@ def cell_column(text, fragment):
 
 
 def content_column(cols):
-    # Fixed two-cell inset; the eye sits in the gutter to its left.
-    return 2
+    # The two-cell red eye plus one separator sit in the gutter.
+    return 3
 
 
 def content_width(cols):
-    # Full usable width: two cells inset on each side.
-    return cols - 4
+    # Content starts after the three-cell gutter; two cells stay at
+    # the right edge.
+    return cols - 5
 
 
 def row_with(screen, fragment):
@@ -270,14 +271,14 @@ def main():
                 else:
                     check("%s: %s is visible" % (label, name), False, plain_top)
 
-            eye_row = row_with(top, "◉")
+            eye_row = row_with(top, "🔴")
             check("%s: assistant eye is in the gutter" % label,
-                  bool(eye_row) and cell_column(eye_row, "◉") == ccol - 2, plain_top)
+                  bool(eye_row) and cell_column(eye_row, "🔴") == ccol - 3, plain_top)
             expected_eyes = 1
             if "The command completed." in plain_top:
                 expected_eyes += 1
             check("%s: one eye for each visible assistant turn" % label,
-                  plain_top.count("◉") == expected_eyes, plain_top)
+                  plain_top.count("\n🔴") == expected_eyes, plain_top)
 
             question = row_with(bottom, "What ran?")
             answer = row_with(bottom, "The command completed.")
@@ -348,9 +349,9 @@ def main():
         text80 = frame80.text()
         ruler80 = [line for line in text80.split("\n")
                    if line.strip() and set(line.strip()) == {"X"}]
-        check("resize: 170 -> 80 reflows to 76 content cells",
+        check("resize: 170 -> 80 reflows to 75 content cells",
               no_overflow(frame80, 80) and
-              any(cell_width(line.strip()) == 76 for line in ruler80), text80)
+              any(cell_width(line.strip()) == content_width(80) for line in ruler80), text80)
         check("resize: 170 -> 80 keeps the footer and composer",
               "444 READ ONLY" in text80 and "Enter send" in text80, text80)
 
@@ -365,9 +366,9 @@ def main():
                     if line.strip() and set(line.strip()) == {"X"}]
         check("resize: 170 -> 80 -> 170 returns to full width",
               no_overflow(frame170, 170) and
-              any(cell_width(line.strip()) == 166 for line in ruler170), text170)
+              any(cell_width(line.strip()) == content_width(170) for line in ruler170), text170)
         check("resize: live round-trip keeps the left content column",
-              any(cell_column(line, "X") == 2 for line in ruler170), text170)
+              any(cell_column(line, "X") == content_column(170) for line in ruler170), text170)
         check("resize: live round-trip keeps footer and composer",
               "444 READ ONLY" in text170 and "Enter send" in text170, text170)
 
@@ -376,9 +377,9 @@ def main():
             raw, frame = capture([(2.2, b"")], 80, 24, theme)
             text = frame.text()
             check("theme %s: transcript renders" % theme,
-                  "◉" in text and "💻 bash" in text and "What ran?" in text, text)
+                  "🔴" in text and "💻 bash" in text and "What ran?" in text, text)
             check("theme %s: the eye is coloured" % theme,
-                  has_ansi_colour(raw, "◉"), theme)
+                  has_ansi_colour(raw, "🔴"), theme)
             check("theme %s: rows fit" % theme, no_overflow(frame, 80), text)
 
         # Slash suggestions: open, dismiss, keep the draft, reopen on edit.

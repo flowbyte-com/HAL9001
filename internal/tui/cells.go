@@ -61,6 +61,19 @@ func (r rowCells) width() int {
 	return last.column + last.width
 }
 
+// cellIndexAt returns the index of the first cluster that starts at or
+// after column. It is used to skip a gutter whose glyphs may be wide:
+// the prefix is measured in terminal columns, while cells are stored
+// per grapheme cluster.
+func (r rowCells) cellIndexAt(column int) int {
+	for i, c := range r.cells {
+		if c.column+c.width > column {
+			return i
+		}
+	}
+	return len(r.cells)
+}
+
 // origin returns the byte offset in the rendered row of a byte offset in
 // the row's plain text.
 func (r rowCells) origin(offset int) int {

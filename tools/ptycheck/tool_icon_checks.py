@@ -252,7 +252,7 @@ def main():
         known = known_rows(emoji, [name for name, _ in cases])
         bad = []
         for name, line in known:
-            if column(line, name) != 5:
+            if column(line, name) != 6:
                 bad.append((name, column(line, name), line))
         check("emoji: names start in the same gutter", not bad, str(bad))
         for name, line in known:
@@ -298,7 +298,7 @@ def main():
                   "📝 write" in themed and "🚨 bash" in themed, themed)
             rows = known_rows(themed, ["write", "edit", "read"])
             check("theme %s: names keep the gutter" % theme,
-                  all(column(line, name) == 5 for name, line in rows),
+                  all(column(line, name) == 6 for name, line in rows),
                   str(rows))
     finally:
         shutil.rmtree(root, ignore_errors=True)

@@ -14,7 +14,7 @@ go build -o /tmp/hal9001 ./cmd/hal9001
 
 ## The frame
 
-- [ ] The header shows `● HAL9001` in the theme's accent colour — red in
+- [ ] The header shows `🔴 HAL9001` in the theme's accent colour — red in
       *HAL Classic* — and the session title beside it.
 - [ ] A long title is shortened with an ellipsis instead of wrapping.
       `/diag` still shows the immutable session name.
@@ -43,6 +43,8 @@ go build -o /tmp/hal9001 ./cmd/hal9001
 
 ## Tool activity icons
 
+- [ ] The header and each assistant block show the stationary two-cell
+      `🔴` marker, and the transcript content stays aligned.
 - [ ] A fresh session displays action icons automatically, and
       `/tool-icons` reports `Tool icons: emoji`.
 - [ ] `/tool-icons classic` changes already displayed tool rows and new
@@ -54,13 +56,28 @@ go build -o /tmp/hal9001 ./cmd/hal9001
 - [ ] Tool names, results, exit codes, output sizes, duration and the
       historical 444/666 mode remain readable in both modes.
 - [ ] Switching icons does not change permission mode, the stored
-      session, `/copy`, selection or the red `◉` assistant marker.
+      session, `/copy`, selection or the red `🔴` assistant marker.
 - [ ] A read declared with `expect_missing` and a genuinely missing file
       shows `📍`, while the same missing read without an expectation shows
       `🚨`. A bash call declared with `expect_exit_code 17` shows `📍` for
       exit 17 and `🚨` for exit 1. A command expected to fail but succeeding
       keeps `💻` and records the unmet expectation.
 - [ ] Resuming the session preserves the `📍`/`🚨` distinction.
+
+## Activity heartbeat
+
+- [ ] During a live turn the notice row shows a moving clock and the
+      current phase (`Waiting for model`, `Thinking`, `Streaming` or
+      `Tool`) with elapsed time.
+- [ ] The clock advances while the provider is quiet; a lack of tokens is
+      never presented as a failed connection.
+- [ ] After five quiet seconds the line shows `no new data for Ns`.
+- [ ] `/animation off` freezes the clock and stops visual updates without
+      interrupting the turn; `/animation on` resumes it.
+- [ ] `/animation` reports the current session-local setting.
+- [ ] Completion, cancellation, provider errors and timeouts stop the
+      clock, and stale ticks cannot restart it.
+- [ ] At 80×9 the frame stays exactly nine rows and no row overflows.
 
 ## The footer and the hints
 

@@ -74,8 +74,8 @@ func (cm *convMap) addEntry(e entry) {
 			prefix = entryPrefixCells
 		}
 		contentStart := len(cells.text)
-		if prefix < len(cells.cells) {
-			contentStart = cells.cells[prefix].start
+		if idx := cells.cellIndexAt(prefix); idx < len(cells.cells) {
+			contentStart = cells.cells[idx].start
 		}
 		if e.isDecoration(i) {
 			// A decoration row is on screen but not in the message: it

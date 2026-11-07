@@ -505,9 +505,9 @@ func (m Model) themeRows() []string {
 		rows = append(rows, line)
 	}
 	rows = append(rows, "", "Preview:")
-	rows = append(rows, st.header.Render("● HAL9001"))
+	rows = append(rows, st.header.Render("🔴 HAL9001"))
 	rows = append(rows, strings.Repeat(" ", transcriptGutter)+st.user.Render("preview message"))
-	rows = append(rows, st.eye.Render("◉")+" "+"preview reply")
+	rows = append(rows, st.eye.Render("🔴")+" "+"preview reply")
 	rows = append(rows, st.footer.Render(m.permissionLabel()+" · "+m.modelNameOr("model")))
 	if !m.color {
 		rows = append(rows, "", "Colour is disabled (NO_COLOR), so themes cannot be previewed.")
@@ -1051,6 +1051,7 @@ func (m *Model) startFreshConversation(notice string) {
 	if m.sending {
 		m.stopStream()
 		m.sending = false
+		m.endActivity()
 		m.pending = ""
 		m.reasoningSeen = false
 	}

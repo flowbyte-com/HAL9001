@@ -435,6 +435,17 @@ type Model struct {
 	streamID int
 	// streamStarted is when the current turn began.
 	streamStarted time.Time
+	// animation is the session-local clock setting. Interactive
+	// terminals start with it enabled; the event loop only schedules
+	// frames when a live sender exists.
+	animation bool
+	// activityPhase drives the single live heartbeat line. activityGen
+	// invalidates ticks from a finished or replaced turn.
+	activityPhase     activityPhase
+	activityFrame     int
+	activityGen       int
+	activityTool      engine.ToolActivity
+	lastProviderEvent time.Time
 	// reasoningSeen reports that the provider sent reasoning events for
 	// this turn. The text itself is never seen here.
 	reasoningSeen bool
@@ -563,6 +574,7 @@ func NewWithHooks(engine Engine, hooks Hooks) Model {
 		color:           ColorEnabled(),
 		theme:           ThemeHALClassic,
 		toolIcons:       defaultToolIcons,
+		animation:       true,
 		now:             time.Now,
 		desiredComposer: minComposerRows,
 		permission:      permission.New(),
@@ -687,6 +699,7 @@ func (m *Model) resetPermission() {
 func (m *Model) SetHistory(lines []SessionLine) {
 	m.cancelWrite("session changed")
 	m.resetPermission()
+	m.endActivity()
 	m.lastTools = nil
 	m.entries = nil
 	m.pending = ""
@@ -772,6 +785,10 @@ type streamToolMsg struct {
 	id       int
 	activity engine.ToolActivity
 }
+type streamToolStartMsg struct {
+	id       int
+	activity engine.ToolActivity
+}
 
 // skillDecisionMsg carries the routing decision of a turn back to the
 // interface, so the diagnostics view can show which skill was used and
@@ -811,13 +828,6 @@ type responseMsg struct {
 type errorMsg struct {
 	id  int
 	err error
-}
-type tickMsg time.Time
-
-// tickCmd re-renders the streaming notice once a second so a slow turn
-// shows elapsed time instead of a frozen label.
-func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 // sendCmd starts the streamed turn. With a live sender it runs in the
@@ -890,6 +900,8 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 		switch {
 		case ev.Stats != nil:
 			m.sender(streamStatsMsg{id: id, stats: *ev.Stats})
+		case ev.ToolStart != nil:
+			m.sender(streamToolStartMsg{id: id, activity: *ev.ToolStart})
 		case ev.Tool != nil:
 			m.sender(streamToolMsg{id: id, activity: *ev.Tool})
 		case ev.Text != "":
@@ -1096,6 +1108,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.sending {
 				m.stopStream()
 				m.sending = false
+				m.endActivity()
 				m.notice = "cancelled — stored nothing from the assistant"
 				// The turn is over, so the prompt that was collapsed
 				// for it opens again.
@@ -1177,14 +1190,28 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.reasoningSeen = true
-		m.notice = m.streamingNotice()
+		m.activityPhase = activityThinking
+		m.noteProviderEvent()
+		m.notice = m.activityNotice()
+		return m, nil
+	case streamToolStartMsg:
+		if !m.currentTurn(msg.id) {
+			return m, nil
+		}
+		m.activityTool = msg.activity
+		m.activityPhase = activityTool
+		m.noteProviderEvent()
+		m.notice = m.activityNotice()
 		return m, nil
 	case streamToolMsg:
 		if !m.currentTurn(msg.id) {
 			return m, nil
 		}
 		m.lastTools = mergeToolActivity(m.lastTools, msg.activity)
-		m.notice = toolActivityLineMode(msg.activity, m.width, m.toolIcons)
+		m.activityTool = msg.activity
+		m.activityPhase = activityTool
+		m.noteProviderEvent()
+		m.notice = m.activityNotice()
 		return m, nil
 	case streamDeltaMsg:
 		if !m.currentTurn(msg.id) {
@@ -1192,7 +1219,9 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		stick := m.viewport.AtBottom()
 		m.pending += msg.text
-		m.notice = m.streamingNotice()
+		m.activityPhase = activityStreaming
+		m.noteProviderEvent()
+		m.notice = m.activityNotice()
 		m.renderConversation()
 		if stick {
 			m.viewport.GotoBottom()
@@ -1205,13 +1234,16 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		stats := msg.stats
 		m.lastStats = &stats
 		m.turnStats = &stats
+		m.noteProviderEvent()
 		return m, nil
-	case tickMsg:
-		if !m.sending || m.sender == nil {
+	case animationTickMsg:
+		if msg.turn != m.streamID || msg.gen != m.activityGen ||
+			!m.sending || !m.animation {
 			return m, nil
 		}
-		m.notice = m.streamingNotice()
-		return m, tickCmd()
+		m.activityFrame = (m.activityFrame + 1) % len(animationFrames)
+		m.notice = m.activityNotice()
+		return m, m.animationTickCmd()
 	case responseMsg:
 		if !m.currentTurn(msg.id) {
 			return m, nil
@@ -1227,9 +1259,10 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.recordTurn()
 		if m.lastStats != nil && m.lastStats.OutputLimitHit {
+			m.endActivity()
 			m.notice = "output limit reached — the reply was cut at max_tokens"
 		} else {
-			m.notice = ""
+			m.notice = m.finishActivity()
 		}
 		if msg.decision != nil {
 			d := *msg.decision
@@ -1277,6 +1310,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sending = false
 		m.stopStream()
+		m.endActivity()
 		m.reasoningSeen = false
 		m.pending = ""
 		m.recordFailed()
@@ -1390,14 +1424,18 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.streamStarted = m.clock()
 	m.reasoningSeen = false
 	m.turnStats = nil
-	m.notice = m.streamingNotice()
+	m.beginActivity()
+	m.notice = m.activityNotice()
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	cmd := m.sendCmd(id, input, ctx)
 	if m.sender == nil {
 		return m, cmd
 	}
-	return m, tea.Batch(cmd, tickCmd())
+	if tick := m.animationTickCmd(); tick != nil {
+		return m, tea.Batch(cmd, tick)
+	}
+	return m, cmd
 }
 
 // emptyAnswerNote explains a turn that produced no visible text. It uses
@@ -1436,53 +1474,6 @@ func formatDuration(ms int64) string {
 		return fmt.Sprintf("%ds", s)
 	}
 	return fmt.Sprintf("%dm %02ds", s/60, s%60)
-}
-
-// streamingNotice describes the turn without exposing private reasoning:
-// the phase, the elapsed wall-clock time and the progress so far. Live
-// token figures are estimates (marked ~); exact provider usage arrives
-// with the final statistics.
-func (m Model) streamingNotice() string {
-	var elapsed time.Duration
-	if !m.streamStarted.IsZero() {
-		elapsed = m.clock().Sub(m.streamStarted).Round(time.Second)
-	}
-	if elapsed < 0 {
-		elapsed = 0
-	}
-	phase := "waiting for the model"
-	switch {
-	case m.pending != "":
-		phase = "streaming"
-	case m.reasoningSeen:
-		phase = "thinking"
-	}
-	progress := m.liveProgress()
-	if progress == "" {
-		return fmt.Sprintf("%s… %s · Esc cancels", phase, elapsed)
-	}
-	return fmt.Sprintf("%s… %s · %s · Esc cancels", phase, elapsed, progress)
-}
-
-// liveProgress estimates output tokens from streamed characters: roughly
-// four characters per token. The tilde marks it as an estimate; it never
-// touches the recorded accounting. Streamed characters are a lower bound
-// when the provider is also reasoning, so reasoning presence is shown
-// alongside rather than folded into the number.
-func (m Model) liveProgress() string {
-	runes := len([]rune(m.pending))
-	if runes == 0 && !m.reasoningSeen {
-		return ""
-	}
-	est := runes / 4
-	if est < 1 {
-		est = 1
-	}
-	out := "~" + compactTokens(est) + " out"
-	if m.reasoningSeen {
-		return out + " + reasoning"
-	}
-	return out
 }
 
 // insertNewline breaks the line in the composer without sending.
@@ -1683,6 +1674,7 @@ func (m *Model) quit() tea.Cmd {
 	m.cancelWrite("application exit")
 	m.resetPermission()
 	m.stopStream()
+	m.endActivity()
 	m.sending = false
 	m.pending = ""
 	return tea.Quit
@@ -2253,10 +2245,10 @@ func (m *Model) attachMeta(i int, turn usage.Turn) {
 func (m Model) currentTurn(id int) bool { return id == 0 || id == m.streamID }
 
 const (
-	// transcriptGutter is the narrow left gutter. User and assistant
-	// text start after it; only the first assistant row places the eye
-	// in it.
-	transcriptGutter = 2
+	// transcriptGutter is the left gutter. User and assistant text
+	// start after it; only the first assistant row places the two-cell
+	// red eye and its separating cell in it.
+	transcriptGutter = 3
 	// transcriptRightMargin keeps the longest line off the terminal edge.
 	transcriptRightMargin = 2
 )
@@ -2294,7 +2286,7 @@ func (m Model) eyePrefix() string {
 	if left < 0 {
 		left = 0
 	}
-	eye := "◉"
+	eye := "🔴"
 	if m.color {
 		eye = m.theme.styles().eye.Render(eye)
 	}
@@ -3084,18 +3076,15 @@ func (m Model) fitWidth(line string, width int) string {
 // the immutable session identity stays available in the diagnostics.
 func (m Model) headerRow() string {
 	st := m.theme.styles()
-	eye := "●"
+	eye := "🔴"
 	identity := eye + " HAL9001"
 	title := strings.TrimSpace(m.title)
-	if title == "" {
+	room := m.width - lipgloss.Width(identity) - lipgloss.Width(" · ")
+	if title == "" || room < 1 {
 		if !m.color {
 			return identity
 		}
 		return st.header.Render(identity)
-	}
-	room := m.width - lipgloss.Width(identity) - len(" · ")
-	if room < 4 {
-		room = 4
 	}
 	title = truncateCells(title, room)
 	if !m.color {

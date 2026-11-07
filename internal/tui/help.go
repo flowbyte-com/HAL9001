@@ -56,6 +56,7 @@ var helpCommandSection = map[string]string{
 	"/effort":     "Sessions and preferences",
 	"/theme":      "Sessions and preferences",
 	"/tool-icons": "Sessions and preferences",
+	"/animation":  "Sessions and preferences",
 	"/usage":      "Sessions and preferences",
 	"/quit":       "Sessions and preferences",
 

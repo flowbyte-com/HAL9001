@@ -511,7 +511,7 @@ func TestToolIconsHistoricalResume(t *testing.T) {
 			t.Errorf("resumed emoji rows are missing %q:\n%s", want, rows)
 		}
 	}
-	if !strings.Contains(rows, "◉") {
+	if !strings.Contains(rows, "🔴") {
 		t.Errorf("the assistant eye disappeared:\n%s", rows)
 	}
 
@@ -546,7 +546,7 @@ func TestToolIconsSelectionAndThemes(t *testing.T) {
 		m.renderConversation()
 
 		plain := stripANSI(strings.Join(m.layoutRows(), "\n"))
-		for _, want := range []string{"📝 write", "🚨 bash", "◉"} {
+		for _, want := range []string{"📝 write", "🚨 bash", "🔴"} {
 			if !strings.Contains(plain, want) {
 				t.Errorf("%s: missing %q:\n%s", theme.Name, want, plain)
 			}
@@ -556,7 +556,7 @@ func TestToolIconsSelectionAndThemes(t *testing.T) {
 				t.Errorf("%s: row is %d cells: %q", theme.Name, got, stripANSI(row))
 			}
 		}
-		if got := strings.Count(plain, "◉"); got != 1 {
+		if got := strings.Count(plain, "\n🔴"); got != 1 {
 			t.Errorf("%s: assistant eyes = %d, want 1", theme.Name, got)
 		}
 

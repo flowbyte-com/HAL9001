@@ -9,10 +9,10 @@ permission model, the tool ledger and all tool execution are unchanged.
 ## Layout rules
 
 - User and assistant text share one content column, with a fixed
-  two-cell inset from the left edge.
-- The transcript uses the full usable terminal width: two cells on the
+  three-cell inset from the left edge.
+- The transcript uses the full usable terminal width: three cells on the
   left and two on the right. There is no fixed maximum reading width.
-- The assistant's first row carries a theme-red `◉` in a two-cell gutter;
+- The assistant's first row carries a theme-red `🔴` in a three-cell gutter;
   wrapped rows and later paragraphs never repeat it.
 - One blank row separates conversation turns. An assistant block has no
   leading or trailing blank row.
@@ -33,7 +33,7 @@ permission model, the tool ledger and all tool execution are unchanged.
 ### 80x24, accepted baseline
 
 ```text
-● HAL9001 · 2026-11-05 10:00
+🔴 HAL9001 · 2026-11-05 10:00
         ─────────────────────────────────┼────────────────────────────────
          Foundation                      │ verified
          Polish                          │ in progress
@@ -61,7 +61,7 @@ Enter send · Ctrl+J newline · /help
 ### 80x24, polished
 
 ```text
-● HAL9001 · 2026-11-05 10:00
+🔴 HAL9001 · 2026-11-05 10:00
 
    Stage                                │ State
   ──────────────────────────────────────┼─────────────────────────────────────
@@ -71,7 +71,7 @@ Enter send · Ctrl+J newline · /help
 
   What ran?
 
-◉ The command completed. One step failed and one was cancelled.
+🔴 The command completed. One step failed and one was cancelled.
 
   ⚙ write notes/plan.md · completed · 13 bytes · 666
   ⚙ bash · failed · exit 17 · 666
@@ -88,15 +88,15 @@ Enter send · Ctrl+J newline · /help
 
 ### 170x38, polished
 
-The long paragraph and table use the full 166-cell content width; the
+The long paragraph and table use the full 165-cell content width; the
 two-cell right margin and the independent footer remain visible.
 
 ```text
-● HAL9001 · 2026-11-05 10:00
+🔴 HAL9001 · 2026-11-05 10:00
 
   Show me the plan.
 
-◉ Plan
+🔴 Plan
 
   A short paragraph with strong text and code.
 
@@ -116,7 +116,7 @@ two-cell right margin and the independent footer remain visible.
 
   What ran?
 
-◉ The command completed. One step failed and one was cancelled.
+🔴 The command completed. One step failed and one was cancelled.
 
   ⚙ write notes/plan.md · completed · 13 bytes · 666
   ⚙ bash · failed · exit 17 · 666
@@ -138,7 +138,7 @@ and statistics scale with the terminal rather than stopping at an
 artificial measure.
 
 ```text
-● HAL9001 · 2026-11-05 10:00
+🔴 HAL9001 · 2026-11-05 10:00
 
 
 
@@ -149,7 +149,7 @@ artificial measure.
 
   Show me the plan.
 
-◉ Plan
+🔴 Plan
 
   A short paragraph with strong text and code.
 
@@ -169,7 +169,7 @@ artificial measure.
 
   What ran?
 
-◉ The command completed. One step failed and one was cancelled.
+🔴 The command completed. One step failed and one was cancelled.
 
   ⚙ write notes/plan.md · completed · 13 bytes · 666
   ⚙ bash · failed · exit 17 · 666
@@ -187,12 +187,12 @@ Enter send · Ctrl+J newline · /help
 ### 60x20, polished
 
 ```text
-● HAL9001 · 2026-11-05 10:00
+🔴 HAL9001 · 2026-11-05 10:00
                               2m 20s · 4.2k in / 12.8k out
 
   What ran?
 
-◉ The command completed. One step failed and one was
+🔴 The command completed. One step failed and one was
   cancelled.
 
   ⚙ write notes/plan.md · completed · 13 bytes · 666
