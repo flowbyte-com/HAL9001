@@ -16,6 +16,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/agenttools"
 	"github.com/flowbyte-com/HAL9001/internal/capability"
 	"github.com/flowbyte-com/HAL9001/internal/knowledge"
+	"github.com/flowbyte-com/HAL9001/internal/mcp"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
@@ -63,6 +64,22 @@ type Engine struct {
 	// 444 and 666, and it cannot execute code, write files or change the
 	// permission mode.
 	web *websearch.Registry
+	// mcp exposes the tools of the connected Model Context Protocol
+	// servers. It is available in both modes, but the permission of
+	// every call is decided by the gate and by the operator's local
+	// policy, never by the server.
+	mcp MCPRegistry
+}
+
+// MCPRegistry is the engine's narrow view of the native MCP client.
+//
+// The engine can list the tools, ask whether one exists and execute it.
+// It cannot connect a server, change a policy or grant a permission.
+type MCPRegistry interface {
+	Tools() []provider.Tool
+	Has(name string) bool
+	Execute(ctx context.Context, call provider.ToolCall) mcp.Result
+	Active() bool
 }
 
 // maxToolSteps bounds a single provider conversation. It is a safety limit,
@@ -122,6 +139,17 @@ func (e *Engine) WithWebResearch(w *websearch.Registry) *Engine {
 	return e
 }
 
+// WithMCP attaches the Model Context Protocol registry.
+//
+// The registry contributes the tools of the servers the operator
+// configured and connected. It is not a permission authority: every call
+// is checked again at its execution boundary, and a server's own
+// annotations are never treated as authority.
+func (e *Engine) WithMCP(r MCPRegistry) *Engine {
+	e.mcp = r
+	return e
+}
+
 // permissionMode is the safe snapshot used for the system instruction and
 // the offered-tool list. It never replaces the gate's execution check.
 func (e *Engine) permissionMode() permission.Mode {
@@ -162,6 +190,15 @@ func (e *Engine) requestMessages(history []session.Message, guidance string) []p
 	}
 	if e.web != nil {
 		if block := e.web.Guidance(); block != "" {
+			if system != "" {
+				system += "\n\n" + block
+			} else {
+				system = block
+			}
+		}
+	}
+	if e.mcp != nil && e.mcp.Active() {
+		if block := mcp.Guidance(); block != "" {
 			if system != "" {
 				system += "\n\n" + block
 			} else {
@@ -666,6 +703,21 @@ func (e *Engine) executeTool(ctx context.Context, call provider.ToolCall, turn i
 			activity.Duration = res.Duration
 			activity.Truncated = res.Truncated
 			activity.Bytes = len(res.Content)
+			return res.Content, activity, nil, false
+		}
+		if e.mcp != nil && e.mcp.Has(call.Name) {
+			res := e.mcp.Execute(ctx, call)
+			activity.Action = res.Action
+			activity.Target = res.Target
+			activity.Status = res.Status
+			activity.Summary = res.Summary
+			activity.Duration = res.Duration
+			activity.Truncated = res.Truncated
+			activity.Bytes = res.Bytes
+			activity.Mode = res.Mode
+			if res.Status == "denied" {
+				return res.Content, activity, nil, true
+			}
 			return res.Content, activity, nil, false
 		}
 		// The existing 444 boundary, unchanged: nothing the model asks

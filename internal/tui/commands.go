@@ -267,6 +267,15 @@ var commandTable = []*command{
 			return nil
 		},
 	},
+	{
+		name:        "/mcp",
+		usage:       "/mcp <subcommand> [server]",
+		description: "Control configured external tool servers",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			return m.mcpCmd(args)
+		},
+	},
 }
 
 // commandByName finds a command by its name or one of its aliases.

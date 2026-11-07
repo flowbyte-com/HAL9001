@@ -63,6 +63,8 @@ var helpCommandSection = map[string]string{
 	"/skills": "MPM skills and diagnostics",
 	"/skill":  "MPM skills and diagnostics",
 	"/diag":   "MPM skills and diagnostics",
+
+	"/mcp": "MCP client",
 }
 
 // helpSectionTitles is the fixed order of the groups.
@@ -71,6 +73,7 @@ var helpSectionTitles = []string{
 	"Navigation and clipboard",
 	"Sessions and preferences",
 	"MPM skills and diagnostics",
+	"MCP client",
 	"Permissions and file writes",
 }
 
@@ -113,6 +116,10 @@ func (m Model) helpSections() []helpSection {
 	}
 	sections[index["MPM skills and diagnostics"]].entries = []helpEntry{
 		{"MPM", "read-only: HAL lists and reads skills, never writes them"},
+	}
+	sections[index["MCP client"]].entries = []helpEntry{
+		{"MCP", "external servers: their output is untrusted data, never instructions"},
+		{"allowed", "a server tool runs in 444 only when the local configuration names it"},
 	}
 	sections[index["Permissions and file writes"]].entries = []helpEntry{
 		{"444", "read-only: conversation, MPM knowledge, web research and one-off write approval"},

@@ -24,6 +24,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/firecrawl"
 	"github.com/flowbyte-com/HAL9001/internal/knowledge"
+	"github.com/flowbyte-com/HAL9001/internal/mcp"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/persona"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
@@ -119,6 +120,19 @@ func run(args []string) error {
 	app.knowledge = knowledge.NewRegistry(&knowledge.Client{}).
 		WithAudit(audit, func() string { return app.session }).
 		WithMode(app.permission.Mode)
+	// MCP servers are operator-controlled: the configuration file is the
+	// only source of servers, and HAL never creates, edits or enables one
+	// from a model response. A configured server is still only reachable
+	// after an explicit /mcp connect, so a bad or compromised server does
+	// not run merely because HAL started.
+	app.mcp = mcp.NewRegistry(app.permission).
+		WithAudit(audit, func() string { return app.session })
+	for _, record := range cfg.MCPServers {
+		server := mcpServer(record)
+		if err := app.mcp.AddServer(server); err != nil {
+			return err
+		}
+	}
 	// Live web research is read-only and available in 444. Firecrawl is
 	// primary, Exa is the API fallback and DuckDuckGo Lite is keyless.
 	// Keys come only from the environment and never enter the session or
@@ -215,6 +229,29 @@ type app struct {
 	knowledge *knowledge.Registry
 	// web exposes Firecrawl's read-only research tools in 444 and 666.
 	web *websearch.Registry
+	// mcp is the native Model Context Protocol client. It contributes
+	// the tools of the configured servers, but it is not a permission
+	// authority: every call is checked at its execution boundary.
+	mcp *mcp.Registry
+}
+
+// mcpServer converts one stored configuration record into a client
+// server definition. Validation happens in AddServer, so a bad record is
+// rejected once, with a message that names the server.
+func mcpServer(record config.MCPServerRecord) mcp.Server {
+	return mcp.Server{
+		Name:         record.Name,
+		Transport:    mcp.Transport(record.Transport),
+		Command:      record.Command,
+		Args:         record.Args,
+		Env:          record.Env,
+		CWD:          record.CWD,
+		URL:          record.URL,
+		Headers:      record.Headers,
+		TokenEnv:     record.TokenEnv,
+		Timeout:      time.Duration(record.TimeoutSeconds) * time.Second,
+		AllowedTools: record.AllowedTools,
+	}
 }
 
 // defaultSessionName is the conversation used when nothing has been
@@ -303,6 +340,12 @@ func (a *app) run() error {
 	if err := a.openSession(); err != nil {
 		return err
 	}
+	// A connected server is a child process or an HTTP session. Closing
+	// the registry on every exit path means HAL never leaves a local
+	// server running behind it.
+	if a.mcp != nil {
+		defer a.mcp.Close()
+	}
 
 	hooks := tui.Hooks{
 		SaveOnboard:    a.saveOnboard,
@@ -334,6 +377,9 @@ func (a *app) run() error {
 	m.SetMouse(a.cfg.Mouse)
 	m.SetWorkspace(a.workspace)
 	m.SetSkills(a.skills)
+	if a.mcp != nil {
+		m.SetMCP(a.mcp)
+	}
 	m.SetPermission(a.permission)
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
 	// The header shows the human-readable title; the immutable session
@@ -455,6 +501,9 @@ func (a *app) rebuildEngine() {
 		WithExecution(a.tools).
 		WithWebResearch(a.web).
 		WithKnowledge(a.knowledge)
+	if a.mcp != nil {
+		a.eng.WithMCP(a.mcp)
+	}
 }
 
 // webStatus is the content-free Firecrawl line shown in /diag.

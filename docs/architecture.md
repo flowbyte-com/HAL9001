@@ -441,6 +441,45 @@ payload. A response larger than the prompt budget is shortened
 explicitly, with the original size and digest; the model is never handed
 a cut JSON object as if it were complete.
 
+## Native MCP client
+
+`internal/mcp` is a separate integration from the MPM bridge. It speaks
+MCP through the official Go SDK (`v1.8.0`): stdio for local servers and
+Streamable HTTP for remote ones. The existing `mpm call` tools are
+untouched and MCP is never selected automatically.
+
+The registry holds only operator-configured servers. Configuration is
+the `mcp_servers` list in the user configuration file; nothing in a model
+response, tool result or server document can add a server, change its
+arguments or alter its policy. A configured server is still inert until
+`/mcp connect <server>`.
+
+The execution boundary is HAL's, not the server's:
+
+- In 444 the model sees only the tools named in that server's
+  `allowed_tools`. `Execute` re-checks the same local policy, so a stale
+  or forged tool list cannot widen it. Server annotations such as
+  `readOnlyHint` are ignored as authority.
+- In 666 every connected tool is offered, and each call begins through
+  `permission.Gate.Begin`. `Disable` cancels the call's context and the
+  registry refuses subsequent calls at once.
+- Names are mapped to `mcp__<server>__<tool>` in the provider's alphabet,
+  bounded to 64 bytes and disambiguated with a hash. Two different tools
+  that would share a name are both withdrawn rather than letting one
+  server answer for the other.
+
+Everything the server sends is untrusted: descriptions carry an explicit
+marker, results use an `"untrusted":true` envelope with a fixed warning,
+and resources/prompts are shown only to the operator in the `/mcp` panel.
+Output is bounded per result, resource, prompt, schema and description,
+with an explicit truncation marker.
+
+Credentials are resolved from the environment at connect time
+(`${NAME}` in headers or the `token_env` bearer token), fail closed when
+missing, and are redacted from error messages. The client does not
+implement OAuth; full configuration and limitations are in
+[`docs/mcp.md`](mcp.md).
+
 ## Live web research (unified providers)
 
 `internal/websearch` owns the single model-facing `web_search` tool and the
