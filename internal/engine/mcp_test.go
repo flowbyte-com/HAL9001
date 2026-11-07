@@ -2,9 +2,15 @@ package engine
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/flowbyte-com/HAL9001/internal/mcp"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
@@ -203,5 +209,119 @@ func TestMCPRefusalIsRecordedAndHaltsTheCall(t *testing.T) {
 	}
 	if ledger.Executions[0].Status != session.ToolRefused || ledger.Executions[0].Mode != "444" {
 		t.Fatalf("record = %#v", ledger.Executions[0])
+	}
+}
+
+// A typed nil *mcp.Registry stored in the engine interface must behave
+// exactly like no registry: it can offer nothing, claim nothing and run
+// nothing. Entry points guard the nil receiver themselves.
+func TestTypedNilMCPRegistryIsSafe(t *testing.T) {
+	var registry *mcp.Registry
+	eng := New(nil, nil, provider.Model{ID: "m"}).WithMCP(registry)
+	if eng.mcp == nil {
+		t.Fatal("the test did not store a typed nil interface")
+	}
+	if tools := eng.offeredTools(); len(tools) != 0 {
+		t.Fatalf("a typed nil registry offered tools: %#v", tools)
+	}
+	if registry.Active() || registry.Has("mcp__x__y") {
+		t.Fatal("a typed nil registry claimed activity")
+	}
+	if res := registry.Execute(context.Background(), provider.ToolCall{Name: "mcp__x__y"}); res.Status != "denied" {
+		t.Fatalf("Execute on a typed nil registry = %q", res.Status)
+	}
+}
+
+// TestMCPSecretNeverReachesTheSessionFile runs a real Streamable HTTP
+// fixture that echoes the client's configured credential. The result is
+// redacted before the engine stores it, so neither the reopened history
+// nor the session files on disk contain the secret.
+func TestMCPSecretNeverReachesTheSessionFile(t *testing.T) {
+	const secret = "engine-secret-value-4321"
+	t.Setenv("HAL_ENGINE_MCP_SECRET", secret)
+
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1.0.0"}, nil)
+	server.AddTool(&sdk.Tool{
+		Name:        "leak",
+		Description: "Echoes the configured credential.",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{
+			Content: []sdk.Content{&sdk.TextContent{
+				Text: "credential " + os.Getenv("HAL_ENGINE_MCP_SECRET"),
+			}},
+			StructuredContent: map[string]any{"token": os.Getenv("HAL_ENGINE_MCP_SECRET")},
+		}, nil
+	})
+	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil)
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	dir := t.TempDir()
+	st, err := session.Open(dir, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	perm := permission.New()
+	perm.SetSession("chat")
+
+	registry := mcp.NewRegistry(perm)
+	if err := registry.AddServer(mcp.Server{
+		Name:         "srv",
+		Transport:    mcp.TransportHTTP,
+		URL:          ts.URL,
+		Headers:      map[string]string{"X-Api-Key": "${HAL_ENGINE_MCP_SECRET}"},
+		AllowedTools: []string{"leak"},
+		Timeout:      5 * time.Second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Connect(context.Background(), "srv"); err != nil {
+		t.Fatal(err)
+	}
+
+	name := mcp.ExposedName("srv", "leak")
+	p := &stepProvider{responses: []provider.Response{
+		{ToolCalls: []provider.ToolCall{{
+			ID: "call_mcp", Name: name, Arguments: map[string]any{},
+		}}},
+		{Content: "Done."},
+	}}
+	eng := New(st, p, provider.Model{ID: "m"}).
+		WithPermission(perm).
+		WithMCP(registry)
+	if _, err := eng.RespondStreamEvents(context.Background(), "leak it", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := session.Open(dir, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := reopened.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range history {
+		if strings.Contains(msg.Content, secret) {
+			t.Fatalf("the stored history contains the credential: %q", msg.Content)
+		}
+	}
+	err = filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("the session file %s contains the credential", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
