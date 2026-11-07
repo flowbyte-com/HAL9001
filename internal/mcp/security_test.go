@@ -292,3 +292,98 @@ func TestServerInstructionsAreNotAdopted(t *testing.T) {
 		}
 	}
 }
+
+// TestAllowedToolsStatusIsRedactedButPermissionIsUnchanged proves the
+// displayed allowlist is redacted while the configured one stays
+// authoritative: the tool whose raw name matches a configured entry still
+// runs in 444, and a tool that is not on the list is still refused.
+func TestAllowedToolsStatusIsRedactedButPermissionIsUnchanged(t *testing.T) {
+	const secret = "allowed-tools-secret-7788"
+	t.Setenv("HAL_MCP_ALLOWED_SECRET", secret)
+
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1.0.0"}, nil)
+	for _, name := range []string{"leak-" + secret, "plain", "blocked"} {
+		tool := name
+		server.AddTool(&sdk.Tool{
+			Name:        tool,
+			Description: "A fixture tool.",
+			InputSchema: map[string]any{"type": "object"},
+		}, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{
+				Content: []sdk.Content{&sdk.TextContent{Text: "ran " + tool}},
+			}, nil
+		})
+	}
+	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil)
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	registry := NewRegistry(permission.New())
+	if err := registry.AddServer(Server{
+		Name:         "remote",
+		Transport:    TransportHTTP,
+		URL:          ts.URL,
+		Headers:      map[string]string{"X-Custom": "${HAL_MCP_ALLOWED_SECRET}"},
+		AllowedTools: []string{"leak-" + secret, "plain"},
+		Timeout:      5 * time.Second,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	if err := registry.Connect(context.Background(), "remote"); err != nil {
+		t.Fatal(err)
+	}
+
+	status := registry.Servers()[0]
+	shown := strings.Join(status.AllowedTools, ", ")
+	if strings.Contains(shown, secret) {
+		t.Fatalf("the status shows the configured credential: %q", shown)
+	}
+	if !strings.Contains(shown, "leak-***") {
+		t.Fatalf("the status does not show the redaction: %q", shown)
+	}
+	if !strings.Contains(shown, "plain") {
+		t.Fatalf("the status lost an ordinary tool name: %q", shown)
+	}
+	raw, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Fatalf("the status representation leaks the credential: %s", raw)
+	}
+
+	// The configured allowlist is unchanged and still decides 444.
+	registry.mu.Lock()
+	configured := append([]string(nil), registry.servers["remote"].cfg.AllowedTools...)
+	registry.mu.Unlock()
+	if len(configured) != 2 || configured[0] != "leak-"+secret || configured[1] != "plain" {
+		t.Fatalf("the configured allowlist was mutated: %#v", configured)
+	}
+
+	exposed := map[string]string{}
+	registry.mu.Lock()
+	for name, info := range registry.tools {
+		exposed[info.Name] = name
+	}
+	registry.mu.Unlock()
+
+	res := registry.Execute(context.Background(), provider.ToolCall{
+		ID: "1", Name: exposed["leak-"+secret],
+	})
+	if res.Status != "ok" {
+		t.Fatalf("the allowlisted tool was refused: status = %q content = %s", res.Status, res.Content)
+	}
+	res = registry.Execute(context.Background(), provider.ToolCall{
+		ID: "2", Name: exposed["plain"],
+	})
+	if res.Status != "ok" {
+		t.Fatalf("the allowlisted tool was refused: status = %q content = %s", res.Status, res.Content)
+	}
+	res = registry.Execute(context.Background(), provider.ToolCall{
+		ID: "3", Name: exposed["blocked"],
+	})
+	if res.Status != "denied" || !strings.Contains(res.Content, "needs 666") {
+		t.Fatalf("a tool outside the allowlist was not refused: status = %q content = %s", res.Status, res.Content)
+	}
+}

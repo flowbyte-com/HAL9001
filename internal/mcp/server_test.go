@@ -314,3 +314,49 @@ func TestBoundedTextDoesNotSplitRunes(t *testing.T) {
 		t.Fatalf("cut text contains a replacement rune: %q", cut)
 	}
 }
+
+// A negative or zero budget is a caller mistake, not a panic. The result
+// must stay inside the budget and must say that it was cut.
+func TestBoundedTextHandlesInvalidLimits(t *testing.T) {
+	tests := []struct {
+		name      string
+		text      string
+		maxBytes  int
+		want      string
+		truncated bool
+	}{
+		{"negative limit", "hello", -1, "", true},
+		{"very negative limit", "hello", -4096, "", true},
+		{"negative limit with empty text", "", -1, "", false},
+		{"zero limit", "hello", 0, "", true},
+		{"zero limit with empty text", "", 0, "", false},
+		{"exact length", "hello", 5, "hello", false},
+		{"one byte above the length", "hello", 6, "hello", false},
+		{"oversized", "hello", 3, "hel", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, truncated := boundedText(tt.text, tt.maxBytes)
+			if truncated != tt.truncated {
+				t.Errorf("truncated = %v, want %v", truncated, tt.truncated)
+			}
+			if got != tt.want {
+				t.Errorf("boundedText(%q, %d) = %q, want %q", tt.text, tt.maxBytes, got, tt.want)
+			}
+			limit := tt.maxBytes
+			if limit < 0 {
+				limit = 0
+			}
+			if len(got) > limit {
+				t.Errorf("result is %d bytes, budget was %d", len(got), limit)
+			}
+		})
+	}
+	// No limit may panic, however negative it is.
+	for limit := -1000; limit <= 0; limit++ {
+		got, _ := boundedText("hello", limit)
+		if len(got) != 0 {
+			t.Fatalf("boundedText with limit %d returned %q", limit, got)
+		}
+	}
+}

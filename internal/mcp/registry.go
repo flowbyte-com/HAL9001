@@ -299,6 +299,11 @@ func (r *Registry) Servers() []ServerStatus {
 				status.Prompts[i].Arguments[j].Description = replaceRedactions(status.Prompts[i].Arguments[j].Description, variants)
 			}
 		}
+		// The displayed allowlist is a copy: the configured one stays
+		// authoritative for the 444 permission check.
+		for i := range status.AllowedTools {
+			status.AllowedTools[i] = replaceRedactions(status.AllowedTools[i], variants)
+		}
 		out = append(out, status)
 	}
 	return out

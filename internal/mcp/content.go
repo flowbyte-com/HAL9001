@@ -144,7 +144,13 @@ func quote(s string) []byte {
 //
 // The marker is inside the budget, so a bounded document never exceeds
 // the caller's limit.
+//
+// A negative budget is a caller mistake, not a reason to panic: it is
+// treated as zero, so the result is empty and marked as cut.
 func boundedText(text string, maxBytes int) (string, bool) {
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
 	if len(text) <= maxBytes {
 		return text, false
 	}
