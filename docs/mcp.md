@@ -63,7 +63,7 @@ Fields:
 | `name` | Unique identity, 1-64 characters of `A-Z a-z 0-9 _ -`. It is part of every exposed tool name. |
 | `transport` | `stdio` (default) or `http` (Streamable HTTP). |
 | `command`, `args`, `cwd`, `env` | The local child process. `env` adds to a small inherited set (PATH, HOME, locale, proxy and certificate variables); HAL's other environment variables, including provider and search keys, are not passed to the child. A value of `${NAME}` is resolved from HAL's environment at connect time. |
-| `url` | The Streamable HTTP endpoint. `http` and `https` only. |
+| `url` | The Streamable HTTP endpoint. `https` is required for every non-loopback host; plain `http` is accepted only for a literal loopback host (`localhost`, `127.0.0.0/8` or `::1`) so a local fixture can run without TLS. |
 | `headers` | Extra HTTP headers. Values may contain `${NAME}` references. |
 | `token_env` | A variable holding a bearer token. It is sent as `Authorization: Bearer <token>`. |
 | `timeout_seconds` | One call's timeout. Zero means 30 seconds; the maximum accepted is 600. |
@@ -72,13 +72,18 @@ Fields:
 A missing `${NAME}` reference, or a missing `token_env` variable, is a
 configuration error: the server does not connect with an empty credential.
 Secrets are resolved in memory only. They are not written to the
-configuration, a log, the audit trail, the session, a model prompt or a
-tool result, and an error message that would quote one is redacted.
-Local servers receive only the small inherited environment described
-above; a server that needs another variable must have it named explicitly.
-Use `https://` for remote endpoints whenever the network is not trusted;
-`http://` sends the bearer token in clear text and is intended for a
-local test fixture.
+configuration, a log, the audit trail, the session, a model prompt or any
+tool result. A credential is redacted from successful text, IsError text,
+structured and nested values, metadata, resource and prompt documents, and
+base64 image/audio payloads, in every textual representation that could
+carry it. Redaction work is bounded; a value that cannot be scanned within
+the bound is withheld rather than returned raw. Local servers receive only
+the small inherited environment described above; a server that needs
+another variable must have it named explicitly, and configured `env` values
+are treated as credentials for redaction.
+Use `https://` for every remote endpoint. A plain `http://` URL is accepted
+only when its host is a literal loopback address, where it is intended for
+a local test fixture; any other host is refused at configuration time.
 
 A redirect is not followed. The configured endpoint is the only address
 that receives the headers, so a 3xx response cannot move a credential to
@@ -128,9 +133,10 @@ The permission decision never comes from the server.
 The model sees MCP tools through HAL's ordinary tool surface, so they keep
 the normal activity line, cancellation, tool ledger and audit trail.
 Model-visible names are `mcp__<server>__<tool>`, sanitized to the
-provider's function-name alphabet and capped at 64 characters. A name that
-had to be rewritten or shortened carries an 8-character SHA-256 suffix of
-its original identity.
+provider's function-name alphabet and capped at 64 characters. Every name
+carries a 16-hex SHA-256 suffix of the exact server and tool identity, so
+two distinct identities cannot produce one name. The registry also checks
+for an exact collision and withdraws both names if one is ever found.
 
 ## Untrusted input
 
@@ -140,6 +146,11 @@ input schemas, results, structured results, resources and prompts.
 - Tool descriptions reach the model with an explicit `[MCP server … —
   untrusted description]` marker, and the request carries a guidance block
   saying that server output is not an operator instruction.
+- Input schemas are validated, bounded and sanitized. Annotation-only
+  keywords (`description`, `title`, `$comment`, `examples`, `default`) are
+  removed, remote references are refused, and an unusable schema is
+  replaced by a permissive `object` fallback. Validation keywords keep
+  their exact values, including enum and const instances.
 - Tool results are wrapped in an envelope with `"untrusted":true`, a fixed
   warning note, the server and tool names, and the server's own error flag.
 - Resources and prompts are operator-facing documents in the `/mcp` panel.

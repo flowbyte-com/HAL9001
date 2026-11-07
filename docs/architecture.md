@@ -464,19 +464,30 @@ The execution boundary is HAL's, not the server's:
   `permission.Gate.Begin`. `Disable` cancels the call's context and the
   registry refuses subsequent calls at once.
 - Names are mapped to `mcp__<server>__<tool>` in the provider's alphabet,
-  bounded to 64 bytes and disambiguated with a hash. Two different tools
-  that would share a name are both withdrawn rather than letting one
-  server answer for the other.
+  bounded to 64 bytes. Every name carries a 16-hex SHA-256 digest of the
+  exact server and tool identity, so two different tools cannot share one
+  name; if a digest collision were ever detected both names are withdrawn
+  rather than letting one server answer for the other.
+- Remote endpoints must use `https`; plain `http` is accepted only for a
+  literal loopback host (`localhost`, `127.0.0.0/8`, `::1`) so a local
+  fixture can run without TLS.
 
 Everything the server sends is untrusted: descriptions carry an explicit
 marker, results use an `"untrusted":true` envelope with a fixed warning,
 and resources/prompts are shown only to the operator in the `/mcp` panel.
-Output is bounded per result, resource, prompt, schema and description,
-with an explicit truncation marker.
+Input schemas are validated and bounded; annotation-only text is removed
+and an unusable schema falls back to a permissive object. Output is bounded
+per result, resource, prompt, schema and description, with an explicit
+truncation marker.
 
 Credentials are resolved from the environment at connect time
 (`${NAME}` in headers or the `token_env` bearer token), fail closed when
-missing, and are redacted from error messages. The client does not
+missing, and are redacted from every result channel, not only errors:
+successful text, error results, structured and nested values, metadata,
+resource and prompt documents, and base64 image/audio payloads. Local
+servers receive only a small inherited environment plus their own
+configured entries. Redaction work is bounded; if the bound is reached the
+value is withheld rather than returned unscanned. The client does not
 implement OAuth; full configuration and limitations are in
 [`docs/mcp.md`](mcp.md).
 
@@ -491,8 +502,9 @@ independent adapters in fixed order:
 3. `internal/websearch`'s DuckDuckGo Lite adapter — keyless HTML from
    `https://lite.duckduckgo.com/lite/`.
 
-There is no generic MCP client and no Node.js runtime. The tools are
-available in 444 and 666 because they only read public web data.
+There is no Node.js runtime, and the web research tools are independent of
+the native MCP client described above. The tools are available in 444 and
+666 because they only read public web data.
 
 **Unified result.** Every provider is normalized to title, source URL,
 excerpt, publication date when supplied, retrieval timestamp, provider

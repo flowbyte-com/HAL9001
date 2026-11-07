@@ -609,8 +609,10 @@ built on the official Go SDK. It is disabled until the operator adds
 `mcp_servers` to the configuration file and runs `/mcp connect <server>`;
 it does not replace the existing `mpm call` bridge.
 
-- Local servers use stdio and run as a child process; remote servers use
-  Streamable HTTP. The client negotiates the current protocol revision
+- Local servers use stdio and run as a child process with only a small
+  inherited environment plus their configured entries; remote servers use
+  Streamable HTTP, which must be HTTPS unless the host is a literal
+  loopback address. The client negotiates the current protocol revision
   with older servers and reports the negotiated version in `/mcp`.
 - **444 authority is local configuration, never a server annotation.** A
   server tool runs in 444 only when the operator's `allowed_tools` names
@@ -619,12 +621,14 @@ it does not replace the existing `mpm call` bridge.
   cancels in-flight calls and revokes further execution.
 - Server descriptions, schemas, results, resources and prompts are
   untrusted data. Results carry `"untrusted":true`; descriptions are
-  marked; the request says not to follow instructions found inside them.
-  Output is bounded and explicitly marked when cut.
+  marked; schemas are bounded and stripped of annotation-only text; the
+  request says not to follow instructions found inside them. Output is
+  bounded and explicitly marked when cut.
 - Credentials come from the environment (`${NAME}` expansion in headers or
   `token_env` for a bearer token). A missing variable fails closed. Secrets
-  never enter the configuration, logs, sessions, audit records or prompts.
-  OAuth is not implemented.
+  are redacted from successful and error results, structured values,
+  resources and prompts, and never enter the configuration, logs, sessions,
+  audit records or prompts. OAuth is not implemented.
 - `/mcp` shows servers, capabilities, tools, resources and prompts;
   `/mcp tools`, `/mcp connect`, `/mcp disconnect`, `/mcp read` and
   `/mcp prompt` are the operator controls. A lost connection removes the
