@@ -32,13 +32,18 @@ const attachPaperclip = "📎"
 
 // attachmentSummary renders the attached files as one line: the name and
 // the size of each, separated by a middle dot.
+//
+// The names are cleaned again here. They are cleaned when the
+// attachment is made and when a session record is read, but this is the
+// last place before the text reaches a terminal row, and a name that
+// carries a newline or an escape would break the frame.
 func attachmentSummary(files []attachments.Meta) string {
 	if len(files) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(files))
 	for _, f := range files {
-		parts = append(parts, f.Display())
+		parts = append(parts, attachments.SanitizeMeta(f).Display())
 	}
 	return attachPaperclip + " " + strings.Join(parts, " · ")
 }
@@ -47,7 +52,7 @@ func attachmentSummary(files []attachments.Meta) string {
 func attachmentNames(files []attachments.Meta) string {
 	names := make([]string, 0, len(files))
 	for _, f := range files {
-		names = append(names, f.Name)
+		names = append(names, attachments.SanitizeMeta(f).Name)
 	}
 	return strings.Join(names, ", ")
 }

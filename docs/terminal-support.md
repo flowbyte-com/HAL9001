@@ -146,8 +146,21 @@ terminal width.
 The same paperclip marks the files of a message in the transcript. That
 row is interface, not text: a selection never copies it.
 
+A filename is operator-supplied text, and it ends up on the screen. One
+that carries a newline or a terminal escape is cleaned before it is
+shown, so it can neither split a row of the frame nor write a sequence
+into the terminal. The same cleaning is applied to a name that comes
+back from a stored conversation, where it was written by hand.
+
 `/attach` and `/detach` are local commands and never reach the model.
 `/attachments` lists the pending files and the directory they live in.
+
+Every copy is kept in `~/HAL/uploads/`. HAL removes nothing on its own:
+not when a message is sent, not when a conversation is cleared, not when
+it exits. To remove a copy, delete its own directory —
+`~/HAL/uploads/<id>/` — or the whole `~/HAL/uploads/` directory. The
+conversation keeps a reference to a copy that is gone, and HAL reports
+such a file as unreadable rather than as an empty one.
 
 ## Clipboard
 

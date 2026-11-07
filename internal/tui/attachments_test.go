@@ -550,6 +550,56 @@ func TestTheCommandsNeverReachTheModel(t *testing.T) {
 	}
 }
 
+// TestAMaliciousNameNeverBreaksTheFrame checks that a name carrying a
+// newline or a terminal escape cannot split a row of the frame or
+// inject a sequence into the terminal.
+func TestAMaliciousNameNeverBreaksTheFrame(t *testing.T) {
+	m, _, src := newAttachmentModel(t)
+	path := writeSource(t, src, "evil\nname\x1b[31m.txt", "content")
+	// The command line cannot carry a newline, so the file is attached
+	// the way the store would: the name reaches the interface either
+	// way.
+	m.attachFile(path)
+	if len(m.pendingFiles) != 1 {
+		t.Fatalf("pending files = %d, want 1", len(m.pendingFiles))
+	}
+	if strings.ContainsAny(m.pendingFiles[0].Name, "\n\r\x1b") {
+		t.Errorf("the pending name still carries a control character: %q", m.pendingFiles[0].Name)
+	}
+	for _, row := range m.layoutRows() {
+		if strings.Contains(row, "\n") {
+			t.Errorf("a row carries a newline: %q", row)
+		}
+		if strings.Contains(row, "\x1b[31m") {
+			t.Errorf("a row carries an injected sequence: %q", stripANSI(row))
+		}
+	}
+}
+
+// TestARestoredNameNeverBreaksTheFrame checks the same for a name that
+// comes back from a session record, where it was written by hand.
+func TestARestoredNameNeverBreaksTheFrame(t *testing.T) {
+	m := testModel()
+	m.SetHistory([]SessionLine{{
+		Role: "user",
+		Text: "please read this",
+		Files: []attachments.Meta{{
+			ID:    "abc123",
+			Name:  "evil\nname\x1b[31m.txt",
+			Path:  "abc123/evil.txt",
+			Bytes: 12,
+		}},
+	}})
+	for _, row := range m.layoutRows() {
+		if strings.Contains(row, "\n") {
+			t.Errorf("a row carries a newline: %q", row)
+		}
+		if strings.Contains(row, "\x1b[31m") {
+			t.Errorf("a row carries an injected sequence: %q", stripANSI(row))
+		}
+	}
+}
+
 // TestTheAttachmentRowIsInterfaceNotText checks that the row naming the
 // pending files is marked as decoration, so a selection never copies it.
 func TestTheAttachmentRowIsInterfaceNotText(t *testing.T) {

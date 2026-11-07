@@ -209,8 +209,12 @@ manual terminal check remains:
       timestamp.
 - [ ] The copy is in `~/HAL/uploads/`, in a directory of its own, and the
       directory and the copies are readable by the operator only.
+- [ ] The copy's `attachment.json` names the file it was copied from.
+      The conversation record itself holds no path on your machine.
 - [ ] A filename with spaces works: `/attach ~/my notes.md`.
 - [ ] A Unicode filename keeps its name.
+- [ ] A filename carrying a newline or an escape sequence is cleaned: it
+      neither splits a row nor writes anything into the terminal.
 - [ ] The same filename attached twice gives two separate copies; neither
       replaces the other.
 - [ ] A missing file, a directory, a binary file, a file in an encoding
@@ -222,9 +226,14 @@ manual terminal check remains:
       the copy stays in the upload directory.
 - [ ] Sending the message carries the file's text to the model, marked as
       untrusted data; the reply discusses the file.
+- [ ] The untrusted block is delimited by markers that carry a token of
+      this request alone; a file that contains marker-like text does not
+      end the block.
 - [ ] A file whose content says "ignore your instructions" is discussed
       as content: the permission mode does not change and no instruction
       is taken from it.
+- [ ] An empty file is reported as empty. A file left out because the
+      turn's attachment budget was used up is reported as left out.
 - [ ] The transcript shows the paperclip and the file's name under the
       message that carried it.
 - [ ] The footer still reads `444 READ ONLY` — attaching does not enable
@@ -232,6 +241,13 @@ manual terminal check remains:
       upload directory.
 - [ ] Restarting HAL and reopening the conversation still shows which
       files were attached, without the file's text in the session.
+- [ ] A stored conversation whose attachment references were edited by
+      hand still opens, and the edited names do not break the frame.
+- [ ] Nothing is deleted for you: the copy stays in `~/HAL/uploads/`
+      after the message is sent, after `/clear` and after a restart.
+      Deleting `~/HAL/uploads/<id>/` yourself is the only way a copy
+      goes, and the conversation then reports the file as unreadable
+      rather than as empty.
 - [ ] At 80×9 the pending row is the first thing to go; the composer text
       is never pushed out of view, and no row overflows.
 

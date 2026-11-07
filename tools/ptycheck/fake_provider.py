@@ -54,7 +54,7 @@ SKILL_RE = re.compile(r"MPM skill: ([A-Za-z0-9_.-]+)")
 
 def attached_body(text):
     """Return the attachment content the request carried, if any."""
-    marker = "--- begin untrusted content of"
+    marker = "--- begin untrusted content ["
     start = text.find(marker)
     if start < 0:
         return ""
@@ -62,10 +62,20 @@ def attached_body(text):
     if start < 0:
         return ""
     body = text[start + 1:]
-    end = body.find("--- end of")
+    end = body.find("--- end untrusted content [")
     if end >= 0:
         body = body[:end]
     return body.strip()
+
+
+def attachment_boundary(request):
+    """Report whether the request delimited its untrusted blocks."""
+    for message in request.get("messages", []):
+        if message.get("role") != "user":
+            continue
+        if "--- begin untrusted content [" in message.get("content", ""):
+            return "yes"
+    return "no"
 
 
 def attachment_guidance(request):
@@ -227,8 +237,9 @@ class Handler(BaseHTTPRequestHandler):
         # file's text reached the model and whether the system
         # instruction marked it as data.
         if ATTACHED_RE.search(last):
-            self.answer("ATTACHED: %s | GUIDANCE: %s" % (
-                attached_body(last)[:60], attachment_guidance(request)))
+            self.answer("ATTACHED: %s | GUIDANCE: %s | BOUNDARY: %s" % (
+                attached_body(last)[:60], attachment_guidance(request),
+                attachment_boundary(request)))
             return
 
         # A skill in the system instruction means the guidance was loaded

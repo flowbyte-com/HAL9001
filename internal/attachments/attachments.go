@@ -92,12 +92,18 @@ var (
 // It carries metadata only: the file's contents live in the upload
 // directory, and the session record keeps this reference rather than a
 // second copy of the content.
+//
+// The reference deliberately holds no path on the operator's machine.
+// The absolute path a file was copied from lives in the sidecar beside
+// the copy, where it is local provenance and nothing more: a session
+// record is a conversation, and the operator's own directory layout does
+// not belong in one.
 type Meta struct {
 	// ID is the short, opaque identity of the attachment. It is what
 	// the operator names when detaching it.
 	ID string `json:"id"`
-	// Name is the original filename, exactly as the operator selected
-	// it. It is metadata: the stored copy may carry a sanitized name.
+	// Name is the original filename, as the operator selected it. It is
+	// metadata: the stored copy may carry a sanitized name.
 	Name string `json:"name"`
 	// Path is the copy's location relative to the upload directory.
 	Path string `json:"path"`
@@ -108,9 +114,6 @@ type Meta struct {
 	SHA256 string `json:"sha256"`
 	// Kind is the file kind: text, markdown, code or data.
 	Kind string `json:"kind"`
-	// Source is the absolute path the operator selected. It stays
-	// local: it is never part of a model request.
-	Source string `json:"source,omitempty"`
 	// Created is when the copy was made.
 	Created time.Time `json:"created"`
 }
@@ -119,6 +122,147 @@ type Meta struct {
 // name and the size.
 func (m Meta) Display() string {
 	return m.Name + " (" + HumanSize(m.Bytes) + ")"
+}
+
+// MaxNameLength bounds a displayed attachment name.
+//
+// A name is operator-supplied text that ends up on the screen and in a
+// model request, so it is bounded: a name long enough to fill a screen
+// is not a name.
+const MaxNameLength = 120
+
+// SanitizeName makes a filename safe to show and to embed.
+//
+// A name is free text on the operator's disk, and it ends up in two
+// places that both assume one line of text: the interface's own rows,
+// and the model request. A newline in it would break both — it could
+// forge a line of the request, and it would split a row of the frame.
+//
+// Control characters and terminal escapes are therefore removed, and
+// the result is one bounded line. Everything else is preserved: spaces,
+// Unicode and punctuation are the operator's own and mean nothing to
+// HAL.
+func SanitizeName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			// A break becomes a space: the name stays one line.
+			b.WriteRune(' ')
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
+			// Control characters, including the escape that starts a
+			// terminal sequence, are dropped. What follows an escape is
+			// plain text once the escape itself is gone.
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	runes := []rune(out)
+	if len(runes) > MaxNameLength {
+		out = strings.TrimSpace(string(runes[:MaxNameLength]))
+	}
+	return out
+}
+
+// SanitizeID accepts only the shape of an attachment identity: a short
+// run of hexadecimal characters.
+//
+// An identity names a directory and names an attachment to the operator,
+// so anything else is not an identity. It becomes empty rather than
+// something that could be mistaken for a path.
+func SanitizeID(id string) string {
+	if id == "" || len(id) > 32 {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range id {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'F':
+			b.WriteRune(r + ('a' - 'A'))
+		default:
+			return ""
+		}
+	}
+	return b.String()
+}
+
+// SanitizeKind accepts only a known file kind.
+//
+// The kind is a label: it is shown to the operator and sent to the
+// model, so it must not be free text. Anything unrecognised is text.
+func SanitizeKind(kind string) string {
+	switch kind {
+	case KindText, KindMarkdown, KindCode, KindData:
+		return kind
+	default:
+		return KindText
+	}
+}
+
+// SanitizeMeta makes a reference safe to display, to store and to send.
+//
+// Every reference that comes from outside — a file on the operator's
+// disk, a session record, a test double — passes through here. The name,
+// the identity and the kind are operator-visible text and are cleaned;
+// the location is checked for the shape the upload directory uses; the
+// numbers are bounded and the checksum is checked for shape.
+//
+// A reference that cannot be cleaned is emptied rather than repaired:
+// half a reference is worse than none, and none is honest.
+func SanitizeMeta(m Meta) Meta {
+	m.Name = SanitizeName(m.Name)
+	m.ID = SanitizeID(m.ID)
+	m.Kind = SanitizeKind(m.Kind)
+	m.Path = sanitizeRelativePath(m.Path)
+	m.SHA256 = sanitizeDigest(m.SHA256)
+	if m.Bytes < 0 {
+		m.Bytes = 0
+	}
+	return m
+}
+
+// sanitizeRelativePath accepts only the shape the upload directory
+// uses: an attachment directory and a file inside it.
+//
+// The path is resolved inside the confined upload directory in any case,
+// so this is not the boundary. It keeps a damaged record from naming
+// something that is not a copy, such as a sidecar.
+func sanitizeRelativePath(p string) string {
+	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "\\") {
+		return ""
+	}
+	parts := strings.Split(p, "/")
+	if len(parts) != 2 {
+		return ""
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return ""
+		}
+	}
+	return p
+}
+
+// sanitizeDigest accepts only a checksum of the right shape.
+func sanitizeDigest(sum string) string {
+	if len(sum) != 64 {
+		return ""
+	}
+	for _, r := range sum {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+		default:
+			return ""
+		}
+	}
+	return sum
 }
 
 // HumanSize renders a byte count in the compact form the interface uses.
@@ -251,11 +395,13 @@ func (s *Store) Attach(path string) (Meta, error) {
 	sum := sha256.Sum256(data)
 	name := filepath.Base(src)
 	meta := Meta{
-		Name:    name,
+		// The name is cleaned here as well as at the display boundary:
+		// a filename on the operator's disk is free text, and this is
+		// where it enters the system.
+		Name:    SanitizeName(name),
 		Bytes:   int64(len(data)),
 		SHA256:  hex.EncodeToString(sum[:]),
 		Kind:    classify(name),
-		Source:  src,
 		Created: s.now().UTC(),
 	}
 	// The copy gets its own directory under a random name. A directory
@@ -287,7 +433,8 @@ func (s *Store) Attach(path string) (Meta, error) {
 		_ = root.RemoveAll(id)
 		return Meta{}, err
 	}
-	if err := writeMeta(root, filepath.ToSlash(filepath.Join(id, "attachment.json")), meta); err != nil {
+	if err := writeMeta(root, filepath.ToSlash(filepath.Join(id, "attachment.json")),
+		record{Meta: meta, Source: src}); err != nil {
 		_ = root.RemoveAll(id)
 		return Meta{}, err
 	}
@@ -311,6 +458,10 @@ func (s *Store) Size(path string) (int64, error) {
 }
 
 // Load reads back the stored reference of one attachment.
+//
+// The sidecar also holds the path the file was copied from. That is
+// local provenance and is not returned here: the reference is what the
+// conversation keeps.
 func (s *Store) Load(id string) (Meta, error) {
 	if s == nil {
 		return Meta{}, ErrClosed
@@ -324,11 +475,11 @@ func (s *Store) Load(id string) (Meta, error) {
 	if err != nil {
 		return Meta{}, fmt.Errorf("%w: %s", ErrUnknown, id)
 	}
-	var meta Meta
-	if err := json.Unmarshal(data, &meta); err != nil {
+	var rec record
+	if err := json.Unmarshal(data, &rec); err != nil {
 		return Meta{}, fmt.Errorf("%w: %s", ErrUnknown, id)
 	}
-	return meta, nil
+	return SanitizeMeta(rec.Meta), nil
 }
 
 // Content returns the decoded text of one attachment, bounded to max
@@ -546,10 +697,21 @@ func writeFile(root *os.Root, rel string, data []byte) error {
 	return nil
 }
 
+// record is the sidecar written beside a copy.
+//
+// It holds the reference plus the path the file was copied from. The
+// source is local provenance: it is not part of Meta, so it can never
+// reach a session record or a model request.
+type record struct {
+	Meta
+	// Source is the absolute path the operator selected.
+	Source string `json:"source,omitempty"`
+}
+
 // writeMeta stores the reference beside the copy, so the upload
 // directory explains itself without the session record.
-func writeMeta(root *os.Root, rel string, meta Meta) error {
-	data, err := json.MarshalIndent(meta, "", "  ")
+func writeMeta(root *os.Root, rel string, rec record) error {
+	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return fmt.Errorf("attachments: %w", err)
 	}

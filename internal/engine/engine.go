@@ -215,10 +215,13 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 	if system != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: system})
 	}
+	// The boundary that delimits the untrusted attachment blocks is
+	// fresh for this request, so nothing inside a file can forge it.
+	boundary := attachmentBoundary()
 	for _, msg := range history {
 		content := msg.Content
 		if len(msg.Attachments) > 0 {
-			content = e.attachmentRequest(msg, msg.TurnID == expandTurn)
+			content = e.attachmentRequest(msg, msg.TurnID == expandTurn, boundary)
 		}
 		messages = append(messages, provider.Message{
 			Role:    string(msg.Role),

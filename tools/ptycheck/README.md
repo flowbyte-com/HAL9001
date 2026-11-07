@@ -133,10 +133,10 @@ The attachment checks start their own fake provider on port 8129 and own
 their config, home, workspace, session store and source files. They verify
 that `/attach` copies the chosen file into `~/HAL/uploads/`, that the
 pending row names it above the composer, that the file's text reaches the
-model as untrusted data, that the session keeps a reference and not the
-content, that `/detach` takes the file back without deleting the copy, that
-a missing file and a directory are refused, and that 80x9 stays exactly
-nine rows:
+model as untrusted data inside a delimited block, that the session keeps a
+reference and not the content or the operator's own path, that `/detach`
+takes the file back without deleting the copy, that a missing file and a
+directory are refused, and that 80x9 stays exactly nine rows:
 
 ```sh
 HAL9001_BINARY=/tmp/opencode/hal9001 \
@@ -217,9 +217,10 @@ python3 tools/ptycheck/attachment_checks.py
   the original file is unchanged, the pending row names the file and its
   size above the composer, `/attachments` lists it, `/detach` takes it
   back while the copy stays, a missing file and a directory are refused,
-  the file's text reaches the model marked as untrusted data, the session
-  record holds the reference and not the content, and 80x9 stays exactly
-  nine rows.
+  the file's text reaches the model marked as untrusted data inside a
+  block delimited by a per-request token, the session record holds the
+  reference and not the content or the operator's own path, and 80x9
+  stays exactly nine rows.
 - The link suite verifies OSC 8 destinations, label-only Markdown links,
   visible bare URLs, numbered lists, tables, unsafe-scheme rejection,
   fenced-code exclusion and plain reconstructed screen text.

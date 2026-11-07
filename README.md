@@ -518,7 +518,10 @@ never the one who chooses.
   and the copies are 0600.
 - **The name is preserved, the path is not.** The original filename is
   kept as metadata — spaces, Unicode and all — and a sanitized form of
-  it names the copy, so two files with the same name never collide.
+  it names the copy, so two files with the same name never collide. A
+  filename that carries a control character or a terminal escape is
+  cleaned: it would otherwise split a row of the interface or forge a
+  line of a model request.
 - **Attaching authorises one file, nothing more.** It works in 444 and
   it does not enable 666, does not widen the workspace and does not give
   the model a filesystem. The guarded write is unchanged.
@@ -536,7 +539,13 @@ never the one who chooses.
   discuss, never an instruction. A file that says "ignore your
   instructions" is carried as text that says that, and changes nothing.
   The content is bounded — 16 KiB per file and 64 KiB per turn — and the
-  cut is reported rather than hidden.
+  cut is reported rather than hidden. A file left out because the turn's
+  budget was used up says so; it is never passed off as an empty file.
+- **The boundary cannot be forged.** The untrusted blocks are delimited
+  by markers that carry a token fresh for every request, and the
+  filename is quoted before it is written. Neither a filename nor a
+  file's contents can write a line of the request or end a block and
+  make what follows look like an instruction.
 - **The conversation keeps a reference, not a copy.** The session record
   holds the name, the size, the checksum and the location of the copy.
   The file's text is never written into the session, so a stored
@@ -545,17 +554,34 @@ never the one who chooses.
   attached. Only the turn being answered carries the content; older
   turns keep the name and the size, so an old file's text is not carried
   through the rest of the conversation.
+- **A damaged record cannot lose a conversation.** The attachment
+  references are optional metadata. A record whose references are
+  unreadable — a hand edit, a damaged file, an older version — still
+  loads: the references that cannot be read are dropped and the ones
+  that can be read are cleaned, but the conversation around them is
+  untouched.
 - **Nothing is deleted for you.** `/detach` takes a file back out of the
   next message. The copy stays in the upload directory: removing an
   attachment is not a request to destroy the operator's file.
-- **The original path stays local.** The absolute path the operator
-  selected is metadata for the session record. It is never part of a
-  model request.
+- **The operator's own directory stays out of the conversation.** The
+  absolute path a file was copied from is kept in the `attachment.json`
+  sidecar beside the copy, where it is local provenance. It is not part
+  of the reference the session keeps, so it never enters a conversation
+  file, and it is never part of a model request.
 
 The pending files are named on their own row directly above the
 composer, with their sizes, so the operator can see what the next
 message will carry before sending it. `/attachments` lists them and the
 directory they live in, and `/detach <name>` removes one.
+
+**Retention.** HAL keeps every copy it makes. Nothing is removed on its
+own: not when a message is sent, not when a conversation is cleared, not
+when HAL exits. A copy in `~/HAL/uploads/` is the operator's file, and
+only the operator decides that it should go. To clean up, delete the
+attachment's own directory — `~/HAL/uploads/<id>/` — or the whole
+`~/HAL/uploads/` directory when no conversation needs it any more. The
+session records keep a reference to a copy that is gone; HAL reports
+such a file as unreadable rather than pretending it is empty.
 
 **Skills (MPM).** HAL discovers the skills MPM manages and uses the one
 that fits the request, without being told which to use.

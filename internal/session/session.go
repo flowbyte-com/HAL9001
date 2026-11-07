@@ -124,17 +124,17 @@ type ToolLedger struct {
 	Executions []ToolExecution `json:"executions"`
 }
 
-// messageWire is the on-disk shape used by UnmarshalJSON. The ledger is
-// carried as raw JSON so a damaged optional ledger can be ignored without
-// losing the conversation around it.
+// messageWire is the on-disk shape used by UnmarshalJSON. The ledger and
+// the attachment references are carried as raw JSON so a damaged optional
+// field can be ignored without losing the conversation around it.
 type messageWire struct {
-	Role        Role               `json:"role"`
-	Content     string             `json:"content"`
-	Timestamp   time.Time          `json:"ts"`
-	TurnID      string             `json:"turn_id,omitempty"`
-	Attribution *Attribution       `json:"attribution,omitempty"`
-	ToolLedger  json.RawMessage    `json:"tool_ledger,omitempty"`
-	Attachments []attachments.Meta `json:"attachments,omitempty"`
+	Role        Role            `json:"role"`
+	Content     string          `json:"content"`
+	Timestamp   time.Time       `json:"ts"`
+	TurnID      string          `json:"turn_id,omitempty"`
+	Attribution *Attribution    `json:"attribution,omitempty"`
+	ToolLedger  json.RawMessage `json:"tool_ledger,omitempty"`
+	Attachments json.RawMessage `json:"attachments,omitempty"`
 }
 
 // UnmarshalJSON keeps old sessions and damaged optional ledgers loadable.
@@ -151,12 +151,45 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		Timestamp:   w.Timestamp,
 		TurnID:      w.TurnID,
 		Attribution: w.Attribution,
-		Attachments: w.Attachments,
+		Attachments: parseAttachments(w.Attachments),
 	}
 	if len(w.ToolLedger) > 0 {
 		m.ToolLedger = parseToolLedger(w.ToolLedger)
 	}
 	return nil
+}
+
+// parseAttachments reads the optional attachment references of a message.
+//
+// The references are optional metadata, and they are the only part of a
+// record that a damaged file, an older version or a hand edit can make
+// unreadable. A whole conversation must not be lost because of them:
+// the field that cannot be read at all is treated as absent, a single
+// damaged reference is dropped without taking the others with it, and
+// every reference that can be read is sanitised before it is used.
+func parseAttachments(raw json.RawMessage) []attachments.Meta {
+	if len(raw) == 0 {
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		// Not a list: the references are unreadable, but the message
+		// around them is still good.
+		return nil
+	}
+	out := make([]attachments.Meta, 0, len(items))
+	for _, item := range items {
+		var meta attachments.Meta
+		if err := json.Unmarshal(item, &meta); err != nil {
+			// One damaged reference does not lose the others.
+			continue
+		}
+		out = append(out, attachments.SanitizeMeta(meta))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ToolExecutions returns the valid evidence attached to this message. A
@@ -602,7 +635,14 @@ func (s *Store) AppendTurn(role Role, content string, turn Turn) (Message, error
 		msg.ToolLedger = buildToolLedger(s.name, turn.ID, turn.Tools)
 	}
 	if role == RoleUser && len(turn.Attachments) > 0 {
-		msg.Attachments = append([]attachments.Meta(nil), turn.Attachments...)
+		// The references are cleaned on the way in as well as on the
+		// way out: a session record is a file on disk, and it should
+		// hold nothing that could rewrite the interface.
+		refs := make([]attachments.Meta, 0, len(turn.Attachments))
+		for _, a := range turn.Attachments {
+			refs = append(refs, attachments.SanitizeMeta(a))
+		}
+		msg.Attachments = refs
 	}
 	if turn.Attribution != nil {
 		// The attribution repeats the turn identity it belongs to, so a

@@ -243,6 +243,8 @@ def main():
         check("the file's text reached the model", MARKER in text, text)
         check("the request marked the content as data",
               "GUIDANCE: yes" in text, text)
+        check("the request delimited the untrusted block",
+              "BOUNDARY: yes" in text, text)
 
         # 8. The transcript keeps a reference to the file.
         check("the transcript shows the attached file", "my notes.txt" in text, text)
@@ -255,6 +257,9 @@ def main():
               MARKER not in session_user_text(), session_user_text()[:400])
         check("the session record stays small",
               len(stored) < 4096, len(stored))
+        # The operator's own directory is not part of the conversation.
+        check("the session record holds no source path",
+              '"source"' not in stored and sources not in stored, stored[:400])
 
         # 10. A short terminal keeps exactly nine rows.
         _, text = capture([(2.0, ("/attach " + source + "\r").encode()),
@@ -275,6 +280,13 @@ def main():
         check("an ordinary conversation shows no attachment row",
               "📎" not in plain, plain)
         check("an ordinary conversation still answers", "I read" in plain, plain)
+
+        # 12. A restart keeps the reference: the conversation is read
+        # back from disk and still names the file.
+        _, text = capture([(2.0, b"")], timeout=3.5)
+        check("a restart still shows the attached file",
+              "my notes.txt" in text, text)
+        check("a restart still shows the paperclip", "📎" in text, text)
     finally:
         provider.terminate()
         try:
