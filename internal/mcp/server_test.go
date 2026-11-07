@@ -41,12 +41,38 @@ func TestServerValidate(t *testing.T) {
 		{
 			name:    "http with a bad scheme",
 			server:  Server{Name: "remote", Transport: TransportHTTP, URL: "file:///etc/passwd"},
-			wantErr: "must use http or https",
+			wantErr: "must use https",
 		},
 		{
 			name:    "http without a host",
 			server:  Server{Name: "remote", Transport: TransportHTTP, URL: "http:///path"},
 			wantErr: "no host",
+		},
+		{
+			name:    "insecure remote http is refused",
+			server:  Server{Name: "remote", Transport: TransportHTTP, URL: "http://example.test/mcp"},
+			wantErr: "literal loopback",
+		},
+		{
+			name:   "https remote is accepted",
+			server: Server{Name: "remote", Transport: TransportHTTP, URL: "https://example.test/mcp"},
+		},
+		{
+			name:   "plain http on localhost is accepted",
+			server: Server{Name: "remote", Transport: TransportHTTP, URL: "http://localhost:8099/mcp"},
+		},
+		{
+			name:   "plain http on an IPv4 loopback is accepted",
+			server: Server{Name: "remote", Transport: TransportHTTP, URL: "http://127.0.0.1:8099/mcp"},
+		},
+		{
+			name:   "plain http on an IPv6 loopback is accepted",
+			server: Server{Name: "remote", Transport: TransportHTTP, URL: "http://[::1]:8099/mcp"},
+		},
+		{
+			name:    "credentials in the url are refused",
+			server:  Server{Name: "remote", Transport: TransportHTTP, URL: "https://user:pass@example.test/mcp"},
+			wantErr: "must not put credentials",
 		},
 		{
 			name:    "unknown transport",
@@ -87,8 +113,9 @@ func TestServerValidate(t *testing.T) {
 
 func TestExposedName(t *testing.T) {
 	plain := ExposedName("server", "tool")
-	if plain != "mcp__server__tool" {
-		t.Fatalf("plain name = %q", plain)
+	want := "mcp__server__tool_" + identityHash("server", "tool")
+	if plain != want {
+		t.Fatalf("plain name = %q, want %q", plain, want)
 	}
 	if got := ExposedName("server.one", "do/thing"); !strings.HasPrefix(got, "mcp__server_one__do_thing_") {
 		t.Fatalf("rewritten name = %q", got)
@@ -102,12 +129,38 @@ func TestExposedName(t *testing.T) {
 			t.Fatalf("long name contains %q: %q", r, long)
 		}
 	}
-	// Two different identities that sanitize to the same characters must
-	// not share a name.
-	a := ExposedName("a.b", "c")
-	b := ExposedName("a_b", "c")
-	if a == b {
-		t.Fatalf("exposed names collide: %q", a)
+
+	// Distinct identities must never share an exposed name, including
+	// identities that sanitize to the same readable characters, ones that
+	// try to imitate the server/tool separator, and ones that are cut to
+	// the same length.
+	identities := [][2]string{
+		{"a.b", "c"},
+		{"a_b", "c"},
+		{"a", "b__c"},
+		{"a__b", "c"},
+		{"", ""},
+		{"x", ""},
+		{"", "x"},
+		{"server", strings.Repeat("x", 200)},
+		{"server", strings.Repeat("x", 201)},
+		{"service", strings.Repeat("x", 200)},
+	}
+	seen := map[string][2]string{}
+	for _, identity := range identities {
+		name := ExposedName(identity[0], identity[1])
+		if previous, ok := seen[name]; ok {
+			t.Fatalf("identities %q and %q share the exposed name %q", previous, identity, name)
+		}
+		seen[name] = identity
+	}
+	// The digest is always present and is the exact 16-hex suffix.
+	for name := range seen {
+		parts := strings.Split(name, "_")
+		suffix := parts[len(parts)-1]
+		if len(suffix) != toolNameHashLen {
+			t.Fatalf("name %q does not end in a %d-hex digest", name, toolNameHashLen)
+		}
 	}
 }
 

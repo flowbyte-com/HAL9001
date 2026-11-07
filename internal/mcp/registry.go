@@ -134,6 +134,11 @@ type Registry struct {
 type serverState struct {
 	cfg Server
 
+	// opMu serializes connect and disconnect for this server. The state
+	// mutex is never held across a handshake, a listing or a tool call,
+	// so the interface can always read the state promptly.
+	opMu sync.Mutex
+
 	mu         sync.Mutex
 	session    *sdk.ClientSession
 	tools      []ToolInfo
@@ -184,6 +189,9 @@ func NewRegistry(gate permission.Gate) *Registry {
 
 // WithAudit attaches the shared trail and the session name.
 func (r *Registry) WithAudit(a *workspace.Audit, session func() string) *Registry {
+	if r == nil {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.audit = a
@@ -198,6 +206,9 @@ func (r *Registry) WithAudit(a *workspace.Audit, session func() string) *Registr
 func (r *Registry) AddServer(s Server) error {
 	if err := s.Validate(); err != nil {
 		return err
+	}
+	if r == nil {
+		return errors.New("mcp: no registry is attached")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -234,6 +245,7 @@ func (r *Registry) Servers() []ServerStatus {
 		if transport == "" {
 			transport = TransportStdio
 		}
+		secrets := append([]string(nil), st.secrets...)
 		status := ServerStatus{
 			Name:          st.cfg.Name,
 			Transport:     string(transport),
@@ -260,6 +272,33 @@ func (r *Registry) Servers() []ServerStatus {
 			status.State = StateDisconnected
 		}
 		st.mu.Unlock()
+		// Server-supplied display strings are data. Strip terminal
+		// controls and any configured credential before the interface
+		// renders them.
+		variants := redactionVariants(secrets)
+		status.Protocol = replaceRedactions(status.Protocol, variants)
+		status.ServerName = replaceRedactions(status.ServerName, variants)
+		status.ServerVersion = replaceRedactions(status.ServerVersion, variants)
+		status.Error = replaceRedactions(cleanRemoteText(status.Error, MaxDescriptionBytes), variants)
+		for i := range status.Tools {
+			status.Tools[i].Name = replaceRedactions(status.Tools[i].Name, variants)
+			status.Tools[i].Description = replaceRedactions(status.Tools[i].Description, variants)
+			status.Tools[i].Schema = redactJSONText(status.Tools[i].Schema, variants)
+		}
+		for i := range status.Resources {
+			status.Resources[i].URI = replaceRedactions(status.Resources[i].URI, variants)
+			status.Resources[i].Name = replaceRedactions(status.Resources[i].Name, variants)
+			status.Resources[i].Description = replaceRedactions(status.Resources[i].Description, variants)
+			status.Resources[i].MIMEType = replaceRedactions(status.Resources[i].MIMEType, variants)
+		}
+		for i := range status.Prompts {
+			status.Prompts[i].Name = replaceRedactions(status.Prompts[i].Name, variants)
+			status.Prompts[i].Description = replaceRedactions(status.Prompts[i].Description, variants)
+			for j := range status.Prompts[i].Arguments {
+				status.Prompts[i].Arguments[j].Name = replaceRedactions(status.Prompts[i].Arguments[j].Name, variants)
+				status.Prompts[i].Arguments[j].Description = replaceRedactions(status.Prompts[i].Arguments[j].Description, variants)
+			}
+		}
 		out = append(out, status)
 	}
 	return out
@@ -270,10 +309,19 @@ func (r *Registry) Servers() []ServerStatus {
 // A failed handshake tears the transport down, so a local server never
 // outlives the attempt to reach it.
 func (r *Registry) Connect(ctx context.Context, name string) error {
+	if r == nil {
+		return fmt.Errorf("%w: %s", ErrUnknownServer, name)
+	}
 	st, ok := r.state(name)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnknownServer, name)
 	}
+	// One lifecycle operation per server. Nothing below holds st.mu
+	// across a handshake, a listing or a call, so Servers() and the
+	// panel remain responsive while a server is slow.
+	st.opMu.Lock()
+	defer st.opMu.Unlock()
+
 	st.mu.Lock()
 	if st.connected {
 		st.mu.Unlock()
@@ -290,17 +338,28 @@ func (r *Registry) Connect(ctx context.Context, name string) error {
 	st.caps = nil
 	st.capsKnown = false
 	st.err = ""
-	transport, secrets, closeTransport, err := st.cfg.transport()
+	st.secrets = nil
+	cfg := st.cfg
+	st.mu.Unlock()
+
+	transport, secrets, closeTransport, err := cfg.transport()
 	if err != nil {
-		st.err = redact(err.Error(), secrets)
+		secrets = append(secrets, r.configuredSecrets()...)
+		message := redact(err.Error(), secrets)
+		st.mu.Lock()
+		st.err = message
 		st.mu.Unlock()
 		r.rebuildTools()
-		return errors.New(st.err)
+		return errors.New(message)
 	}
+	st.mu.Lock()
+	st.secrets = append([]string(nil), secrets...)
+	st.mu.Unlock()
+	allSecrets := append(append([]string(nil), secrets...), r.configuredSecrets()...)
+
 	connectCtx, cancel := context.WithTimeout(ctx, DefaultConnectTimeout)
 	defer cancel()
 
-	st.secrets = secrets
 	client := sdk.NewClient(&sdk.Implementation{
 		Name:    "HAL9001",
 		Version: buildinfo.Current().Version,
@@ -313,7 +372,8 @@ func (r *Registry) Connect(ctx context.Context, name string) error {
 	session, err := client.Connect(connectCtx, transport, nil)
 	if err != nil {
 		closeTransport()
-		wrapped := fmt.Errorf("mcp: cannot connect to %q: %s", name, redact(err.Error(), secrets))
+		wrapped := fmt.Errorf("mcp: cannot connect to %q: %s", name, redact(err.Error(), allSecrets))
+		st.mu.Lock()
 		st.err = wrapped.Error()
 		st.mu.Unlock()
 		r.rebuildTools()
@@ -321,30 +381,50 @@ func (r *Registry) Connect(ctx context.Context, name string) error {
 	}
 
 	init := session.InitializeResult()
+	protocol := ""
+	serverName := ""
+	version := ""
+	var caps []string
+	capsKnown := false
+	if init != nil {
+		capsKnown = true
+		protocol = cleanRemoteText(init.ProtocolVersion, 64)
+		if init.ServerInfo != nil {
+			serverName = cleanRemoteText(init.ServerInfo.Name, MaxRemoteNameBytes)
+			version = cleanRemoteText(init.ServerInfo.Version, MaxRemoteNameBytes)
+		}
+		caps = capabilityNames(init.Capabilities)
+	}
+
+	st.mu.Lock()
 	st.session = session
 	st.connected = true
 	st.err = ""
-	if init != nil {
-		st.capsKnown = true
-		st.protocol = cleanRemoteText(init.ProtocolVersion, 64)
-		if init.ServerInfo != nil {
-			st.serverName = cleanRemoteText(init.ServerInfo.Name, MaxRemoteNameBytes)
-			st.version = cleanRemoteText(init.ServerInfo.Version, MaxRemoteNameBytes)
-		}
-		st.caps = capabilityNames(init.Capabilities)
-	}
+	st.protocol = protocol
+	st.serverName = serverName
+	st.version = version
+	st.caps = caps
+	st.capsKnown = capsKnown
+	wantTools := st.supports("tools")
+	wantResources := st.supports("resources")
+	wantPrompts := st.supports("prompts")
+	st.mu.Unlock()
 
+	variants := r.secretVariants()
 	var tools []ToolInfo
-	if st.supports("tools") {
-		tools, err = discoverTools(connectCtx, session, st.cfg)
+	if wantTools {
+		tools, err = discoverTools(connectCtx, session, cfg, variants)
 		if err != nil {
 			// The session is live but the tool list is not usable: close it
 			// rather than offer a half-known server.
-			st.session = nil
-			st.connected = false
+			st.mu.Lock()
+			if st.session == session {
+				st.session = nil
+				st.connected = false
+			}
 			st.mu.Unlock()
 			_ = session.Close()
-			wrapped := fmt.Errorf("mcp: cannot list the tools of %q: %s", name, redact(err.Error(), secrets))
+			wrapped := fmt.Errorf("mcp: cannot list the tools of %q: %s", name, redact(err.Error(), allSecrets))
 			st.mu.Lock()
 			st.err = wrapped.Error()
 			st.mu.Unlock()
@@ -352,12 +432,20 @@ func (r *Registry) Connect(ctx context.Context, name string) error {
 			return wrapped
 		}
 	}
-	st.tools = tools
-	if st.supports("resources") {
-		st.resources = discoverResources(connectCtx, session, st.cfg)
+	var resources []ResourceInfo
+	if wantResources {
+		resources = discoverResources(connectCtx, session, cfg, variants)
 	}
-	if st.supports("prompts") {
-		st.prompts = discoverPrompts(connectCtx, session, st.cfg)
+	var prompts []PromptInfo
+	if wantPrompts {
+		prompts = discoverPrompts(connectCtx, session, cfg, variants)
+	}
+
+	st.mu.Lock()
+	if st.session == session {
+		st.tools = tools
+		st.resources = resources
+		st.prompts = prompts
 	}
 	st.mu.Unlock()
 
@@ -367,10 +455,15 @@ func (r *Registry) Connect(ctx context.Context, name string) error {
 
 // Disconnect closes the session with one server.
 func (r *Registry) Disconnect(ctx context.Context, name string) error {
+	if r == nil {
+		return fmt.Errorf("%w: %s", ErrUnknownServer, name)
+	}
 	st, ok := r.state(name)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnknownServer, name)
 	}
+	st.opMu.Lock()
+	defer st.opMu.Unlock()
 	st.mu.Lock()
 	session := st.session
 	st.session = nil
@@ -488,12 +581,14 @@ func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) Result {
 		res.Summary = call.Name + " denied · unknown MCP tool"
 		return r.finish(call, res, start)
 	}
-	res.Action = "mcp:" + info.Server + "/" + actionName(info.Name)
+	variants := r.secretVariants()
+	safeToolName := replaceRedactions(info.Name, variants)
+	res.Action = "mcp:" + info.Server + "/" + actionName(safeToolName)
 	res.Target = info.Server
 
 	if raw, bad := call.Arguments["_invalid"]; bad {
 		_ = raw
-		res.Content = errorEnvelope(info.Server, info.Name, "arguments are not valid JSON")
+		res.Content = errorEnvelope(info.Server, safeToolName, "arguments are not valid JSON")
 		res.Summary = call.Name + " failed · malformed arguments"
 		return r.finish(call, res, start)
 	}
@@ -503,12 +598,12 @@ func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) Result {
 	}
 	encoded, err := json.Marshal(arguments)
 	if err != nil {
-		res.Content = errorEnvelope(info.Server, info.Name, "arguments cannot be encoded")
+		res.Content = errorEnvelope(info.Server, safeToolName, "arguments cannot be encoded")
 		res.Summary = call.Name + " failed · malformed arguments"
 		return r.finish(call, res, start)
 	}
 	if len(encoded) > MaxArgumentBytes {
-		res.Content = errorEnvelope(info.Server, info.Name, "arguments are too large")
+		res.Content = errorEnvelope(info.Server, safeToolName, "arguments are too large")
 		res.Summary = call.Name + " failed · arguments too large"
 		return r.finish(call, res, start)
 	}
@@ -518,7 +613,7 @@ func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) Result {
 	if mode == permission.Unrestricted {
 		if r.gate == nil {
 			res.Status = "denied"
-			res.Content = errorEnvelope(info.Server, info.Name, "no permission gate is attached")
+			res.Content = errorEnvelope(info.Server, safeToolName, "no permission gate is attached")
 			res.Summary = call.Name + " denied · no permission gate"
 			return r.finish(call, res, start)
 		}
@@ -527,12 +622,13 @@ func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) Result {
 		if err != nil {
 			// The snapshot said 666 but the gate has already returned to
 			// 444. A tool the local policy allows in 444 may still run;
-			// anything else is refused.
+			// anything else is refused, and the refusal says that the
+			// authority was revoked rather than never granted.
 			if !info.AllowedIn444 {
 				res.Status = "denied"
-				res.Content = errorEnvelope(info.Server, info.Name,
-					"this MCP tool needs 666; it was not allowed in 444")
-				res.Summary = call.Name + " denied · 444"
+				res.Content = errorEnvelope(info.Server, safeToolName,
+					"666 was revoked or disabled before this MCP tool could run; it is not on the 444 allowlist")
+				res.Summary = call.Name + " denied · 666 revoked"
 				return r.finish(call, res, start)
 			}
 			res.Mode = permission.Guarded
@@ -543,7 +639,7 @@ func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) Result {
 		}
 	} else if !info.AllowedIn444 {
 		res.Status = "denied"
-		res.Content = errorEnvelope(info.Server, info.Name,
+		res.Content = errorEnvelope(info.Server, safeToolName,
 			"this MCP tool is not on the local allowlist; it needs 666")
 		res.Summary = call.Name + " denied · 444"
 		return r.finish(call, res, start)
@@ -563,45 +659,52 @@ func (r *Registry) Execute(ctx context.Context, call provider.ToolCall) Result {
 		default:
 			res.Status = "failed"
 		}
-		res.Content = errorEnvelope(info.Server, info.Name, r.redactedMessage(info.Server, err))
+		res.Content = errorEnvelope(info.Server, safeToolName, r.redactedMessage(info.Server, err))
 		res.Summary = call.Name + " failed · " + r.redactedMessage(info.Server, err)
 		r.markDisconnected(info.Server, err)
 		return r.finish(call, res, start)
 	}
 	if result == nil {
 		res.Status = "failed"
-		res.Content = errorEnvelope(info.Server, info.Name, "the server returned no result")
+		res.Content = errorEnvelope(info.Server, safeToolName, "the server returned no result")
 		res.Summary = call.Name + " failed · no result"
 		return r.finish(call, res, start)
 	}
 
 	// Bound the combined payload, not each half independently: a server
 	// that returns both content and structured content must not get twice
-	// the budget.
+	// the budget. Every value is redacted before it is bounded, and the
+	// redactor withholds anything it cannot scan within its own budget.
+	redactor := newRedactor(r.configuredSecrets())
 	structured := ""
 	if result.StructuredContent != nil {
 		if raw, err := json.Marshal(result.StructuredContent); err == nil {
+			clean, complete := redactor.jsonDocument(string(raw))
+			if !complete {
+				res.Truncated = true
+			}
 			limit := MaxResultBytes / 2
-			text, cut := boundedText(string(raw), limit)
+			text, cut := boundedText(clean, limit)
 			structured = text
-			res.Truncated = cut
+			res.Truncated = res.Truncated || cut
 		}
 	}
 	contentBudget := MaxResultBytes - len(structured)
 	if contentBudget < 1024 {
 		contentBudget = 1024
 	}
-	content, truncated := boundedContent(result.Content, contentBudget)
-	res.Truncated = res.Truncated || truncated
+	pieces, complete := redactor.contentPieces(result.Content)
+	content, truncated := packContent(pieces, contentBudget)
+	res.Truncated = res.Truncated || truncated || !complete
 	res.Bytes = len(content) + len(structured)
 	if result.IsError {
 		res.Status = "failed"
-		res.Content = envelope(info.Server, info.Name, true, content, structured)
+		res.Content = envelope(info.Server, safeToolName, true, content, structured)
 		res.Summary = call.Name + " failed · the server reported an error"
 		return r.finish(call, res, start)
 	}
 	res.Status = "ok"
-	res.Content = envelope(info.Server, info.Name, false, content, structured)
+	res.Content = envelope(info.Server, safeToolName, false, content, structured)
 	res.Summary = call.Name + " ok"
 	return r.finish(call, res, start)
 }
@@ -613,14 +716,28 @@ func (r *Registry) ListTools(ctx context.Context, name string) ([]ToolInfo, erro
 		return nil, fmt.Errorf("%w: %s", ErrUnknownServer, name)
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	if !st.connected || st.session == nil {
+	session := st.session
+	connected := st.connected
+	cfg := st.cfg
+	supports := st.supports("tools")
+	st.mu.Unlock()
+	if !connected || session == nil {
 		return nil, fmt.Errorf("mcp: server %q is not connected", name)
 	}
-	if !st.supports("tools") {
+	if !supports {
 		return nil, nil
 	}
-	return discoverTools(ctx, st.session, st.cfg)
+	tools, err := discoverTools(ctx, session, cfg, r.secretVariants())
+	if err != nil {
+		return nil, r.redactedError(name, err)
+	}
+	variants := r.secretVariants()
+	for i := range tools {
+		tools[i].Name = replaceRedactions(tools[i].Name, variants)
+		tools[i].Description = replaceRedactions(tools[i].Description, variants)
+		tools[i].Schema = redactJSONText(tools[i].Schema, variants)
+	}
+	return tools, nil
 }
 
 // ListResources returns the resources of one connected server.
@@ -630,14 +747,18 @@ func (r *Registry) ListResources(ctx context.Context, name string) ([]ResourceIn
 		return nil, fmt.Errorf("%w: %s", ErrUnknownServer, name)
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	if !st.connected || st.session == nil {
+	session := st.session
+	connected := st.connected
+	cfg := st.cfg
+	supports := st.supports("resources")
+	st.mu.Unlock()
+	if !connected || session == nil {
 		return nil, fmt.Errorf("mcp: server %q is not connected", name)
 	}
-	if !st.supports("resources") {
+	if !supports {
 		return nil, nil
 	}
-	return discoverResources(ctx, st.session, st.cfg), nil
+	return discoverResources(ctx, session, cfg, r.secretVariants()), nil
 }
 
 // ReadResource reads one resource and returns its text, bounded.
@@ -650,22 +771,26 @@ func (r *Registry) ReadResource(ctx context.Context, name, uri string) (string, 
 		return "", false, fmt.Errorf("%w: %s", ErrUnknownServer, name)
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	if !st.connected || st.session == nil {
+	session := st.session
+	connected := st.connected
+	supports := st.supports("resources")
+	st.mu.Unlock()
+	if !connected || session == nil {
 		return "", false, fmt.Errorf("mcp: server %q is not connected", name)
 	}
-	if !st.supports("resources") {
+	if !supports {
 		return "", false, fmt.Errorf("mcp: server %q has no resources capability", name)
 	}
 	callCtx, cancel := context.WithTimeout(ctx, r.timeout(name))
 	defer cancel()
-	result, err := st.session.ReadResource(callCtx, &sdk.ReadResourceParams{URI: uri})
+	result, err := session.ReadResource(callCtx, &sdk.ReadResourceParams{URI: uri})
 	if err != nil {
-		return "", false, err
+		return "", false, r.redactedError(name, err)
 	}
 	if result == nil {
 		return "", false, errors.New("mcp: the server returned no resource")
 	}
+	redactor := newRedactor(r.configuredSecrets())
 	var b strings.Builder
 	truncated := false
 	remaining := MaxResourceBytes
@@ -684,7 +809,11 @@ func (r *Registry) ReadResource(ctx context.Context, name, uri string) (string, 
 			remaining -= len(line) + 1
 			continue
 		}
-		text, cut := boundedText(contents.Text, remaining)
+		safe := redactor.text(contents.Text)
+		if redactor.exhausted {
+			truncated = true
+		}
+		text, cut := boundedText(safe, remaining)
 		truncated = truncated || cut
 		b.WriteString(text)
 		b.WriteString("\n")
@@ -700,14 +829,18 @@ func (r *Registry) ListPrompts(ctx context.Context, name string) ([]PromptInfo, 
 		return nil, fmt.Errorf("%w: %s", ErrUnknownServer, name)
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	if !st.connected || st.session == nil {
+	session := st.session
+	connected := st.connected
+	cfg := st.cfg
+	supports := st.supports("prompts")
+	st.mu.Unlock()
+	if !connected || session == nil {
 		return nil, fmt.Errorf("mcp: server %q is not connected", name)
 	}
-	if !st.supports("prompts") {
+	if !supports {
 		return nil, nil
 	}
-	return discoverPrompts(ctx, st.session, st.cfg), nil
+	return discoverPrompts(ctx, session, cfg, r.secretVariants()), nil
 }
 
 // GetPrompt fetches one prompt and returns its messages as text.
@@ -717,32 +850,37 @@ func (r *Registry) GetPrompt(ctx context.Context, name, prompt string, args map[
 		return "", fmt.Errorf("%w: %s", ErrUnknownServer, name)
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	if !st.connected || st.session == nil {
+	session := st.session
+	connected := st.connected
+	supports := st.supports("prompts")
+	st.mu.Unlock()
+	if !connected || session == nil {
 		return "", fmt.Errorf("mcp: server %q is not connected", name)
 	}
-	if !st.supports("prompts") {
+	if !supports {
 		return "", fmt.Errorf("mcp: server %q has no prompts capability", name)
 	}
 	callCtx, cancel := context.WithTimeout(ctx, r.timeout(name))
 	defer cancel()
-	result, err := st.session.GetPrompt(callCtx, &sdk.GetPromptParams{Name: prompt, Arguments: args})
+	result, err := session.GetPrompt(callCtx, &sdk.GetPromptParams{Name: prompt, Arguments: args})
 	if err != nil {
-		return "", err
+		return "", r.redactedError(name, err)
 	}
 	if result == nil {
 		return "", errors.New("mcp: the server returned no prompt")
 	}
+	redactor := newRedactor(r.configuredSecrets())
 	var b strings.Builder
 	remaining := MaxPromptBytes
 	for _, message := range result.Messages {
 		if message == nil {
 			continue
 		}
-		if remaining <= 0 {
+		if remaining <= 0 || redactor.exhausted {
 			break
 		}
-		text, cut := boundedText(contentText(message.Content), remaining)
+		safe := redactor.text(contentText(message.Content))
+		text, cut := boundedText(safe, remaining)
 		b.WriteString(text)
 		b.WriteString("\n")
 		remaining -= len(text) + 1
@@ -760,11 +898,13 @@ func (r *Registry) callTool(ctx context.Context, info ToolInfo, arguments map[st
 		return nil, fmt.Errorf("%w: %s", ErrUnknownServer, info.Server)
 	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	if !st.connected || st.session == nil {
+	session := st.session
+	connected := st.connected
+	st.mu.Unlock()
+	if !connected || session == nil {
 		return nil, fmt.Errorf("mcp: server %q is not connected", info.Server)
 	}
-	return st.session.CallTool(ctx, &sdk.CallToolParams{Name: info.Name, Arguments: arguments})
+	return session.CallTool(ctx, &sdk.CallToolParams{Name: info.Name, Arguments: arguments})
 }
 
 // markDisconnected forgets a server whose connection is gone, so the
@@ -774,6 +914,9 @@ func (r *Registry) markDisconnected(name string, err error) {
 	if !ok {
 		return
 	}
+	// Collect every configured credential before taking the state lock:
+	// the redaction set must not be assembled while holding it.
+	secrets := r.configuredSecrets()
 	lost := false
 	st.mu.Lock()
 	if st.connected && isConnectionError(err) {
@@ -782,7 +925,7 @@ func (r *Registry) markDisconnected(name string, err error) {
 		st.tools = nil
 		st.resources = nil
 		st.prompts = nil
-		st.err = "the connection was lost: " + redact(shortReason(err), st.secrets)
+		st.err = "the connection was lost: " + redact(shortReason(err), secrets)
 		lost = true
 	}
 	st.mu.Unlock()
@@ -851,19 +994,61 @@ func actionName(tool string) string {
 	return name
 }
 
-// redactedMessage renders one error without this server's credentials.
-func (r *Registry) redactedMessage(name string, err error) string {
+// configuredSecrets collects the raw credentials of every server. A
+// result from one server is redacted against every configured secret, not
+// only its own, because a hostile server can echo another server's value
+// if it learns it.
+func (r *Registry) configuredSecrets() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	states := make([]*serverState, 0, len(r.servers))
+	for _, st := range r.servers {
+		states = append(states, st)
+	}
+	r.mu.Unlock()
+	seen := map[string]bool{}
+	var secrets []string
+	for _, st := range states {
+		st.mu.Lock()
+		for _, secret := range st.secrets {
+			if secret != "" && !seen[secret] {
+				seen[secret] = true
+				secrets = append(secrets, secret)
+			}
+		}
+		st.mu.Unlock()
+	}
+	return secrets
+}
+
+// secretVariants returns every representation of every configured
+// credential, ready for direct replacement.
+func (r *Registry) secretVariants() []string {
+	return redactionVariants(r.configuredSecrets())
+}
+
+// redactedError returns an error whose text carries no credential. When
+// no credential was present the original error is returned unchanged, so
+// callers that inspect an error keep working.
+func (r *Registry) redactedError(name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	text := r.redactedMessage(name, err)
+	if text == "" || text == err.Error() {
+		return err
+	}
+	return errors.New(text)
+}
+
+// redactedMessage renders one error without any configured credential.
+func (r *Registry) redactedMessage(_ string, err error) string {
 	if err == nil {
 		return ""
 	}
-	text := shortReason(err)
-	if st, ok := r.state(name); ok {
-		st.mu.Lock()
-		secrets := st.secrets
-		st.mu.Unlock()
-		text = redact(text, secrets)
-	}
-	return text
+	return replaceRedactions(shortReason(err), r.secretVariants())
 }
 
 // state returns one configured server.
@@ -968,7 +1153,7 @@ func (r *Registry) rebuildTools() {
 //
 // A hostile server cannot make the client loop forever: pages and cursors
 // are bounded, and a repeated cursor ends the listing.
-func discoverTools(ctx context.Context, session *sdk.ClientSession, cfg Server) ([]ToolInfo, error) {
+func discoverTools(ctx context.Context, session *sdk.ClientSession, cfg Server, variants []string) ([]ToolInfo, error) {
 	var out []ToolInfo
 	cursor := ""
 	seen := map[string]bool{}
@@ -988,7 +1173,7 @@ func discoverTools(ctx context.Context, session *sdk.ClientSession, cfg Server) 
 			if len(out) >= MaxToolsPerServer {
 				return out, nil
 			}
-			out = append(out, toolInfo(cfg, tool))
+			out = append(out, toolInfo(cfg, tool, variants))
 		}
 		cursor = result.NextCursor
 		if cursor == "" || seen[cursor] {
@@ -1000,7 +1185,7 @@ func discoverTools(ctx context.Context, session *sdk.ClientSession, cfg Server) 
 }
 
 // discoverResources lists the resources of one server.
-func discoverResources(ctx context.Context, session *sdk.ClientSession, cfg Server) []ResourceInfo {
+func discoverResources(ctx context.Context, session *sdk.ClientSession, cfg Server, variants []string) []ResourceInfo {
 	var out []ResourceInfo
 	cursor := ""
 	seen := map[string]bool{}
@@ -1019,10 +1204,10 @@ func discoverResources(ctx context.Context, session *sdk.ClientSession, cfg Serv
 			}
 			out = append(out, ResourceInfo{
 				Server:      cfg.Name,
-				URI:         resource.URI,
-				Name:        resource.Name,
-				Description: boundText(resource.Description, MaxDescriptionBytes),
-				MIMEType:    resource.MIMEType,
+				URI:         replaceRedactions(resource.URI, variants),
+				Name:        replaceRedactions(resource.Name, variants),
+				Description: redactAndBound(resource.Description, variants, MaxDescriptionBytes),
+				MIMEType:    replaceRedactions(resource.MIMEType, variants),
 				Size:        resource.Size,
 			})
 		}
@@ -1036,7 +1221,7 @@ func discoverResources(ctx context.Context, session *sdk.ClientSession, cfg Serv
 }
 
 // discoverPrompts lists the prompts of one server.
-func discoverPrompts(ctx context.Context, session *sdk.ClientSession, cfg Server) []PromptInfo {
+func discoverPrompts(ctx context.Context, session *sdk.ClientSession, cfg Server, variants []string) []PromptInfo {
 	var out []PromptInfo
 	cursor := ""
 	seen := map[string]bool{}
@@ -1054,16 +1239,16 @@ func discoverPrompts(ctx context.Context, session *sdk.ClientSession, cfg Server
 			}
 			info := PromptInfo{
 				Server:      cfg.Name,
-				Name:        prompt.Name,
-				Description: boundText(prompt.Description, MaxDescriptionBytes),
+				Name:        replaceRedactions(prompt.Name, variants),
+				Description: redactAndBound(prompt.Description, variants, MaxDescriptionBytes),
 			}
 			for _, argument := range prompt.Arguments {
 				if argument == nil || !validRemoteName(argument.Name, MaxRemoteNameBytes) {
 					continue
 				}
 				info.Arguments = append(info.Arguments, PromptArgument{
-					Name:        argument.Name,
-					Description: boundText(argument.Description, MaxDescriptionBytes),
+					Name:        replaceRedactions(argument.Name, variants),
+					Description: redactAndBound(argument.Description, variants, MaxDescriptionBytes),
 					Required:    argument.Required,
 				})
 			}
@@ -1106,43 +1291,57 @@ func capabilityNames(caps *sdk.ServerCapabilities) []string {
 }
 
 // toolInfo describes one server tool.
-func toolInfo(cfg Server, tool *sdk.Tool) ToolInfo {
+//
+// The exposed name is built from the redacted display name: a hostile
+// server must not be able to smuggle a credential into the function name
+// the model sees. The protocol still uses the server's exact name.
+func toolInfo(cfg Server, tool *sdk.Tool, variants []string) ToolInfo {
+	schema := schemaJSON(tool.InputSchema)
+	if len(variants) > 0 {
+		if safe := replaceRedactions(schema, variants); safe != schema {
+			if json.Valid([]byte(safe)) {
+				schema = safe
+			} else {
+				schema = genericSchema
+			}
+		}
+	}
+	displayName := replaceRedactions(tool.Name, variants)
 	return ToolInfo{
-		Exposed:      ExposedName(cfg.Name, tool.Name),
+		Exposed:      ExposedName(cfg.Name, displayName),
 		Server:       cfg.Name,
 		Name:         tool.Name,
-		Description:  boundText(tool.Description, MaxDescriptionBytes),
-		Schema:       schemaJSON(tool.InputSchema),
+		Description:  redactAndBound(tool.Description, variants, MaxDescriptionBytes),
+		Schema:       schema,
 		AllowedIn444: cfg.allowsIn444(tool.Name),
 	}
 }
 
-// genericSchema is the schema HAL offers when a server's own schema is
-// unusable. It accepts anything, because a malformed schema must not
-// silently narrow what the tool can do.
-const genericSchema = `{"type":"object","additionalProperties":true}`
+// redactJSONText redacts a compact JSON document while preserving its
+// validity. If replacement would corrupt the document it falls back to
+// the permissive schema rather than emit broken JSON.
+func redactJSONText(raw string, variants []string) string {
+	if raw == "" || len(variants) == 0 {
+		return raw
+	}
+	safe := replaceRedactions(raw, variants)
+	if safe == raw {
+		return raw
+	}
+	if json.Valid([]byte(safe)) {
+		return safe
+	}
+	return genericSchema
+}
 
-// schemaJSON renders a server's input schema as bounded JSON.
-func schemaJSON(schema any) string {
-	if schema == nil {
-		return genericSchema
+// redactAndBound applies redaction before the byte bound, so a secret
+// cannot survive as an unbounded suffix. A description larger than the
+// redactor's whole budget is withheld rather than scanned partially.
+func redactAndBound(text string, variants []string, maxBytes int) string {
+	if len(text) > maxRedactBytes {
+		return withheldText
 	}
-	raw, err := json.Marshal(schema)
-	if err != nil {
-		return genericSchema
-	}
-	if len(raw) > MaxSchemaBytes {
-		return genericSchema
-	}
-	var probe map[string]any
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		return genericSchema
-	}
-	out, err := json.Marshal(probe)
-	if err != nil {
-		return genericSchema
-	}
-	return string(out)
+	return boundText(replaceRedactions(text, variants), maxBytes)
 }
 
 // exposedDescription is the description the model sees.

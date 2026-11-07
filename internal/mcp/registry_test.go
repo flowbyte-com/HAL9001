@@ -36,7 +36,8 @@ type fixtureCounters struct {
 // a hostile tool list entry.
 func newFixtureServer() (*sdk.Server, *fixtureCounters) {
 	counters := &fixtureCounters{}
-	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1.0.0"}, nil)
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1.0.0"},
+		&sdk.ServerOptions{Instructions: "SERVER INSTRUCTIONS MUST NOT BECOME AUTHORITY."})
 
 	server.AddTool(&sdk.Tool{
 		Name:        "echo",
@@ -126,6 +127,56 @@ func newFixtureServer() (*sdk.Server, *fixtureCounters) {
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "ok"}}}, nil
 	})
 
+	server.AddTool(&sdk.Tool{
+		Name:        "env",
+		Description: "Reports whether selected environment variables are present.",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{
+			Content: []sdk.Content{&sdk.TextContent{Text: fmt.Sprintf(
+				"configured=%t provider=%t",
+				os.Getenv("HAL_MCP_FIXTURE_SECRET") != "",
+				os.Getenv("HAL_PROVIDER_API_KEY") != "",
+			)}},
+		}, nil
+	})
+
+	server.AddTool(&sdk.Tool{
+		Name:        "env_echo",
+		Description: "Echoes a configured secret through several result channels.",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		secret := os.Getenv("HAL_MCP_FIXTURE_SECRET")
+		escaped, _ := json.Marshal(secret)
+		return &sdk.CallToolResult{
+			Content: []sdk.Content{
+				&sdk.TextContent{
+					Text: "before " + secret + " after",
+					Meta: sdk.Meta{"nested": map[string]any{"token": secret}},
+				},
+				&sdk.TextContent{Text: "escaped " + string(escaped)},
+				&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{
+					URI: "mem://secret", MIMEType: "text/plain", Text: "embedded " + secret,
+				}},
+				&sdk.ImageContent{Data: []byte(secret), MIMEType: "image/png"},
+			},
+			StructuredContent: map[string]any{
+				"nested": []any{map[string]any{"token": secret}},
+			},
+		}, nil
+	})
+
+	server.AddTool(&sdk.Tool{
+		Name:        "env_error",
+		Description: "Echoes a configured secret as an error result.",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{
+			IsError: true,
+			Content: []sdk.Content{&sdk.TextContent{Text: "failed with " + os.Getenv("HAL_MCP_FIXTURE_SECRET")}},
+		}, nil
+	})
+
 	server.AddResource(&sdk.Resource{
 		URI:         "mem://doc",
 		Name:        "doc",
@@ -137,6 +188,33 @@ func newFixtureServer() (*sdk.Server, *fixtureCounters) {
 				URI:      "mem://doc",
 				MIMEType: "text/plain",
 				Text:     "resource body",
+			}},
+		}, nil
+	})
+
+	server.AddResource(&sdk.Resource{
+		URI:         "mem://secret",
+		Name:        "secret",
+		Description: "A document containing the configured secret.",
+		MIMEType:    "text/plain",
+	}, func(context.Context, *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+		return &sdk.ReadResourceResult{
+			Contents: []*sdk.ResourceContents{{
+				URI:      "mem://secret",
+				MIMEType: "text/plain",
+				Text:     "resource says " + os.Getenv("HAL_MCP_FIXTURE_SECRET"),
+			}},
+		}, nil
+	})
+
+	server.AddPrompt(&sdk.Prompt{
+		Name:        "secret",
+		Description: "A prompt containing the configured secret.",
+	}, func(context.Context, *sdk.GetPromptRequest) (*sdk.GetPromptResult, error) {
+		return &sdk.GetPromptResult{
+			Messages: []*sdk.PromptMessage{{
+				Role:    "user",
+				Content: &sdk.TextContent{Text: "prompt says " + os.Getenv("HAL_MCP_FIXTURE_SECRET")},
 			}},
 		}, nil
 	})
@@ -208,10 +286,10 @@ func TestConnectHTTPDiscoversCapabilities(t *testing.T) {
 	if status.ServerName != "fixture" || status.ServerVersion != "1.0.0" {
 		t.Fatalf("server = %q %q", status.ServerName, status.ServerVersion)
 	}
-	if len(status.Resources) != 1 || status.Resources[0].URI != "mem://doc" {
+	if len(status.Resources) != 2 || status.Resources[0].URI != "mem://doc" {
 		t.Fatalf("resources = %#v", status.Resources)
 	}
-	if len(status.Prompts) != 1 || status.Prompts[0].Name != "greet" {
+	if len(status.Prompts) != 2 || status.Prompts[0].Name != "greet" {
 		t.Fatalf("prompts = %#v", status.Prompts)
 	}
 }
@@ -234,7 +312,7 @@ func TestListToolsAndSchema(t *testing.T) {
 	if !ok {
 		t.Fatalf("echo not listed: %#v", tools)
 	}
-	if echo.Exposed != "mcp__remote__echo" {
+	if echo.Exposed != ExposedName("remote", "echo") {
 		t.Fatalf("exposed = %q", echo.Exposed)
 	}
 	if !echo.AllowedIn444 {
@@ -244,7 +322,7 @@ func TestListToolsAndSchema(t *testing.T) {
 		t.Fatalf("schema = %s", echo.Schema)
 	}
 	offered := registry.Tools()
-	if len(offered) != 1 || offered[0].Name != "mcp__remote__echo" {
+	if len(offered) != 1 || offered[0].Name != ExposedName("remote", "echo") {
 		t.Fatalf("offered tools = %#v", offered)
 	}
 	if !strings.Contains(offered[0].Description, "untrusted description") {
@@ -324,7 +402,7 @@ func TestExecuteHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__echo",
+		ID: "1", Name: ExposedName("remote", "echo"),
 		Arguments: map[string]any{"text": "hello"},
 	})
 	if res.Status != "ok" {
@@ -348,7 +426,7 @@ func TestExecuteServerErrorIsEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__fail", Arguments: map[string]any{},
+		ID: "1", Name: ExposedName("remote", "fail"), Arguments: map[string]any{},
 	})
 	if res.Status != "failed" {
 		t.Fatalf("status = %q", res.Status)
@@ -365,7 +443,7 @@ func TestExecuteOutputIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__big", Arguments: map[string]any{},
+		ID: "1", Name: ExposedName("remote", "big"), Arguments: map[string]any{},
 	})
 	if res.Status != "ok" {
 		t.Fatalf("status = %q", res.Status)
@@ -388,7 +466,7 @@ func TestExecutePromptInjectionIsMarkedUntrusted(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__inject", Arguments: map[string]any{},
+		ID: "1", Name: ExposedName("remote", "inject"), Arguments: map[string]any{},
 	})
 	if res.Status != "ok" {
 		t.Fatalf("status = %q", res.Status)
@@ -411,7 +489,7 @@ func TestGuardedRefusesUnlistedAndIgnoresReadOnlyAnnotation(t *testing.T) {
 		t.Fatalf("444 offered tools: %#v", registry.Tools())
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__readonly", Arguments: map[string]any{},
+		ID: "1", Name: ExposedName("remote", "readonly"), Arguments: map[string]any{},
 	})
 	if res.Status != "denied" {
 		t.Fatalf("status = %q", res.Status)
@@ -430,11 +508,11 @@ func TestGuardedAllowlistedToolRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := registry.Tools()
-	if len(tools) != 1 || tools[0].Name != "mcp__remote__echo" {
+	if len(tools) != 1 || tools[0].Name != ExposedName("remote", "echo") {
 		t.Fatalf("tools = %#v", tools)
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__echo", Arguments: map[string]any{"text": "ok"},
+		ID: "1", Name: ExposedName("remote", "echo"), Arguments: map[string]any{"text": "ok"},
 	})
 	if res.Status != "ok" {
 		t.Fatalf("status = %q content = %s", res.Status, res.Content)
@@ -459,7 +537,7 @@ func TestUnrestrictedExecutesThroughGate(t *testing.T) {
 		t.Fatalf("666 tools = %#v", registry.Tools())
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__echo", Arguments: map[string]any{"text": "hi"},
+		ID: "1", Name: ExposedName("remote", "echo"), Arguments: map[string]any{"text": "hi"},
 	})
 	if res.Status != "ok" {
 		t.Fatalf("status = %q content = %s", res.Status, res.Content)
@@ -494,7 +572,7 @@ func TestRevoking666CancelsInFlightCall(t *testing.T) {
 	start := time.Now()
 	go func() {
 		done <- registry.Execute(context.Background(), provider.ToolCall{
-			ID: "1", Name: "mcp__remote__slow", Arguments: map[string]any{},
+			ID: "1", Name: ExposedName("remote", "slow"), Arguments: map[string]any{},
 		})
 	}()
 	time.Sleep(250 * time.Millisecond)
@@ -515,7 +593,7 @@ func TestRevoking666CancelsInFlightCall(t *testing.T) {
 	}
 	// A later call is refused: the registry rechecks at the boundary.
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "2", Name: "mcp__remote__slow", Arguments: map[string]any{},
+		ID: "2", Name: ExposedName("remote", "slow"), Arguments: map[string]any{},
 	})
 	if res.Status != "denied" {
 		t.Fatalf("post-revocation status = %q", res.Status)
@@ -538,7 +616,7 @@ func TestCallTimeout(t *testing.T) {
 	}
 	start := time.Now()
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__slow", Arguments: map[string]any{},
+		ID: "1", Name: ExposedName("remote", "slow"), Arguments: map[string]any{},
 	})
 	if res.Status != "timeout" {
 		t.Fatalf("status = %q content = %s", res.Status, res.Content)
@@ -558,19 +636,19 @@ func TestExecuteRejectsUnknownAndMalformedArguments(t *testing.T) {
 	if err := registry.Connect(context.Background(), "remote"); err != nil {
 		t.Fatal(err)
 	}
-	res := registry.Execute(context.Background(), provider.ToolCall{ID: "1", Name: "mcp__remote__missing"})
+	res := registry.Execute(context.Background(), provider.ToolCall{ID: "1", Name: ExposedName("remote", "missing")})
 	if res.Status != "denied" {
 		t.Fatalf("unknown tool status = %q", res.Status)
 	}
 	res = registry.Execute(context.Background(), provider.ToolCall{
-		ID: "2", Name: "mcp__remote__echo",
+		ID: "2", Name: ExposedName("remote", "echo"),
 		Arguments: map[string]any{"_invalid": json.RawMessage("{")},
 	})
 	if res.Status != "failed" {
 		t.Fatalf("malformed argument status = %q", res.Status)
 	}
 	res = registry.Execute(context.Background(), provider.ToolCall{
-		ID: "3", Name: "mcp__remote__echo",
+		ID: "3", Name: ExposedName("remote", "echo"),
 		Arguments: map[string]any{"text": strings.Repeat("x", MaxArgumentBytes+1)},
 	})
 	if res.Status != "failed" {
@@ -606,13 +684,13 @@ func TestDisconnectRemovesToolsAndState(t *testing.T) {
 	if err := registry.Connect(context.Background(), "remote"); err != nil {
 		t.Fatal(err)
 	}
-	if !registry.Has("mcp__remote__echo") {
+	if !registry.Has(ExposedName("remote", "echo")) {
 		t.Fatal("tool not offered after connect")
 	}
 	if err := registry.Disconnect(context.Background(), "remote"); err != nil {
 		t.Fatal(err)
 	}
-	if registry.Has("mcp__remote__echo") {
+	if registry.Has(ExposedName("remote", "echo")) {
 		t.Fatal("tool still offered after disconnect")
 	}
 	status := registry.Servers()[0]
@@ -620,7 +698,7 @@ func TestDisconnectRemovesToolsAndState(t *testing.T) {
 		t.Fatalf("state = %q", status.State)
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__echo", Arguments: map[string]any{"text": "x"},
+		ID: "1", Name: ExposedName("remote", "echo"), Arguments: map[string]any{"text": "x"},
 	})
 	if res.Status != "denied" {
 		t.Fatalf("call after disconnect = %q", res.Status)
@@ -645,19 +723,19 @@ func TestMultipleConfiguredServers(t *testing.T) {
 			t.Fatalf("connect %s: %v", name, err)
 		}
 	}
-	if !registry.Has("mcp__one__echo") || !registry.Has("mcp__two__echo") {
+	if !registry.Has(ExposedName("one", "echo")) || !registry.Has(ExposedName("two", "echo")) {
 		t.Fatalf("tools = %#v", registry.Tools())
 	}
 	// In 444 only the first server's echo is offered.
 	offered := registry.Tools()
-	if len(offered) != 1 || offered[0].Name != "mcp__one__echo" {
+	if len(offered) != 1 || offered[0].Name != ExposedName("one", "echo") {
 		t.Fatalf("444 tools = %#v", offered)
 	}
-	for _, name := range []string{"mcp__one__echo", "mcp__two__echo"} {
+	for _, name := range []string{ExposedName("one", "echo"), ExposedName("two", "echo")} {
 		res := registry.Execute(context.Background(), provider.ToolCall{
 			ID: name, Name: name, Arguments: map[string]any{"text": name},
 		})
-		if name == "mcp__one__echo" {
+		if name == ExposedName("one", "echo") {
 			if res.Status != "ok" || !strings.Contains(res.Content, "echo: "+name) {
 				t.Fatalf("%s: status=%q content=%s", name, res.Status, res.Content)
 			}
@@ -692,12 +770,12 @@ func TestLostConnectionRemovesToolsAndReconnectWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__echo", Arguments: map[string]any{"text": "x"},
+		ID: "1", Name: ExposedName("remote", "echo"), Arguments: map[string]any{"text": "x"},
 	})
 	if res.Status == "ok" {
 		t.Fatalf("a closed session returned ok: %s", res.Content)
 	}
-	if registry.Has("mcp__remote__echo") {
+	if registry.Has(ExposedName("remote", "echo")) {
 		t.Fatal("a lost connection left its tools offered")
 	}
 	if got := registry.Servers()[0].State; got != StateDisconnected && got != StateError {
@@ -708,7 +786,7 @@ func TestLostConnectionRemovesToolsAndReconnectWorks(t *testing.T) {
 	if err := registry.Connect(context.Background(), "remote"); err != nil {
 		t.Fatal(err)
 	}
-	if !registry.Has("mcp__remote__echo") {
+	if !registry.Has(ExposedName("remote", "echo")) {
 		t.Fatal("reconnect did not restore the tools")
 	}
 }
@@ -753,7 +831,7 @@ func TestAuditIsContentFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__remote__echo", Arguments: map[string]any{"text": "secret text"},
+		ID: "1", Name: ExposedName("remote", "echo"), Arguments: map[string]any{"text": "secret text"},
 	})
 	if res.Status != "ok" {
 		t.Fatalf("status = %q", res.Status)
@@ -940,7 +1018,7 @@ func TestStdioConnectCallAndCleanup(t *testing.T) {
 		t.Fatal("no protocol version")
 	}
 	res := registry.Execute(context.Background(), provider.ToolCall{
-		ID: "1", Name: "mcp__local__echo", Arguments: map[string]any{"text": "stdio"},
+		ID: "1", Name: ExposedName("local", "echo"), Arguments: map[string]any{"text": "stdio"},
 	})
 	if res.Status != "ok" || !strings.Contains(res.Content, "echo: stdio") {
 		t.Fatalf("status=%q content=%s", res.Status, res.Content)

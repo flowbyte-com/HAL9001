@@ -31,6 +31,21 @@ func Guidance() string {
 // byte budget. A cut result says so: HAL never passes a half document
 // as if it were whole.
 func boundedContent(items []sdk.Content, maxBytes int) (string, bool) {
+	pieces := make([]string, 0, len(items))
+	for _, item := range items {
+		raw, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		pieces = append(pieces, string(raw))
+	}
+	return packContent(pieces, maxBytes)
+}
+
+// packContent assembles prepared content objects into one bounded JSON
+// array. Keeping the pieces apart lets the caller redact each object
+// before it is cut.
+func packContent(pieces []string, maxBytes int) (string, bool) {
 	if maxBytes < 16 {
 		maxBytes = 16
 	}
@@ -46,12 +61,7 @@ func boundedContent(items []sdk.Content, maxBytes int) (string, bool) {
 	used := 1
 	truncated := false
 	first := true
-	for _, item := range items {
-		raw, err := json.Marshal(item)
-		if err != nil {
-			continue
-		}
-		piece := string(raw)
+	for _, piece := range pieces {
 		if !first {
 			piece = "," + piece
 		}

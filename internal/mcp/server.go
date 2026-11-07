@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -81,6 +82,12 @@ const (
 	MaxRemoteNameBytes = 256
 	// MaxResourceURIBytes bounds a server-supplied resource URI.
 	MaxResourceURIBytes = 2048
+	// MaxServerEnvEntries bounds the explicitly configured environment of
+	// one local server, so the redactor's work stays bounded.
+	MaxServerEnvEntries = 64
+	// MaxServerHeaders bounds the explicitly configured headers of one
+	// remote server.
+	MaxServerHeaders = 64
 )
 
 // ErrUnknownServer reports a server name that is not configured.
@@ -155,11 +162,24 @@ func (s *Server) Validate() error {
 		if err != nil {
 			return fmt.Errorf("mcp: server %q has an invalid url: %w", s.Name, err)
 		}
-		if u.Scheme != "http" && u.Scheme != "https" {
-			return fmt.Errorf("mcp: server %q must use http or https", s.Name)
-		}
-		if u.Host == "" {
+		if u.Host == "" && (u.Scheme == "http" || u.Scheme == "https") {
 			return fmt.Errorf("mcp: server %q has no host in its url", s.Name)
+		}
+		switch u.Scheme {
+		case "https":
+		case "http":
+			// A plaintext endpoint is only acceptable on this machine.
+			// The check is on the literal host: a name that merely
+			// resolves to a loopback address is not trusted, because the
+			// resolution itself can change.
+			if !isLoopbackHost(u.Host) {
+				return fmt.Errorf("mcp: server %q must use https unless it is a literal loopback address", s.Name)
+			}
+		default:
+			return fmt.Errorf("mcp: server %q must use https (or http on a literal loopback address)", s.Name)
+		}
+		if u.User != nil {
+			return fmt.Errorf("mcp: server %q must not put credentials in its url", s.Name)
 		}
 	default:
 		return fmt.Errorf("mcp: server %q has an unknown transport %q", s.Name, s.Transport)
@@ -187,6 +207,9 @@ func (s *Server) Validate() error {
 			return fmt.Errorf("mcp: server %q has an invalid value for %s", s.Name, key)
 		}
 	}
+	if len(s.Env) > MaxServerEnvEntries {
+		return fmt.Errorf("mcp: server %q has more than %d environment entries", s.Name, MaxServerEnvEntries)
+	}
 	for key, value := range s.Headers {
 		if strings.TrimSpace(key) == "" || strings.ContainsAny(key, ":\r\n\x00") {
 			return fmt.Errorf("mcp: server %q has an invalid header name", s.Name)
@@ -194,6 +217,9 @@ func (s *Server) Validate() error {
 		if strings.ContainsAny(value, "\r\n") {
 			return fmt.Errorf("mcp: server %q has a header value with a line break", s.Name)
 		}
+	}
+	if len(s.Headers) > MaxServerHeaders {
+		return fmt.Errorf("mcp: server %q has more than %d headers", s.Name, MaxServerHeaders)
 	}
 	for _, tool := range s.AllowedTools {
 		if strings.TrimSpace(tool) == "" {
@@ -238,6 +264,22 @@ func cleanRemoteText(text string, max int) string {
 	return b.String()
 }
 
+// isLoopbackHost reports whether a URL host is a literal loopback
+// address. Only "localhost", 127.0.0.0/8 and ::1 are accepted; a DNS
+// name that happens to resolve to this machine is not.
+func isLoopbackHost(host string) bool {
+	hostname := host
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		hostname = parsed
+	}
+	hostname = strings.Trim(hostname, "[]")
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	return ip != nil && ip.IsLoopback()
+}
+
 // timeout is the effective call timeout for this server.
 func (s Server) timeout() time.Duration {
 	if s.Timeout > 0 {
@@ -268,13 +310,26 @@ func (s Server) transport() (sdk.Transport, []string, func(), error) {
 	switch s.Transport {
 	case "", TransportStdio:
 		cmd := exec.Command(s.Command, s.Args...)
-		cmd.Env = baseEnvironment()
+		base := baseEnvironment()
+		cmd.Env = base
+		var secrets []string
 		for key, value := range s.Env {
 			resolved, ok := expandValue(value)
 			if !ok {
 				return nil, nil, nil, fmt.Errorf("mcp: server %q needs the environment variable %s", s.Name, referenceName(value))
 			}
 			cmd.Env = append(cmd.Env, key+"="+resolved)
+			// Every explicitly configured value is treated as a
+			// credential for redaction purposes: the operator chose to
+			// pass it, and the server can echo it back in any result.
+			secrets = append(secrets, resolved)
+		}
+		// An inherited proxy URL can carry a user name and password.
+		for _, entry := range base {
+			key, value, ok := strings.Cut(entry, "=")
+			if ok && isProxyEnvironment(key) {
+				secrets = append(secrets, value)
+			}
 		}
 		if s.CWD != "" {
 			cmd.Dir = s.CWD
@@ -283,7 +338,7 @@ func (s Server) transport() (sdk.Transport, []string, func(), error) {
 			Command:           cmd,
 			TerminateDuration: 5 * time.Second,
 		}}
-		return managed, nil, managed.close, nil
+		return managed, secrets, managed.close, nil
 	case TransportHTTP:
 		headers, secrets, err := s.httpHeaders()
 		if err != nil {
@@ -326,7 +381,7 @@ func (s Server) httpHeaders() (map[string]string, []string, error) {
 		if !ok {
 			return nil, nil, fmt.Errorf("mcp: server %q needs the environment variable %s", s.Name, referenceName(value))
 		}
-		if isSecretHeader(key) {
+		if !isPlainHeader(key) {
 			secrets = append(secrets, resolved)
 		}
 		headers[key] = resolved
@@ -342,13 +397,22 @@ func (s Server) httpHeaders() (map[string]string, []string, error) {
 	return headers, secrets, nil
 }
 
-// isSecretHeader reports whether a header carries a credential.
-func isSecretHeader(name string) bool {
+// isPlainHeader reports whether a header is ordinary protocol metadata.
+// Every other configured header is treated as a credential for redaction:
+// an operator can carry a token under any header name.
+func isPlainHeader(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "authorization", "proxy-authorization", "cookie", "x-api-key", "api-key":
+	case "accept", "accept-language", "content-type", "user-agent":
 		return true
 	}
 	return false
+}
+
+// isProxyEnvironment reports whether an inherited variable holds a
+// proxy URL, which may embed a user name and password.
+func isProxyEnvironment(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, "_proxy")
 }
 
 // managedTransport keeps the SDK's connection so a failed handshake can
@@ -496,17 +560,6 @@ func referenceName(value string) string {
 		return "(a value)"
 	}
 	return rest[:end]
-}
-
-// redact removes every secret from a message.
-func redact(text string, secrets []string) string {
-	for _, secret := range secrets {
-		if secret == "" {
-			continue
-		}
-		text = strings.ReplaceAll(text, secret, "***")
-	}
-	return text
 }
 
 // safeURL renders a server URL without credentials, query parameters or a

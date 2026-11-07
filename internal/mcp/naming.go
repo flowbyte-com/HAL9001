@@ -8,10 +8,16 @@ import (
 
 // The provider accepts function names from a small alphabet. MCP tool
 // names are free-form, so HAL maps them onto that alphabet and keeps a
-// stable, collision-free name for every (server, tool) pair.
+// stable name for every (server, tool) identity.
 
 // maxToolNameLen is the longest name HAL exposes to the provider.
 const maxToolNameLen = 64
+
+// toolNameHashLen is the number of hex characters taken from the digest
+// of the identity. Sixteen hex characters (64 bits) make a deliberate
+// second-preimage impractical; the registry still checks for an exact
+// collision and withdraws both names if one ever occurs.
+const toolNameHashLen = 16
 
 // toolNamePrefix marks every exposed name as an MCP tool, so it can
 // never collide with HAL's own tools or with the MPM bridge.
@@ -33,25 +39,30 @@ func sanitizeName(s string) string {
 	return b.String()
 }
 
-// shortHash is a short, stable digest of a name.
-func shortHash(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])[:8]
+// identityHash is a stable digest of the exact (server, tool) identity.
+//
+// The separator cannot appear in a valid server name, and a NUL is used
+// rather than "__" so two different pairs cannot produce the same input
+// by concatenation ambiguity.
+func identityHash(server, tool string) string {
+	sum := sha256.Sum256([]byte(server + "\x00" + tool))
+	return hex.EncodeToString(sum[:])[:toolNameHashLen]
 }
 
 // ExposedName is the provider-visible name of one MCP tool.
 //
-// Two different tools never share a name: when the server or the tool
-// name had to be rewritten, a digest of the original identity is added,
-// and a name that is still too long is shortened with the same digest.
+// Every name carries a digest of the exact identity, including names that
+// did not need sanitizing. Without that suffix a crafted tool name could
+// equal another pair's rewritten name (the first server's name plus its
+// hash), letting one server shadow another. The readable part is only a
+// label; the digest is what makes the identity unique. If two identities
+// ever did share a 64-bit digest, the registry detects the exact
+// collision and withdraws the name rather than let either tool run.
 func ExposedName(server, tool string) string {
-	raw := toolNamePrefix + server + "__" + tool
-	name := sanitizeName(raw)
-	if name != raw {
-		name += "_" + shortHash(raw)
+	prefix := toolNamePrefix + sanitizeName(server) + "__" + sanitizeName(tool)
+	suffix := "_" + identityHash(server, tool)
+	if len(prefix)+len(suffix) > maxToolNameLen {
+		prefix = prefix[:maxToolNameLen-len(suffix)]
 	}
-	if len(name) > maxToolNameLen {
-		name = name[:maxToolNameLen-9] + "_" + shortHash(raw)
-	}
-	return name
+	return prefix + suffix
 }
