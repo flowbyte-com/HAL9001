@@ -283,7 +283,7 @@ func (m Model) mcpRows() []string {
 		return rows
 	}
 	for _, server := range servers {
-		rows = append(rows, "  "+padTo(st.active.Render(oneLine(server.Name)), 18)+st.footer.Render(string(server.State)))
+		rows = append(rows, "  "+padTo(st.active.Render(oneLine(server.Name)), 18)+st.footer.Render(oneLine(string(server.State))))
 		facts := []string{"transport " + oneLine(server.Transport)}
 		if server.URL != "" {
 			facts = append(facts, "url "+oneLine(server.URL))
@@ -320,7 +320,7 @@ func (m Model) mcpRows() []string {
 			if tool.AllowedIn444 {
 				policy = "allowed in 444"
 			}
-			rows = append(rows, "    "+padTo(st.footer.Render(tool.Exposed), 32)+oneLine(tool.Name))
+			rows = append(rows, "    "+padTo(st.footer.Render(oneLine(tool.Exposed)), 32)+oneLine(tool.Name))
 			rows = append(rows, "        "+st.footer.Render(policy))
 			if tool.Description != "" {
 				rows = append(rows, "        "+st.footer.Render(truncate(oneLine(tool.Description), 72)))

@@ -195,10 +195,18 @@ func TestMCPPanelSanitizesUntrustedText(t *testing.T) {
 	controller.servers[0].ServerName = "evil\x1b]0;pwned\x07"
 	controller.servers[0].ServerVersion = "1.0\x1b[2J"
 	controller.servers[0].Error = "bad\x1b[31mred\x07"
+	controller.servers[0].Protocol = "proto\x1b[2J"
+	controller.servers[0].Transport = "http\x1b\x07"
+	controller.servers[0].Capabilities = []string{"tools\x1b\x07"}
+	controller.servers[0].AllowedTools = []string{"echo\x1b\x07"}
+	controller.servers[0].State = mcp.ServerState("connected\x1b\x07")
 	controller.tools[0].Name = "tool\x1b]52;c;ZXZpbA==\x07"
+	controller.tools[0].Exposed = "mcp\x1b[2J"
 	controller.tools[0].Description = "desc\x1b[2J\x07"
 	controller.resources[0].URI = "mem://doc\x1b\x07"
+	controller.resources[0].Name = "doc\x1b\x07"
 	controller.prompts[0].Name = "greet\x1b\x07"
+	controller.prompts[0].Description = "desc\x1b]52;c;ZXZpbA==\x07"
 	controller.document = "body\x1b]52;c;ZXZpbA==\x07"
 	m := mcpModel(controller)
 	m = typeText(m, "/mcp tools remote")
@@ -207,11 +215,20 @@ func TestMCPPanelSanitizesUntrustedText(t *testing.T) {
 	if strings.ContainsAny(stripANSI(raw), "\x1b\x07") {
 		t.Fatalf("panel passed a terminal control character through: %q", raw)
 	}
+	for _, attack := range []string{"\x1b]0;", "\x1b[2J", "\x1b]52;", "\x07"} {
+		if strings.Contains(raw, attack) {
+			t.Fatalf("panel passed the injected sequence %q through: %q", attack, raw)
+		}
+	}
 	m.mcpDocument = controller.document
 	m.mcpDocumentTitle = "doc\x1b\x07"
 	raw = strings.Join(m.mcpRows(), "\n")
 	if strings.ContainsAny(stripANSI(raw), "\x1b\x07") {
 		t.Fatalf("document passed a terminal control character through: %q", raw)
+	}
+	m.applyMCPAction(mcpActionMsg{action: "read", name: "remote", err: errors.New("bad\x1b]0;pwned\x07")})
+	if strings.ContainsAny(m.Notice(), "\x1b\x07") {
+		t.Fatalf("notice passed a terminal control character through: %q", m.Notice())
 	}
 }
 
