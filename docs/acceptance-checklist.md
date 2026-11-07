@@ -211,6 +211,9 @@ manual terminal check remains:
       directory and the copies are readable by the operator only.
 - [ ] The copy's `attachment.json` names the file it was copied from.
       The conversation record itself holds no path on your machine.
+- [ ] A file called `attachment.json` attaches like any other file: you
+      see that name, the copy holds your content, and it is stored beside
+      the record rather than in its place.
 - [ ] A filename with spaces works: `/attach ~/my notes.md`.
 - [ ] A Unicode filename keeps its name.
 - [ ] A filename carrying a newline or an escape sequence is cleaned: it

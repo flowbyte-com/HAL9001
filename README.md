@@ -516,6 +516,12 @@ never the one who chooses.
   placed in its place, a traversal in a name or a concurrent
   substitution cannot redirect a copy elsewhere. The directory is 0700
   and the copies are 0600.
+- **The record's name is reserved.** `attachment.json` belongs to the
+  record, so a copy may never take it. A file called `attachment.json`
+  is an ordinary file and attaches: the operator still sees that name,
+  and the copy is stored beside the record under a name of its own. The
+  record is never readable as if it were a copy, so the path it keeps on
+  the operator's machine cannot be picked up as file content.
 - **The name is preserved, the path is not.** The original filename is
   kept as metadata — spaces, Unicode and all — and a sanitized form of
   it names the copy, so two files with the same name never collide. A

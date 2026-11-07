@@ -210,6 +210,11 @@ func (m Model) noticeLine(text string) string {
 }
 
 // attachFailure turns a failure into one line the operator can act on.
+//
+// Every message names the condition and the file. Nothing here carries a
+// system error: an "openat" line and the attachment's internal
+// identifier are HAL's own machinery, and the operator cannot act on
+// them.
 func attachFailure(err error, path string) string {
 	switch {
 	case errors.Is(err, attachments.ErrMissing):
@@ -228,7 +233,14 @@ func attachFailure(err error, path string) string {
 		return "The upload directory is a symbolic link; HAL will not write through it."
 	case errors.Is(err, attachments.ErrChanged):
 		return "That file changed while it was being attached; try again."
+	case errors.Is(err, attachments.ErrClosed):
+		return "Attachments are unavailable in this session."
+	case errors.Is(err, attachments.ErrUnknown):
+		return "That file could not be read from the upload directory: " + path
 	default:
-		return "Could not attach that file: " + err.Error()
+		// The store reports a failure the operator cannot name. The
+		// message says what happened without carrying HAL's own
+		// machinery into the interface.
+		return "Could not attach that file: " + path
 	}
 }

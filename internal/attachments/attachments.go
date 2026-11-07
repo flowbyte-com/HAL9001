@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -86,6 +87,25 @@ var (
 	// ErrUnknown reports that no attachment carries the given identity.
 	ErrUnknown = errors.New("unknown attachment")
 )
+
+// metaFileName is the name of the metadata sidecar written beside
+// every copy.
+//
+// The name is reserved. A copy may never take it, and a read of an
+// attachment's content may never return it: the sidecar holds the
+// operator's own path on their machine, which is provenance and not
+// something a conversation may carry.
+const metaFileName = "attachment.json"
+
+// reservedMetaName reports whether a name is the reserved sidecar
+// name.
+//
+// The comparison ignores case: on a case-insensitive filesystem
+// "ATTACHMENT.JSON" names the same file, and the sidecar must stay out
+// of reach under either spelling.
+func reservedMetaName(name string) bool {
+	return strings.EqualFold(name, metaFileName)
+}
 
 // Meta is the durable reference to one attached file.
 //
@@ -234,6 +254,9 @@ func SanitizeMeta(m Meta) Meta {
 // The path is resolved inside the confined upload directory in any case,
 // so this is not the boundary. It keeps a damaged record from naming
 // something that is not a copy, such as a sidecar.
+//
+// The reserved sidecar name is refused here: a record that names it is
+// not naming a copy, and the sidecar must never be readable as one.
 func sanitizeRelativePath(p string) string {
 	if p == "" || strings.HasPrefix(p, "/") || strings.Contains(p, "\\") {
 		return ""
@@ -246,6 +269,9 @@ func sanitizeRelativePath(p string) string {
 		if part == "" || part == "." || part == ".." {
 			return ""
 		}
+	}
+	if reservedMetaName(parts[1]) {
+		return ""
 	}
 	return p
 }
@@ -433,7 +459,7 @@ func (s *Store) Attach(path string) (Meta, error) {
 		_ = root.RemoveAll(id)
 		return Meta{}, err
 	}
-	if err := writeMeta(root, filepath.ToSlash(filepath.Join(id, "attachment.json")),
+	if err := writeMeta(root, filepath.ToSlash(filepath.Join(id, metaFileName)),
 		record{Meta: meta, Source: src}); err != nil {
 		_ = root.RemoveAll(id)
 		return Meta{}, err
@@ -471,7 +497,7 @@ func (s *Store) Load(id string) (Meta, error) {
 		return Meta{}, err
 	}
 	defer root.Close()
-	data, err := root.ReadFile(filepath.ToSlash(filepath.Join(id, "attachment.json")))
+	data, err := root.ReadFile(filepath.ToSlash(filepath.Join(id, metaFileName)))
 	if err != nil {
 		return Meta{}, fmt.Errorf("%w: %s", ErrUnknown, id)
 	}
@@ -491,12 +517,25 @@ func (s *Store) Load(id string) (Meta, error) {
 // The copy is checked against the checksum it was stored with: the
 // content discussed is the content that was attached, or the read
 // fails.
+//
+// The reserved sidecar name is refused here, before anything is read.
+// A reference is a reference to a copy: it can never be a way of
+// reading the record that describes the copy. The refusal does not
+// depend on the checksum being present, because a reference without one
+// is exactly the shape a forged reference takes.
 func (s *Store) Content(meta Meta, max int) (string, bool, error) {
 	if s == nil {
 		return "", false, ErrClosed
 	}
 	if max <= 0 {
 		return "", false, nil
+	}
+	if meta.Path == "" {
+		return "", false, fmt.Errorf("%w: %s", ErrUnknown, meta.Name)
+	}
+	if base := path.Base(meta.Path); reservedMetaName(base) {
+		return "", false, fmt.Errorf("%w: %s is the attachment's own record, not a file",
+			ErrUnknown, meta.Name)
 	}
 	root, err := s.rootHandle()
 	if err != nil {
@@ -858,6 +897,12 @@ func readBounded(path string, limit int64) ([]byte, error) {
 // stays readable, and everything else becomes an underscore. The result
 // is one path component: it can never reach outside the attachment's own
 // directory.
+//
+// The reserved sidecar name is never returned. An operator file called
+// "attachment.json" is an ordinary file and must attach, but its copy
+// may not take the name of the record that describes it. The operator
+// still sees the original name in the metadata: only the name on disk
+// changes.
 func safeName(name string) string {
 	base := filepath.Base(strings.ReplaceAll(name, "\\", "/"))
 	var b strings.Builder
@@ -894,6 +939,13 @@ func safeName(name string) string {
 		for len(out) > 0 && !utf8.RuneStart(out[len(out)-1]) {
 			out = out[:len(out)-1]
 		}
+	}
+	// The sidecar's own name is reserved for the sidecar. A copy that
+	// took it would either overwrite the record or be refused as a
+	// duplicate of it, and an operator file called "attachment.json"
+	// is an ordinary file that must attach.
+	if reservedMetaName(out) {
+		out += ".copy"
 	}
 	return out
 }

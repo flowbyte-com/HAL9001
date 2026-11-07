@@ -246,6 +246,24 @@ def main():
         check("the request delimited the untrusted block",
               "BOUNDARY: yes" in text, text)
 
+        # 7a. A file called "attachment.json" is an ordinary file: the
+        #      upload directory keeps its own record under that name, so
+        #      the copy must not take it.
+        reserved = os.path.join(sources, "attachment.json")
+        with open(reserved, "w") as fh:
+            fh.write(MARKER + "\nfrom the reserved name\n")
+        raw, text = capture([(2.0, ("/attach " + reserved + "\r").encode()),
+                             (0.8, b"")])
+        check("a file named like the sidecar attaches",
+              "Attached attachment.json" in text, text)
+        check("the file named like the sidecar is refused with no "
+              "system error", "openat" not in text, text)
+        check("the operator sees the original name",
+              "attachment.json" in text, text)
+        _, text = capture([(0.5, b"[[attached]]\r"), (2.5, b"")])
+        check("the file named like the sidecar reached the model",
+              MARKER in text, text)
+
         # 8. The transcript keeps a reference to the file.
         check("the transcript shows the attached file", "my notes.txt" in text, text)
 

@@ -162,6 +162,12 @@ it exits. To remove a copy, delete its own directory —
 conversation keeps a reference to a copy that is gone, and HAL reports
 such a file as unreadable rather than as an empty one.
 
+Each attachment's directory holds the copy and a small `attachment.json`
+that describes it. That name belongs to the description, so a copy may
+never take it: a file called `attachment.json` attaches like any other,
+keeps its name in the interface, and is stored beside the description
+under a name of its own.
+
 ## Clipboard
 
 - `/copy` and `/copy code` write OSC 52 (`CSI 52;c;<base64> BEL`) to
