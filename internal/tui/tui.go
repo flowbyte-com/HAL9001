@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 
+	"github.com/flowbyte-com/HAL9001/internal/attachments"
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
@@ -223,6 +224,16 @@ type ProgressEngine interface {
 	RespondStreamEvents(ctx context.Context, input string, emit func(engine.Event)) (string, error)
 }
 
+// AttachmentEngine is implemented by engines that can carry the files
+// the operator attached with a turn.
+//
+// The interface is optional. An engine without it never receives
+// attachments: a turn with files then fails with a clear message,
+// instead of being sent without the files the operator attached.
+type AttachmentEngine interface {
+	RespondStreamEventsWithAttachments(ctx context.Context, input string, atts []attachments.Meta, emit func(engine.Event)) (string, error)
+}
+
 // View selects the full-screen mode.
 type View int
 
@@ -253,6 +264,10 @@ type SessionLine struct {
 	// Tools is the verified tool evidence stored with this assistant
 	// answer. It is evidence, never current authority.
 	Tools []session.ToolExecution
+	// Files are the attachments the operator made with this message.
+	// They are references, so a restored conversation still shows which
+	// files were discussed without carrying their contents.
+	Files []attachments.Meta
 	// Attribution names the skills that shaped this answer, when the
 	// stored turn recorded any. It is presentation metadata and never
 	// part of Text.
@@ -332,7 +347,11 @@ type entry struct {
 	// presentation metadata about the turn: it is never part of the
 	// text, and it never reaches the model.
 	attribution *session.Attribution
-	rows        []string
+	// files are the attachments the operator made with this message.
+	// They are references, shown beneath the message; the contents are
+	// never part of the text.
+	files []attachments.Meta
+	rows  []string
 	// deco marks the rows that are interface decoration rather than
 	// message text: the collapse hint and the answer's metadata line.
 	// They stay on screen, but a selection never copies them.
@@ -351,10 +370,18 @@ type Model struct {
 	composer textarea.Model
 	entries  []entry
 	pending  string
-	width    int
-	height   int
-	ready    bool
-	sending  bool
+	// pendingFiles are the files the operator attached to the next
+	// message. They are references, not contents: the copies live in
+	// HAL's upload directory.
+	pendingFiles []attachments.Meta
+	// attachStore copies an operator-chosen file into the upload
+	// directory. It is nil when attachments are unavailable, and it is
+	// never reachable from a model-facing tool.
+	attachStore AttachmentStore
+	width       int
+	height      int
+	ready       bool
+	sending     bool
 	// notice is the transient status line under the footer. noticeSeq
 	// identifies it, so the expiry of a notice that has already been
 	// replaced is ignored.
@@ -628,6 +655,14 @@ func (m *Model) SetMouse(enabled bool) { m.mouse = enabled }
 // behaves exactly as it did before skills existed.
 func (m *Model) SetSkills(sel *skills.Selector) { m.skills = sel }
 
+// SetAttachments attaches the upload store.
+//
+// The store is the operator's way in: /attach copies a file the operator
+// chose into HAL's upload directory. Without a store the attachment
+// commands report that attachments are unavailable, and nothing else
+// changes.
+func (m *Model) SetAttachments(store AttachmentStore) { m.attachStore = store }
+
 // SetEffort sets the active reasoning level and whether the model
 // supports it, for the footer and the selector.
 func (m *Model) SetEffort(level string, supported bool) {
@@ -719,6 +754,7 @@ func (m *Model) SetHistory(lines []SessionLine) {
 			tools:       tools,
 			collapse:    collapseShown,
 			attribution: line.Attribution,
+			files:       line.Files,
 		})
 	}
 	// /diag describes the latest assistant turn, not an older turn that
@@ -832,17 +868,17 @@ type errorMsg struct {
 
 // sendCmd starts the streamed turn. With a live sender it runs in the
 // background and posts deltas; headless it runs inline for determinism.
-func (m Model) sendCmd(id int, input string, ctx context.Context) tea.Cmd {
+func (m Model) sendCmd(id int, input string, atts []attachments.Meta, ctx context.Context) tea.Cmd {
 	if m.sender == nil {
-		return func() tea.Msg { return m.runRespond(id, input, ctx) }
+		return func() tea.Msg { return m.runRespond(id, input, atts, ctx) }
 	}
 	return func() tea.Msg {
-		go m.runStream(id, input, ctx)
+		go m.runStream(id, input, atts, ctx)
 		return streamStartedMsg{id: id}
 	}
 }
 
-func (m Model) runRespond(id int, input string, ctx context.Context) tea.Msg {
+func (m Model) runRespond(id int, input string, atts []attachments.Meta, ctx context.Context) tea.Msg {
 	var (
 		proposal    *workspace.Proposal
 		decision    *skills.Decision
@@ -851,7 +887,7 @@ func (m Model) runRespond(id int, input string, ctx context.Context) tea.Msg {
 		stats       *provider.TurnStats
 		tools       []engine.ToolActivity
 	)
-	reply, err := m.respondEvents(ctx, input, func(ev engine.Event) {
+	reply, err := m.respondEvents(ctx, input, atts, func(ev engine.Event) {
 		switch {
 		case ev.Proposal != nil:
 			p := *ev.Proposal
@@ -885,7 +921,18 @@ func (m Model) runRespond(id int, input string, ctx context.Context) tea.Msg {
 
 // respondEvents runs one turn and forwards its events. Engines without
 // progress events still answer; they simply bring no proposals.
-func (m Model) respondEvents(ctx context.Context, input string, emit func(engine.Event)) (string, error) {
+//
+// An engine that can carry attachments is preferred when the operator
+// attached files. An engine that cannot is never asked to answer a turn
+// with files: the turn fails loudly instead of being sent without the
+// files the operator attached.
+func (m Model) respondEvents(ctx context.Context, input string, atts []attachments.Meta, emit func(engine.Event)) (string, error) {
+	if len(atts) > 0 {
+		if ae, ok := m.engine.(AttachmentEngine); ok {
+			return ae.RespondStreamEventsWithAttachments(ctx, input, atts, emit)
+		}
+		return "", fmt.Errorf("this session cannot send attached files")
+	}
 	if pe, ok := m.engine.(ProgressEngine); ok {
 		return pe.RespondStreamEvents(ctx, input, emit)
 	}
@@ -895,7 +942,7 @@ func (m Model) respondEvents(ctx context.Context, input string, emit func(engine
 // runStream drives the live turn. The engine reports reasoning presence
 // and content-free statistics as well as text; none of the reasoning
 // text itself ever reaches the interface.
-func (m Model) runStream(id int, input string, ctx context.Context) {
+func (m Model) runStream(id int, input string, atts []attachments.Meta, ctx context.Context) {
 	emit := func(ev engine.Event) {
 		switch {
 		case ev.Stats != nil:
@@ -940,7 +987,13 @@ func (m Model) runStream(id int, input string, ctx context.Context) {
 		reply string
 		err   error
 	)
-	if pe, ok := m.engine.(ProgressEngine); ok {
+	if len(atts) > 0 {
+		if ae, ok := m.engine.(AttachmentEngine); ok {
+			reply, err = ae.RespondStreamEventsWithAttachments(ctx, input, atts, collect)
+		} else {
+			err = fmt.Errorf("this session cannot send attached files")
+		}
+	} else if pe, ok := m.engine.(ProgressEngine); ok {
 		reply, err = pe.RespondStreamEvents(ctx, input, collect)
 	} else {
 		reply, err = m.engine.RespondStream(ctx, input, func(text string) {
@@ -1410,10 +1463,23 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.fitComposer()
 	m.streamID++
 	id := m.streamID
+	// The files the operator attached belong to this message. They are
+	// taken out of the pending list here, so the next message starts
+	// clean, and they are recorded with the message so a restored
+	// conversation still shows which files were discussed.
+	atts := m.pendingFiles
+	m.pendingFiles = nil
+	// The row that named the pending files is gone now, so the frame
+	// changes before the message is drawn.
+	m.resizeFrame()
 	// A new turn starts with no attribution: whatever the previous turn
 	// used says nothing about this one.
 	m.turnAttribution = nil
 	i := m.appendEntry("user", input)
+	if len(atts) > 0 {
+		m.entries[i].files = atts
+		m.renderEntry(i)
+	}
 	// A long prompt is collapsed while HAL answers: the answer is what
 	// the operator wants to read. The collapse is temporary and the
 	// prompt opens again when the answer is there.
@@ -1428,7 +1494,7 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.notice = m.activityNotice()
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
-	cmd := m.sendCmd(id, input, ctx)
+	cmd := m.sendCmd(id, input, atts, ctx)
 	if m.sender == nil {
 		return m, cmd
 	}
@@ -1690,7 +1756,7 @@ func (m *Model) stopStream() {
 // sizePanes recomputes the frame. It reports whether the geometry
 // changed, so callers can preserve the reading position.
 func (m *Model) sizePanes() bool {
-	f := computeChatFrame(m.height, m.desiredComposer, m.suggestRows())
+	f := computeChatFrame(m.height, m.desiredComposer, m.suggestRows(), len(m.pendingFiles) > 0)
 	changed := f != m.frame
 	m.frame = f
 	m.viewHeight = m.frame.viewport
@@ -1920,6 +1986,10 @@ type chatFrame struct {
 	divider  bool
 	hint     bool
 	notice   bool
+	// files is the row that names the files pending for the next
+	// message. It is reserved only while files are pending, so the
+	// ordinary conversation keeps exactly the frame it had.
+	files bool
 }
 
 // chrome counts every row that is neither the viewport nor the composer
@@ -1940,6 +2010,9 @@ func (f chatFrame) chrome() int {
 	if f.divider {
 		n++
 	}
+	if f.files {
+		n++
+	}
 	n += f.suggest
 	if f.rules {
 		n += 2
@@ -1953,7 +2026,7 @@ func (f chatFrame) total() int { return f.chrome() + f.composer + f.viewport }
 // gives up the suggestion panel, the divider, the notice, the hint row
 // and finally the composer rules — never the header, the composer text or
 // the footer.
-func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
+func computeChatFrame(height, desiredComposer, suggestions int, files bool) chatFrame {
 	f := chatFrame{
 		composer: desiredComposer,
 		suggest:  suggestions,
@@ -1961,6 +2034,7 @@ func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
 		divider:  true,
 		hint:     true,
 		notice:   true,
+		files:    files,
 	}
 	if f.composer < 1 {
 		f.composer = 1
@@ -1973,7 +2047,9 @@ func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
 	// scroll it out of view to keep a suggestion panel, a divider, a
 	// notice, a hint or a rule. The divider is the first decoration to
 	// go: it is purely visual, and dropping it also avoids a hint-less
-	// composer rule being followed by a second, identical rule. Only when
+	// composer rule being followed by a second, identical rule. The row
+	// that names the pending attachments goes after the hint: the
+	// operator needs to see what the next message will carry. Only when
 	// even the bare composer cannot fit more than one text row does the
 	// draft window shrink.
 	for height > 0 && f.chrome()+f.composer+1 > height {
@@ -1986,6 +2062,8 @@ func computeChatFrame(height, desiredComposer, suggestions int) chatFrame {
 			f.notice = false
 		case f.hint:
 			f.hint = false
+		case f.files:
+			f.files = false
 		case f.rules:
 			f.rules = false
 		case f.composer > 1:
@@ -2409,29 +2487,62 @@ func (m Model) renderUser(e *entry) ([]string, []bool) {
 		lines = append(lines, strings.TrimRight(line, " "))
 	}
 	prefix := m.transcriptPrefix()
-	rows := make([]string, 0, len(lines)+1)
+	body := make([]string, 0, len(lines)+1)
 	for _, line := range lines {
 		if m.color && line != "" {
 			line = m.theme.styles().user.Render(line)
 		}
-		rows = append(rows, prefix+line)
+		body = append(body, prefix+line)
+	}
+	// The files the operator attached are shown as a reference beneath
+	// the message: their names and sizes, never their contents. The row
+	// is interface, so a selection never copies it.
+	var ref []string
+	if len(e.files) > 0 {
+		ref = append(ref, prefix+m.attachmentReference(e.files))
 	}
 	preview := m.collapsedPreviewRows()
-	if len(rows) <= preview {
-		return rows, nil
+	if len(body) <= preview {
+		rows := append(append([]string{}, body...), ref...)
+		return rows, decoRows(len(rows), len(body))
 	}
 	if e.collapse == collapseShown {
+		rows := append(append([]string{}, body...), ref...)
 		rows = append(rows, m.collapseHint("Ctrl+O to collapse"))
 		return rows, decorationRows(len(rows))
 	}
-	visible := rows[:preview]
-	hidden := len(rows) - preview
+	// A collapsed message still shows which files it carried: that
+	// reference is one line, and the operator needs it.
+	visible := body[:preview]
+	hidden := len(body) - preview
 	hint := fmt.Sprintf("… %d more line(s) · Ctrl+O to expand", hidden)
 	if hidden == 1 {
 		hint = "… 1 more line · Ctrl+O to expand"
 	}
-	visible = append(visible, m.collapseHint(hint))
-	return visible, decorationRows(len(visible))
+	rows := append(append(append([]string{}, visible...), ref...), m.collapseHint(hint))
+	return rows, decorationRows(len(rows))
+}
+
+// decoRows marks the given rows as interface decoration. A row that is
+// not listed is message text.
+func decoRows(n int, indexes ...int) []bool {
+	deco := make([]bool, n)
+	for _, i := range indexes {
+		if i >= 0 && i < n {
+			deco[i] = true
+		}
+	}
+	return deco
+}
+
+// attachmentReference renders the files of one message as a single line:
+// the paperclip and then the name and size of each file.
+func (m Model) attachmentReference(files []attachments.Meta) string {
+	text := attachmentSummary(files)
+	if text == "" {
+		return ""
+	}
+	return truncateCells(text, m.contentWidth())
 }
 
 // decorationRows marks the last row of a set as interface decoration.
@@ -2529,7 +2640,7 @@ func (m Model) collapsible(i int) bool {
 	if e.role != "user" {
 		return false
 	}
-	full, _ := m.renderUser(&entry{role: e.role, text: e.text, collapse: collapseShown})
+	full, _ := m.renderUser(&entry{role: e.role, text: e.text, collapse: collapseShown, files: e.files})
 	return len(full) > m.collapsedPreviewRows()
 }
 
@@ -2833,6 +2944,12 @@ func (m Model) chatLayout() []string {
 	rows = append(rows, m.jumpOverlay(m.highlightSelection(m.viewportRows(f.viewport)))...)
 	if f.suggest > 0 {
 		rows = append(rows, m.suggestionRows(f.suggest)...)
+	}
+	// The files pending for the next message are named directly above
+	// the composer, so the operator sees what the next message will
+	// carry before sending it.
+	if f.files {
+		rows = append(rows, m.attachmentRow())
 	}
 	rows = append(rows, m.composerBlock(f.composer, f.rules)...)
 	// One reserved row of keyboard hints sits immediately below the

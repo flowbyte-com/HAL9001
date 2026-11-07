@@ -606,7 +606,7 @@ func TestPasteStartEndSequenceShowsBothLines(t *testing.T) {
 // a two-line draft keeps both rows and its rules; a five-line draft
 // keeps all five rows and gives up the rules instead.
 func TestShortTerminalKeepsComposerText(t *testing.T) {
-	two := computeChatFrame(9, 2, 0)
+	two := computeChatFrame(9, 2, 0, false)
 	if two.composer != 2 {
 		t.Errorf("two-line composer = %d rows, want 2", two.composer)
 	}
@@ -623,7 +623,7 @@ func TestShortTerminalKeepsComposerText(t *testing.T) {
 		t.Errorf("two-line frame uses %d rows, want 9", got)
 	}
 
-	five := computeChatFrame(9, 5, 0)
+	five := computeChatFrame(9, 5, 0, false)
 	if five.composer != 5 {
 		t.Errorf("five-line composer = %d rows, want 5", five.composer)
 	}
@@ -631,7 +631,7 @@ func TestShortTerminalKeepsComposerText(t *testing.T) {
 		t.Errorf("five-line frame uses %d rows, want 9", got)
 	}
 
-	normal := computeChatFrame(24, 5, 8)
+	normal := computeChatFrame(24, 5, 8, false)
 	if normal.composer != 5 || normal.suggest != 8 || !normal.notice ||
 		!normal.hint || !normal.divider || !normal.rules {
 		t.Errorf("a full-size frame lost chrome: %+v", normal)

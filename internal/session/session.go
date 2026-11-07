@@ -19,6 +19,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/flowbyte-com/HAL9001/internal/attachments"
 )
 
 // Role is a conversation participant.
@@ -50,6 +52,12 @@ type Message struct {
 	// authority: nothing here can enable a tool or change the current
 	// permission.
 	ToolLedger *ToolLedger `json:"tool_ledger,omitempty"`
+	// Attachments names the files the operator attached to this
+	// message. It is a reference, not a copy: the record holds the
+	// name, the size, the checksum and the location of the stored
+	// copy, never the contents, so a session file never grows with the
+	// size of the files that were discussed.
+	Attachments []attachments.Meta `json:"attachments,omitempty"`
 }
 
 // ToolLedgerVersion is the explicit schema version of ToolLedger. A
@@ -120,12 +128,13 @@ type ToolLedger struct {
 // carried as raw JSON so a damaged optional ledger can be ignored without
 // losing the conversation around it.
 type messageWire struct {
-	Role        Role            `json:"role"`
-	Content     string          `json:"content"`
-	Timestamp   time.Time       `json:"ts"`
-	TurnID      string          `json:"turn_id,omitempty"`
-	Attribution *Attribution    `json:"attribution,omitempty"`
-	ToolLedger  json.RawMessage `json:"tool_ledger,omitempty"`
+	Role        Role               `json:"role"`
+	Content     string             `json:"content"`
+	Timestamp   time.Time          `json:"ts"`
+	TurnID      string             `json:"turn_id,omitempty"`
+	Attribution *Attribution       `json:"attribution,omitempty"`
+	ToolLedger  json.RawMessage    `json:"tool_ledger,omitempty"`
+	Attachments []attachments.Meta `json:"attachments,omitempty"`
 }
 
 // UnmarshalJSON keeps old sessions and damaged optional ledgers loadable.
@@ -142,6 +151,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		Timestamp:   w.Timestamp,
 		TurnID:      w.TurnID,
 		Attribution: w.Attribution,
+		Attachments: w.Attachments,
 	}
 	if len(w.ToolLedger) > 0 {
 		m.ToolLedger = parseToolLedger(w.ToolLedger)
@@ -381,6 +391,11 @@ type Turn struct {
 	// exchange. It is attached to the assistant message and never used
 	// as authority.
 	Tools []ToolExecution
+	// Attachments names the files the operator attached to this
+	// exchange. The reference is stored with the user's message; the
+	// contents stay in the upload directory and are never written into
+	// the session.
+	Attachments []attachments.Meta
 }
 
 // NewTurnID mints a fresh, opaque turn identity.
@@ -585,6 +600,9 @@ func (s *Store) AppendTurn(role Role, content string, turn Turn) (Message, error
 	}
 	if role == RoleAssistant && len(turn.Tools) > 0 {
 		msg.ToolLedger = buildToolLedger(s.name, turn.ID, turn.Tools)
+	}
+	if role == RoleUser && len(turn.Attachments) > 0 {
+		msg.Attachments = append([]attachments.Meta(nil), turn.Attachments...)
 	}
 	if turn.Attribution != nil {
 		// The attribution repeats the turn identity it belongs to, so a

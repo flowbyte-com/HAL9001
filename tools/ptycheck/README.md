@@ -129,6 +129,20 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/heartbeat_checks.py
 ```
 
+The attachment checks start their own fake provider on port 8129 and own
+their config, home, workspace, session store and source files. They verify
+that `/attach` copies the chosen file into `~/HAL/uploads/`, that the
+pending row names it above the composer, that the file's text reaches the
+model as untrusted data, that the session keeps a reference and not the
+content, that `/detach` takes the file back without deleting the copy, that
+a missing file and a directory are refused, and that 80x9 stays exactly
+nine rows:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/attachment_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -198,6 +212,14 @@ python3 tools/ptycheck/heartbeat_checks.py
   compact activity lines, `/diag`, `/help`, the 444 footer, the audit trail
   and session resume. Every check uses local fake servers; no live credits
   are spent.
+- The attachment suite covers the operator path end to end: `/attach`
+  copies the chosen file into `~/HAL/uploads/` in a directory of its own,
+  the original file is unchanged, the pending row names the file and its
+  size above the composer, `/attachments` lists it, `/detach` takes it
+  back while the copy stays, a missing file and a directory are refused,
+  the file's text reaches the model marked as untrusted data, the session
+  record holds the reference and not the content, and 80x9 stays exactly
+  nine rows.
 - The link suite verifies OSC 8 destinations, label-only Markdown links,
   visible bare URLs, numbered lists, tables, unsafe-scheme rejection,
   fenced-code exclusion and plain reconstructed screen text.
@@ -290,4 +312,5 @@ by hand in a real terminal.
 | `help_checks.py` | isolated help and suggestion checks with their own temporary config, home, store and sessions |
 | `permission_checks.py` | isolated 444/666 enable, execution, disable, reset and audit checks with their own provider |
 | `polish_checks.py` | isolated transcript alignment, eye, tool/metadata and slash-dismissal checks with a static ledger fixture |
-| `fake_provider.py` | a local OpenAI-compatible streaming stub (`[[save]]`, `[[read]]`, `[[bash]]`) |
+| `fake_provider.py` | a local OpenAI-compatible streaming stub (`[[save]]`, `[[read]]`, `[[bash]]`, `[[attached]]`) |
+| `attachment_checks.py` | isolated attachment checks: safe copies, the pending row, untrusted content and session references |

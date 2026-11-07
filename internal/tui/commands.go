@@ -19,7 +19,11 @@ type command struct {
 	usage       string
 	description string
 	takesArgs   bool
-	run         func(m *Model, args []string) tea.Cmd
+	// rawArgs passes the rest of the line as one argument, exactly as
+	// typed. A path may contain spaces, and splitting it into words
+	// would name a file that does not exist.
+	rawArgs bool
+	run     func(m *Model, args []string) tea.Cmd
 }
 
 // commandTable lists every local command in suggestion order.
@@ -267,6 +271,47 @@ var commandTable = []*command{
 			return nil
 		},
 	},
+	// The attachment commands come last: the panel shows the head of
+	// the registry first, and the exit commands must stay in that first
+	// window.
+	{
+		name:        "/attach",
+		usage:       "/attach <path>",
+		description: "Attach a file to the next message",
+		takesArgs:   true,
+		rawArgs:     true,
+		run: func(m *Model, args []string) tea.Cmd {
+			path := ""
+			if len(args) > 0 {
+				path = args[0]
+			}
+			m.attachFile(path)
+			return nil
+		},
+	},
+	{
+		name:        "/attachments",
+		description: "List the files attached to the next message",
+		run: func(m *Model, _ []string) tea.Cmd {
+			m.listAttachments()
+			return nil
+		},
+	},
+	{
+		name:        "/detach",
+		usage:       "/detach <name>",
+		description: "Remove a file from the next message",
+		takesArgs:   true,
+		rawArgs:     true,
+		run: func(m *Model, args []string) tea.Cmd {
+			id := ""
+			if len(args) > 0 {
+				id = args[0]
+			}
+			m.detachFile(id)
+			return nil
+		},
+	},
 }
 
 // commandByName finds a command by its name or one of its aliases.
@@ -335,7 +380,22 @@ func (m *Model) dispatchSlash(input string) tea.Cmd {
 		m.notice = "Unknown command " + cmd + " — try /help."
 		return nil
 	}
+	if c.rawArgs {
+		// The rest of the line is one argument, kept exactly as it was
+		// typed: a path may contain spaces.
+		return c.run(m, []string{rawArguments(input)})
+	}
 	return c.run(m, args)
+}
+
+// rawArguments returns the text after the command token, with the
+// whitespace around it removed and everything else left alone.
+func rawArguments(input string) string {
+	i := strings.IndexAny(input, " \t")
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimSpace(input[i:])
 }
 
 // refreshSuggestions recomputes the panel from the composer text and

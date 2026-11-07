@@ -129,6 +129,26 @@ terminal. Headless runs do not schedule animation ticks. When a turn
 finishes or is cancelled, stale ticks are discarded, so a completed clock
 cannot restart.
 
+## Attachments
+
+The operator attaches a file with `/attach <path>`. The path is taken
+whole, so a filename with spaces works; surrounding quotes are stripped
+and `~` is expanded.
+
+While files are pending, a row directly above the composer names them
+with their sizes (`📎 notes.md (1.2 KiB) · data.csv (48 B)`). The row
+is reserved only while files are pending, so an ordinary conversation
+keeps exactly the frame it had. The row is the first decoration to be
+dropped on a short terminal — the composer's own text is never pushed
+out of view for it — and every row it produces stays inside the
+terminal width.
+
+The same paperclip marks the files of a message in the transcript. That
+row is interface, not text: a selection never copies it.
+
+`/attach` and `/detach` are local commands and never reach the model.
+`/attachments` lists the pending files and the directory they live in.
+
 ## Clipboard
 
 - `/copy` and `/copy code` write OSC 52 (`CSI 52;c;<base64> BEL`) to

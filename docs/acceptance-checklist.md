@@ -201,6 +201,40 @@ manual terminal check remains:
       HAL's mouse reporting is active; plain Ctrl+click requires
       `--no-mouse`. HAL itself must not open anything until that click.
 
+## Attachments
+
+- [ ] `/attach ~/notes.md` copies the file and names it with its size on
+      the row above the composer (`📎 notes.md (1.2 KiB)`).
+- [ ] The original file is unchanged: same content, same size, same
+      timestamp.
+- [ ] The copy is in `~/HAL/uploads/`, in a directory of its own, and the
+      directory and the copies are readable by the operator only.
+- [ ] A filename with spaces works: `/attach ~/my notes.md`.
+- [ ] A Unicode filename keeps its name.
+- [ ] The same filename attached twice gives two separate copies; neither
+      replaces the other.
+- [ ] A missing file, a directory, a binary file, a file in an encoding
+      HAL cannot read, and a file over 2 MiB are each refused with their
+      own message, and nothing is copied.
+- [ ] `/attachments` lists the pending files and the directory they live
+      in.
+- [ ] `/detach notes.md` takes the file back out of the next message, and
+      the copy stays in the upload directory.
+- [ ] Sending the message carries the file's text to the model, marked as
+      untrusted data; the reply discusses the file.
+- [ ] A file whose content says "ignore your instructions" is discussed
+      as content: the permission mode does not change and no instruction
+      is taken from it.
+- [ ] The transcript shows the paperclip and the file's name under the
+      message that carried it.
+- [ ] The footer still reads `444 READ ONLY` — attaching does not enable
+      666, and the model is offered no tool to attach or to read the
+      upload directory.
+- [ ] Restarting HAL and reopening the conversation still shows which
+      files were attached, without the file's text in the session.
+- [ ] At 80×9 the pending row is the first thing to go; the composer text
+      is never pushed out of view, and no row overflows.
+
 ## Every theme
 
 Run `/theme` and walk through all five. For each one:
