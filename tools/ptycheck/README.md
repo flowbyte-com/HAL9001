@@ -143,6 +143,22 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/attachment_checks.py
 ```
 
+The model management checks start the built binary against a
+pre-version-2 configuration file in a temporary home, session store and
+workspace, with no provider behind it. They prove that the startup
+migration keeps the endpoint, the credential, the models, the theme and
+the active session, that `/model list` shows the endpoints and flags the
+models that need a review, that `/model add` stores a model under its
+endpoint without changing the active model, that `/model use` persists
+the selection, that removing the active model needs an explicit
+replacement, and that `/endpoint list` and `/endpoint add` work:
+
+```sh
+go build -o /tmp/opencode/hal9001 ./cmd/hal9001
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/model_management_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,

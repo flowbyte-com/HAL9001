@@ -151,6 +151,68 @@ type ModelInfo struct {
 	ID     string
 	Label  string
 	Active bool
+	// Endpoint is the identifier of the endpoint the model belongs to.
+	// It is empty on a pre-version-2 configuration, where every model
+	// belongs to the single configured endpoint.
+	Endpoint string
+	// Review is a note for the operator, when the model needs attention.
+	Review string
+}
+
+// EndpointInfo describes one configured endpoint.
+type EndpointInfo struct {
+	ID   string
+	Name string
+	// Protocol is the declared protocol type.
+	Protocol string
+	// WireProtocol is the wire protocol HAL speaks to this endpoint.
+	WireProtocol string
+	BaseURL      string
+	// Credential describes the credential without ever revealing it:
+	// "env:NAME" when it comes from an environment variable, "set" when
+	// a literal secret is stored, "unset" when there is none.
+	Credential string
+	// Active marks the endpoint that holds the active model.
+	Active bool
+	// Review is a note for the operator, when the endpoint needs
+	// attention.
+	Review string
+	// Models are the endpoint's own models.
+	Models []ModelInfo
+}
+
+// EndpointSpec is one endpoint as the operator asked for it.
+type EndpointSpec struct {
+	ID string
+	// Name is the operator-friendly display name.
+	Name string
+	// Protocol is the declared protocol type.
+	Protocol string
+	// WireProtocol is the wire protocol HAL speaks to this endpoint.
+	// A "custom" endpoint must name one.
+	WireProtocol string
+	BaseURL      string
+	// CredentialEnv names an environment variable holding the credential.
+	CredentialEnv string
+	// Credential is a literal credential, used only when no environment
+	// variable is named.
+	Credential string
+	// Discovery allows the provider's catalogue to be probed.
+	Discovery bool
+}
+
+// ModelSpec is one model as the operator asked for it.
+type ModelSpec struct {
+	ID    string
+	Label string
+	// Effort is the reasoning level.
+	Effort string
+	// ContextMode is "auto" or "manual".
+	ContextMode string
+	// ContextWindow is an explicit context limit in tokens.
+	ContextWindow int
+	// MaxOutputTokens is an explicit output limit.
+	MaxOutputTokens int
 }
 
 // Hooks connect the interface to the application. Every hook is optional
@@ -164,8 +226,30 @@ type Hooks struct {
 	HasConfig func() bool
 	// ListModels returns configured models with the active one marked.
 	ListModels func() []ModelInfo
-	// SwitchModel activates a configured model id, returning the engine.
-	SwitchModel func(id string) (Engine, error)
+	// SwitchModel activates a configured model of one endpoint, returning
+	// the engine.
+	SwitchModel func(endpointID, modelID string) (Engine, error)
+	// Endpoints returns the configured endpoints and their models.
+	Endpoints func() []EndpointInfo
+	// SaveEndpoint adds or updates one endpoint.
+	SaveEndpoint func(spec EndpointSpec) error
+	// DeleteEndpoint removes one endpoint. The replacement names the
+	// endpoint and model to activate instead, as "endpoint/model"; it is
+	// empty when the endpoint holds no active model.
+	DeleteEndpoint func(id, replacement string) error
+	// AddModel stores a new model under one endpoint.
+	AddModel func(endpointID string, spec ModelSpec) error
+	// EditModel changes one model of one endpoint.
+	EditModel func(endpointID, modelID string, spec ModelSpec) error
+	// DeleteModel removes one model. The replacement names the endpoint
+	// and model to activate instead, as "endpoint/model"; it is empty
+	// when the model is not the active one.
+	DeleteModel func(endpointID, modelID, replacement string) error
+	// ModelDetails describes one model, one line per setting.
+	ModelDetails func(endpointID, modelID string) ([]string, error)
+	// Discover probes the provider's catalogue and returns its model
+	// identifiers.
+	Discover func(endpointID string) ([]string, error)
 	// CurrentOnboard prefills the add-model form with current values.
 	CurrentOnboard func() OnboardData
 	// NewSession starts a fresh conversation, returning the engine.
@@ -253,6 +337,7 @@ const (
 	viewSkills
 	viewPermission
 	viewMCP
+	viewModels
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -562,6 +647,10 @@ type Model struct {
 	// mcp is the operator-facing Model Context Protocol surface. Nil
 	// means no MCP server is configured.
 	mcp MCPController
+	// modelCfg holds the endpoint and model management panel: the lines
+	// it shows and the title above them.
+	modelCfgTitle string
+	modelCfgLines []string
 	// mcpFocus is the server whose tools the MCP panel shows, and the
 	// lists below are what the last action discovered.
 	mcpFocus     string
@@ -635,6 +724,13 @@ func (m Model) clock() time.Time {
 }
 
 // SetTheme applies a preset; used by the picker and tests.
+// SetNotice shows a message under the footer. It is how the application
+// reports what a startup migration or a configuration change did.
+func (m *Model) SetNotice(text string) {
+	m.notice = text
+	m.noticeSeq++
+}
+
 func (m *Model) SetTheme(t Theme) { m.setTheme(t) }
 
 // setTheme applies a preset to the whole interface, including the
@@ -1099,6 +1195,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updatePermission(msg)
 	case viewMCP:
 		return m.updateMCP(msg)
+	case viewModels:
+		return m.updateModelCfg(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -3089,6 +3187,8 @@ func (m Model) activePanel() []string {
 		return m.permissionRows()
 	case viewMCP:
 		return m.mcpRows()
+	case viewModels:
+		return m.modelCfgRows()
 	}
 	return nil
 }

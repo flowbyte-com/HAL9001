@@ -52,6 +52,14 @@ func run(args []string) error {
 		fmt.Print(buildinfo.Report("HAL9001"))
 		return nil
 	}
+	// The configuration is migrated before it is read, so that the file
+	// the operator already has becomes a provider-scoped one. The
+	// migration is idempotent, atomic and keeps a backup of the
+	// original; a file that is already current is left alone.
+	migration, err := config.Migrate(config.ConfigPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "hal9001: the configuration could not be migrated:", err)
+	}
 	cfg, err := config.LoadErr(args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -79,9 +87,10 @@ func run(args []string) error {
 		return err
 	}
 	app := &app{
-		cfg:    cfg,
-		stored: stored,
-		model:  cfg.Model,
+		cfg:       cfg,
+		stored:    stored,
+		model:     cfg.Model,
+		migration: migration,
 	}
 	// Token accounting is best effort: a failure must never stop the
 	// conversation from starting.
@@ -216,8 +225,14 @@ func restoreMouseModes() {
 }
 
 type app struct {
-	cfg          config.Config
-	stored       config.FileConfig
+	cfg    config.Config
+	stored config.FileConfig
+	// migration is what the startup migration did, if anything. It never
+	// contains a credential.
+	migration config.MigrationReport
+	// providerErr is why the active endpoint could not be used, if that
+	// is the case. It never contains a credential.
+	providerErr  error
 	store        *session.Store
 	eng          *engine.Engine
 	model        string
@@ -368,6 +383,14 @@ func (a *app) run() error {
 		HasConfig:      a.hasConfig,
 		ListModels:     a.listModels,
 		SwitchModel:    a.switchModel,
+		Endpoints:      a.endpointInfos,
+		SaveEndpoint:   a.saveEndpoint,
+		DeleteEndpoint: a.deleteEndpoint,
+		AddModel:       a.addModel,
+		EditModel:      a.editModel,
+		DeleteModel:    a.deleteModel,
+		ModelDetails:   a.modelDetails,
+		Discover:       a.discover,
 		CurrentOnboard: a.currentOnboard,
 		NewSession:     a.newSession,
 		Theme:          a.currentTheme,
@@ -408,38 +431,50 @@ func (a *app) run() error {
 	if !a.hasConfig() {
 		m.EnterOnboarding()
 	}
+	a.setMigrationNotice(m)
+	if a.providerErr != nil {
+		m.SetNotice("The configured endpoint cannot be used: " + a.providerErr.Error())
+	}
 	return tui.RunWithModel(m)
 }
 
+// hasConfig reports whether a provider is configured.
+//
+// A local endpoint needs no credential, so the absence of a key does not
+// mean that the installation is unconfigured.
 func (a *app) hasConfig() bool {
-	if a.cfg.Endpoint != "" && a.cfg.Model != "" && a.cfg.APIKey != "" {
+	if a.cfg.Endpoint == "" || a.cfg.Model == "" {
+		return false
+	}
+	if a.cfg.APIKey != "" {
 		return true
 	}
-	_, ok := a.stored.Active()
-	return ok && a.stored.Endpoint != ""
+	if endpoint, ok := a.stored.ActiveEndpoint(); ok {
+		return endpoint.Protocol == config.ProtocolLocal
+	}
+	return false
 }
 
-// providerFor builds the configured provider, or nil when nothing usable
-// is configured yet. No adapters beyond OpenAI-compatible ship in this
-// milestone.
-func (a *app) providerFor() *provider.OpenAICompatible {
-	endpoint, key := a.cfg.Endpoint, a.cfg.APIKey
+// providerFor builds the provider of the active endpoint, or nil when
+// nothing usable is configured yet.
+//
+// The wire protocol is the one the endpoint names. HAL never pretends that
+// an arbitrary API is compatible: an endpoint whose wire protocol is not
+// implemented is refused, with a message that names the supported ones.
+func (a *app) providerFor() (provider.Provider, error) {
+	endpoint := a.cfg.Endpoint
 	if endpoint == "" {
-		endpoint = a.stored.Endpoint
+		return nil, nil
 	}
-	if key == "" {
-		key = a.stored.APIKey
+	wire := a.cfg.WireProtocol
+	if wire == "" {
+		wire = provider.WireOpenAI
 	}
-	if endpoint == "" || key == "" {
-		return nil
-	}
-	return &provider.OpenAICompatible{
-		Endpoint:         endpoint,
-		APIKey:           key,
+	return provider.NewForProtocol(wire, endpoint, a.cfg.APIKey, provider.Options{
 		DefaultMaxTokens: a.cfg.MaxTokens,
 		IdleTimeout:      seconds(a.cfg.StreamIdleSeconds),
 		TurnTimeout:      seconds(a.cfg.TurnTimeoutSeconds),
-	}
+	})
 }
 
 // seconds converts a configured second count to a duration, leaving zero
@@ -453,10 +488,23 @@ func seconds(n int) time.Duration {
 
 func (a *app) modelFor() provider.Model {
 	id := a.activeModelID()
-	return provider.Model{
+	model := provider.Model{
 		ID:     id,
 		Effort: a.effortFor(id),
 	}
+	// The output limit is a per-model setting: it belongs to the model,
+	// not to the endpoint and not to the whole installation.
+	if record, ok := a.stored.ActiveModelRecord(); ok && record.MaxOutputTokens > 0 {
+		model.MaxTokens = record.MaxOutputTokens
+	}
+	// A manual context limit is the operator's own: HAL trims the
+	// conversation to it. In automatic mode the limit stays unset and
+	// the provider's own window governs.
+	if record, ok := a.stored.ActiveModelRecord(); ok &&
+		record.ContextMode == config.ContextManual && record.ContextWindow > 0 {
+		model.ContextWindow = record.ContextWindow
+	}
+	return model
 }
 
 // effortFor resolves the effort level for a model: the operator's stored
@@ -465,6 +513,16 @@ func (a *app) modelFor() provider.Model {
 func (a *app) effortFor(id string) string {
 	if !provider.EffortCapable(id) {
 		return ""
+	}
+	// The effort belongs to the model, and a model belongs to one
+	// endpoint: the record of the active endpoint is the one that counts.
+	if endpoint, ok := a.stored.ActiveEndpoint(); ok {
+		if record, ok := endpoint.Model(id); ok {
+			if stored := provider.NormalizeEffort(record.Effort); stored != "" {
+				return stored
+			}
+			return provider.DefaultEffortFor(id)
+		}
 	}
 	if stored := provider.NormalizeEffort(a.stored.EffortFor(id)); stored != "" {
 		return stored
@@ -506,8 +564,11 @@ func (a *app) rebuildEngine() {
 	// engine's "no provider" check would pass and the first request would
 	// dereference a nil client.
 	var p provider.Provider
-	if impl := a.providerFor(); impl != nil {
+	if impl, err := a.providerFor(); err != nil {
+		a.providerErr = err
+	} else if impl != nil {
 		p = impl
+		a.providerErr = nil
 	}
 	a.eng = engine.New(a.store, p, a.modelFor()).
 		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir)).
@@ -535,17 +596,53 @@ func (a *app) webStatus() string {
 	return a.web.StatusLine()
 }
 
+// saveOnboard stores the first-run values.
+//
+// The values belong to an endpoint, not to the whole installation: the
+// active endpoint is completed, and a new one is created when there is
+// none yet. The model is added to that endpoint, and only then does it
+// become the active one.
 func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
-	a.stored.Provider = "openai-compatible"
-	if a.cfg.Endpoint == "" {
-		a.stored.Endpoint = d.Endpoint
+	next := a.stored.Clone()
+	endpointID := next.ActiveEndpointID()
+	if endpointID == "" {
+		endpointID = "default"
 	}
-	if a.cfg.APIKey == "" {
-		a.stored.APIKey = d.Key
+	if _, ok := next.EndpointByID(endpointID); !ok {
+		rec := config.EndpointRecord{
+			ID:         endpointID,
+			Name:       endpointID,
+			Protocol:   config.ProtocolOpenAI,
+			BaseURL:    d.Endpoint,
+			Credential: d.Key,
+			Discovery:  config.DiscoveryRecord{Enabled: true},
+		}
+		if err := next.AddEndpoint(rec); err != nil {
+			return nil, err
+		}
+	} else if err := next.UpdateEndpoint(endpointID, func(e *config.EndpointRecord) error {
+		if a.cfg.Endpoint == "" {
+			e.BaseURL = d.Endpoint
+		}
+		if a.cfg.APIKey == "" {
+			e.Credential = d.Key
+			e.CredentialEnv = ""
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-	a.stored.AddModel(d.Model)
-	a.stored.ActiveModel = d.Model
-	if err := config.SaveFile(config.ConfigPath(), a.stored); err != nil {
+	if _, ok := next.ModelFor(endpointID, d.Model); !ok {
+		if err := next.AddModelTo(endpointID, config.ModelRecord{
+			ID:          d.Model,
+			ContextMode: config.ContextAuto,
+			Source:      config.SourceManual,
+		}); err != nil {
+			return nil, err
+		}
+	}
+	next.SetActive(endpointID, d.Model)
+	if err := a.commitConfig(next); err != nil {
 		return nil, err
 	}
 	a.model = d.Model
@@ -585,46 +682,105 @@ func (a *app) currentOnboard() tui.OnboardData {
 	return tui.OnboardData{Endpoint: endpoint, Model: model, Key: key}
 }
 
+// setMigrationNotice reports what the startup migration did.
+//
+// The message names the endpoint and the models that need a review, and
+// never a credential.
+func (a *app) setMigrationNotice(m tui.Model) {
+	if !a.migration.Migrated {
+		return
+	}
+	notice := a.migration.Summary()
+	if len(a.migration.Reviews) > 0 {
+		notice += fmt.Sprintf(" — %d model(s) need a review: /model list", len(a.migration.Reviews))
+	}
+	m.SetNotice(notice)
+}
+
 func (a *app) listModels() []tui.ModelInfo {
 	active := a.model
 	if active == "" {
 		active = a.cfg.Model
 	}
 	if active == "" {
-		if m, ok := a.stored.Active(); ok {
+		if m, ok := a.stored.ActiveModelRecord(); ok {
 			active = m.ID
 		}
 	}
+	activeEndpoint := a.stored.ActiveEndpointID()
 	seen := map[string]bool{}
 	var out []tui.ModelInfo
-	add := func(id, label string) {
-		if id == "" || seen[id] {
+	add := func(id, label, endpoint, review string) {
+		if id == "" {
 			return
 		}
-		seen[id] = true
-		out = append(out, tui.ModelInfo{ID: id, Label: label, Active: id == active})
+		key := endpoint + "/" + id
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, tui.ModelInfo{
+			ID:       id,
+			Label:    label,
+			Endpoint: endpoint,
+			Review:   review,
+			Active:   id == active && (endpoint == activeEndpoint || activeEndpoint == ""),
+		})
+	}
+	// Every endpoint's models are listed, and every model stays under its
+	// own endpoint: the same identifier may exist twice, once per
+	// endpoint, and the two are not the same model.
+	for _, endpoint := range a.stored.Endpoints {
+		for _, m := range endpoint.Models {
+			add(m.ID, m.Display(), endpoint.ID, m.Review)
+		}
 	}
 	for _, m := range a.stored.Models {
-		add(m.ID, m.Display())
+		add(m.ID, m.Display(), activeEndpoint, "")
 	}
 	if a.cfg.Model != "" {
-		add(a.cfg.Model, a.cfg.Model+" (flags)")
+		add(a.cfg.Model, a.cfg.Model+" (flags)", activeEndpoint, "")
 	}
 	if a.model != "" {
-		add(a.model, a.model)
+		add(a.model, a.model, activeEndpoint, "")
 	}
 	return out
 }
 
-func (a *app) switchModel(id string) (tui.Engine, error) {
+// switchModel makes one model of one endpoint the active one.
+//
+// The selection is persisted, so it survives a restart, and it is scoped:
+// the model is looked up inside the endpoint the operator named.
+func (a *app) switchModel(endpointID, id string) (tui.Engine, error) {
+	if endpointID == "" {
+		endpointID = a.stored.ActiveEndpointID()
+	}
 	found := false
 	for _, m := range a.listModels() {
-		if m.ID == id {
-			found = true
+		if m.ID != id {
+			continue
 		}
+		if m.Endpoint != "" && endpointID != "" && m.Endpoint != endpointID {
+			continue
+		}
+		found = true
+		break
 	}
 	if !found {
 		return nil, fmt.Errorf("unknown model %q", id)
+	}
+	next := a.stored.Clone()
+	if endpointID != "" {
+		if _, ok := next.EndpointByID(endpointID); !ok {
+			return nil, fmt.Errorf("no endpoint with the id %q", endpointID)
+		}
+		if _, ok := next.ModelFor(endpointID, id); !ok {
+			return nil, fmt.Errorf("endpoint %q has no model %q", endpointID, id)
+		}
+		next.SetActive(endpointID, id)
+		if err := a.commitConfig(next); err != nil {
+			return nil, err
+		}
 	}
 	a.model = id
 	a.rebuildEngine()
@@ -683,6 +839,9 @@ func (a *app) activeModelID() string {
 	}
 	if a.cfg.Model != "" {
 		return a.cfg.Model
+	}
+	if active, ok := a.stored.ActiveModelRecord(); ok {
+		return active.ID
 	}
 	if active, ok := a.stored.Active(); ok {
 		return active.ID

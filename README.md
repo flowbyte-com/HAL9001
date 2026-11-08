@@ -246,6 +246,8 @@ UNRESTRICTED` for the whole time the operator-enabled window is active.
 | `/attachments` | List the files attached to the next message |
 | `/detach <name>` | Remove a file from the next message |
 | `/mcp` | Show and control the configured MCP servers |
+| `/model` | Select or manage models (`list`, `add`, `edit`, `remove`, `use`, `show`, `context`, `discover`) |
+| `/endpoint` | Manage provider endpoints (`list`, `add`, `edit`, `remove`) |
 | `/tool-icons [classic\|emoji]` | Switch tool activity icons |
 | `/animation [on\|off]` | Turn the activity clock on or off |
 | `/permission` | Switch between 444 and session-scoped 666 |
@@ -268,10 +270,10 @@ instead of breaking the line — use `Ctrl+J` there. HAL detects whether
 the terminal reports modifier combinations and says so in `/help`.
 
 Slash commands run locally and never reach the model: `/help`,
-`/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/clear`, `/sessions`,
-`/effort`, `/expand`, `/collapse`, `/diag`, `/usage`, `/permission`,
-`/tool-icons`, `/animation`, `/attach`, `/attachments`, `/detach`,
-`/q`, `/quit`, `/exit`.
+`/copy`, `/copy code`, `/theme`, `/model`, `/endpoint`, `/new`, `/clear`,
+`/sessions`, `/effort`, `/expand`, `/collapse`, `/diag`, `/usage`,
+`/permission`, `/tool-icons`, `/animation`, `/attach`, `/attachments`,
+`/detach`, `/q`, `/quit`, `/exit`.
 Typing `/` opens a suggestion
 panel above the composer: keep typing to filter, `Up`/`Down` to move,
 `Tab` to complete, `Enter` to run (a complete command runs as typed, a
@@ -742,6 +744,40 @@ it does not replace the existing `mpm call` bridge.
   never replayed automatically.
 - Full configuration format, policy and limitations are in
   [`docs/mcp.md`](docs/mcp.md).
+
+**Provider-scoped model management.** HAL9001 keeps one configuration per
+provider endpoint, and every model belongs to exactly one of them. A model
+identifier is never shared between endpoints by accident: a DeepSeek model
+is configured under a DeepSeek endpoint, never under a MiniMax one.
+
+- The configuration file carries a version. Version 2 replaces the flat
+  `provider`/`endpoint`/`models` fields with an `endpoints` array and an
+  `active` selection. An older file is migrated at startup: the endpoint,
+  the credential, the models, the theme, the active session and the MCP
+  servers are all kept, the previous file is copied to
+  `config.json.v1.bak` beside it, and a model identifier that looks like
+  another vendor's model is flagged for review rather than moved.
+- Each endpoint has a stable identifier, a display name, a protocol
+  (`anthropic-compatible`, `openai-compatible`, `local` or `custom`), a
+  base URL, a credential reference and its own models. A `custom` endpoint
+  must name the wire protocol it really speaks: HAL never pretends that an
+  arbitrary API is compatible.
+- Credentials belong in the environment. An endpoint names the variable
+  that holds its key; a literal secret is kept only when there is no
+  variable to name, and it never appears in a notice, a panel, a log or a
+  migration report.
+- `/model` opens the picker; `/model list`, `/model add`, `/model edit`,
+  `/model remove`, `/model use`, `/model show`, `/model context` and
+  `/model discover` manage the models; `/endpoint list`, `/endpoint add`,
+  `/endpoint edit` and `/endpoint remove` manage the endpoints. Adding a
+  model never changes the active model, and removing the active model or
+  the endpoint that holds it needs an explicit replacement
+  (`--use <endpoint>/<model>`).
+- No model-facing tool can change the configuration. A configuration
+  change is an operator action, and it can never be a side effect of
+  another task.
+- The full schema, the migration rules and the commands are in
+  [`docs/model-management.md`](docs/model-management.md).
 
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;

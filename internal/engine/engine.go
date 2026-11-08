@@ -252,6 +252,10 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 	if system != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: system})
 	}
+	// The operator's context limit trims the conversation before it is
+	// sent. It is off unless a limit was configured, so the default
+	// behaviour is unchanged.
+	messages = trimToContext(messages, e.model.ContextWindow)
 	// The boundary that delimits the untrusted attachment blocks is
 	// fresh for this request, so nothing inside a file can forge it.
 	boundary := attachmentBoundary()
@@ -266,6 +270,47 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 		})
 	}
 	return messages
+}
+
+// trimToContext drops the oldest exchanges until the request fits inside
+// the operator's context limit.
+//
+// The system instruction and the newest exchange are always kept: a
+// request without them would be a different conversation. The token count
+// is an estimate, not a measurement, and it is deliberately conservative:
+// a request that is trimmed a little too early is still correct, while
+// one that is trimmed too late fails at the provider.
+//
+// A limit of zero means no trimming at all.
+func trimToContext(messages []provider.Message, limit int) []provider.Message {
+	if limit <= 0 || len(messages) <= 2 {
+		return messages
+	}
+	estimate := estimateTokens(messages)
+	if estimate <= limit {
+		return messages
+	}
+	kept := messages
+	// The first message is the system instruction, which is never
+	// dropped. The oldest exchange after it goes first.
+	for len(kept) > 2 && estimate > limit {
+		kept = kept[1:]
+		estimate = estimateTokens(kept)
+	}
+	return kept
+}
+
+// estimateTokens approximates the size of a request in tokens.
+//
+// The estimate is four characters per token plus a small per-message
+// overhead. It is a rough number on purpose: HAL never claims to know
+// the provider's tokenizer.
+func estimateTokens(messages []provider.Message) int {
+	total := 0
+	for _, m := range messages {
+		total += len(m.Content)/4 + 4
+	}
+	return total
 }
 
 // permissionBlock tells the model the authority for this request. It is

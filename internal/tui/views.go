@@ -338,8 +338,8 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pickerNotice = "Switching is not wired up."
 				return m, nil
 			}
-			id := m.pickerModels[m.pickerCursor].ID
-			eng, err := m.hooks.SwitchModel(id)
+			chosen := m.pickerModels[m.pickerCursor]
+			eng, err := m.hooks.SwitchModel(chosen.Endpoint, chosen.ID)
 			if err != nil {
 				m.pickerNotice = "Switch failed: " + err.Error()
 				return m, nil
@@ -347,13 +347,13 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if eng != nil {
 				m.engine = eng
 			}
-			m.model = id
+			m.model = chosen.ID
 			if m.hooks.Effort != nil {
 				m.SetEffort(m.hooks.Effort())
 			}
 			m.enterPicker()
 			m.view = viewChat
-			m.notice = "Model: " + id + " (applies to the next request)"
+			m.notice = "Model: " + chosen.ID + " (applies to the next request)"
 			return m, nil
 		case "a", "A":
 			prefill := OnboardData{}
@@ -369,7 +369,7 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) pickerRows() []string {
 	st := m.theme.styles()
-	rows := []string{"Models (Enter switches, A adds, Esc back):", ""}
+	rows := []string{"Models (Enter switches, A adds, /model list shows everything, Esc back):", ""}
 	if len(m.pickerModels) == 0 {
 		rows = append(rows, "  (no models configured — press A to add one)")
 	}
@@ -381,11 +381,18 @@ func (m Model) pickerRows() []string {
 		if info.Active {
 			active = " (active)"
 		}
-		line := marker + info.ID + active
+		name := info.ID
+		if info.Endpoint != "" {
+			name = info.Endpoint + " · " + info.ID
+		}
+		line := marker + name + active
 		if i == m.pickerCursor {
 			line = st.active.Render(line)
 		}
 		rows = append(rows, line)
+		if info.Review != "" {
+			rows = append(rows, "    needs review: "+info.Review)
+		}
 	}
 	if m.pickerNotice != "" {
 		rows = append(rows, "", m.pickerNotice)

@@ -98,10 +98,20 @@ var commandTable = []*command{
 	},
 	{
 		name:        "/model",
-		description: "Select a model",
-		run: func(m *Model, _ []string) tea.Cmd {
-			m.enterPicker()
-			return nil
+		usage:       modelCfgUsage,
+		description: "Select or manage models (list, add, edit, remove, use, show, context, discover)",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			return m.modelCommand(args)
+		},
+	},
+	{
+		name:        "/endpoint",
+		usage:       endpointCfgUsage,
+		description: "Manage provider endpoints (list, add, edit, remove)",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			return m.endpointCommand(args)
 		},
 	},
 	{
