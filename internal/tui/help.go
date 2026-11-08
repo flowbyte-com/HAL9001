@@ -63,14 +63,23 @@ var helpCommandSection = map[string]string{
 	"/skills": "MPM skills and diagnostics",
 	"/skill":  "MPM skills and diagnostics",
 	"/diag":   "MPM skills and diagnostics",
+
+	"/attach":      "Attachments",
+	"/attachments": "Attachments",
+	"/detach":      "Attachments",
 }
 
 // helpSectionTitles is the fixed order of the groups.
+//
+// The permissions group comes last: it is the safety reference, and the
+// operator should find it at the end of the reference rather than in
+// the middle.
 var helpSectionTitles = []string{
 	"Conversation and editing",
 	"Navigation and clipboard",
 	"Sessions and preferences",
 	"MPM skills and diagnostics",
+	"Attachments",
 	"Permissions and file writes",
 }
 
@@ -121,6 +130,11 @@ func (m Model) helpSections() []helpSection {
 		{keyName(keyApproveWrite), "enable 666 (permission screen) or approve one reviewed write (approval screen)"},
 		{keyName(keyRejectWrite), "disable 666 (permission screen) or reject the pending one-off write (approval screen)"},
 		{"Esc", "close the permission screen or reject the pending one-off write"},
+	}
+	sections[index["Attachments"]].entries = []helpEntry{
+		{"444", "attaching a file is allowed in 444; it copies one file you chose and grants nothing else"},
+		{"copy", "HAL copies the file into its upload directory; the original is never changed"},
+		{"content", "the file's text is sent with your next message, marked as untrusted data"},
 	}
 
 	// Commands are appended from the registry, in table order. The

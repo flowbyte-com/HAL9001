@@ -46,9 +46,46 @@ BASH_RE = re.compile(r"\[\[bash\s+([^\]]+)\]\]")
 BASH_EXPECT_RE = re.compile(r"\[\[bashexpect\s+(\d+)\s+([^\]]+)\]\]")
 FCSEARCH_RE = re.compile(r"\[\[fcsearch\s+([^\]]+)\]\]")
 FCSCRAPE_RE = re.compile(r"\[\[fcscrape\s+([^\]]+)\]\]")
+ATTACHED_RE = re.compile(r"\[\[attached\]\]")
 
 # SKILL_RE finds the skill name in a composed system instruction.
 SKILL_RE = re.compile(r"MPM skill: ([A-Za-z0-9_.-]+)")
+
+
+def attached_body(text):
+    """Return the attachment content the request carried, if any."""
+    marker = "--- begin untrusted content ["
+    start = text.find(marker)
+    if start < 0:
+        return ""
+    start = text.find("\n", start)
+    if start < 0:
+        return ""
+    body = text[start + 1:]
+    end = body.find("--- end untrusted content [")
+    if end >= 0:
+        body = body[:end]
+    return body.strip()
+
+
+def attachment_boundary(request):
+    """Report whether the request delimited its untrusted blocks."""
+    for message in request.get("messages", []):
+        if message.get("role") != "user":
+            continue
+        if "--- begin untrusted content [" in message.get("content", ""):
+            return "yes"
+    return "no"
+
+
+def attachment_guidance(request):
+    """Report whether the system instruction marks the files as data."""
+    for message in request.get("messages", []):
+        if message.get("role") != "system":
+            continue
+        if "untrusted data" in message.get("content", ""):
+            return "yes"
+    return "no"
 
 
 def tool_results(request):
@@ -193,6 +230,16 @@ class Handler(BaseHTTPRequestHandler):
                     self.answer("SCRAPE ERROR: " + str(payload.get("code", "failed")))
             else:
                 self.propose_tool("firecrawl_scrape", {"url": page.group(1)})
+            return
+
+        # A request that asks about the attachments is answered with what
+        # the request actually carried, so the checks can see whether the
+        # file's text reached the model and whether the system
+        # instruction marked it as data.
+        if ATTACHED_RE.search(last):
+            self.answer("ATTACHED: %s | GUIDANCE: %s | BOUNDARY: %s" % (
+                attached_body(last)[:60], attachment_guidance(request),
+                attachment_boundary(request)))
             return
 
         # A skill in the system instruction means the guidance was loaded

@@ -347,8 +347,11 @@ def main():
               SECRET not in text and EXA_SECRET not in text, text)
         check("diag: the current session is 444", "444" in text, text)
 
-        # /help documents the web-research capability.
-        screen = capture([(1.8, b""), (0.1, b"/help\r"), (1.0, b"")],
+        # /help documents the web-research capability. The reference is a
+        # scrollable list and the permissions group sits at its end, so
+        # the body is scrolled to the bottom before the text is read.
+        screen = capture([(1.8, b""), (0.1, b"/help\r"),
+                          (0.6, b"\x1b[B" * 100), (0.5, b"")],
                          cols=120, rows=60, **kwargs)
         text = screen_text(screen)
         check("help: documents web research in 444",

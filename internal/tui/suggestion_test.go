@@ -50,7 +50,11 @@ func TestSuggestionsExposeEveryCommand(t *testing.T) {
 				t.Fatalf("cursor = %d, want %d", got, want)
 			}
 			view := suggestionScreen(m)
-			for _, want := range []string{"/skills", "/skill", "/collapse", "above", "scroll"} {
+			// The panel is scrolled to the end of the registry, so the
+			// commands at the end of the table must be on screen. The
+			// names come from the table itself: adding a command must
+			// not silently turn this check into a stale one.
+			for _, want := range append(tailCommandNames(4), "above", "scroll") {
 				if !strings.Contains(view, want) {
 					t.Errorf("the scrolled panel is missing %q:\n%s", want, view)
 				}
@@ -68,6 +72,19 @@ func TestSuggestionsExposeEveryCommand(t *testing.T) {
 			}
 		})
 	}
+}
+
+// tailCommandNames are the names of the last n commands of the registry.
+// The suggestion panel shows them when it is scrolled to the end.
+func tailCommandNames(n int) []string {
+	if n > len(commandTable) {
+		n = len(commandTable)
+	}
+	out := make([]string, 0, n)
+	for _, c := range commandTable[len(commandTable)-n:] {
+		out = append(out, c.name)
+	}
+	return out
 }
 
 // TestSuggestionsFilterSkills checks that both MPM commands are found

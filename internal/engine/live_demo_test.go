@@ -185,7 +185,7 @@ func demoAnswer(t *testing.T, p provider.Provider, model provider.Model, input, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	messages := eng.requestMessages(history, guidance)
+	messages := eng.requestMessages(history, guidance, "")
 	messages = append(messages, provider.Message{Role: "user", Content: input})
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()

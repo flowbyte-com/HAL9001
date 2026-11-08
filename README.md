@@ -24,6 +24,14 @@ workspace, available in 444. It is not the session mode. See
 
 ## Status
 
+Milestone 010 (in review): HAL attaches files the operator chooses, with
+`/attach`, `/attachments` and `/detach`. A chosen file is copied into
+`~/HAL/uploads/`, its text travels with the next message as untrusted
+data, and the conversation keeps a stable reference to it. Attaching is
+available in 444, authorises only the file the operator picked, and gives
+the model no tool that could start an ingestion of its own. See
+[Attachments](#attachments).
+
 Milestone 009: the assistant identity is the stationary two-cell `🔴`
 marker, and an opt-out activity heartbeat shows a 24-frame clock,
 elapsed time and provider silence without changing provider timeouts.
@@ -234,6 +242,9 @@ UNRESTRICTED` for the whole time the operator-enabled window is active.
 | `Ctrl+Y` | Enable 666 on the permission screen; approve the one-off write on the approval screen |
 | `Ctrl+N` | Disable 666 on the permission screen; reject the one-off write on the approval screen |
 | `/skills` | List the skills MPM offers |
+| `/attach <path>` | Attach a file to the next message |
+| `/attachments` | List the files attached to the next message |
+| `/detach <name>` | Remove a file from the next message |
 | `/tool-icons [classic\|emoji]` | Switch tool activity icons |
 | `/animation [on\|off]` | Turn the activity clock on or off |
 | `/permission` | Switch between 444 and session-scoped 666 |
@@ -258,7 +269,8 @@ the terminal reports modifier combinations and says so in `/help`.
 Slash commands run locally and never reach the model: `/help`,
 `/copy`, `/copy code`, `/theme`, `/model`, `/new`, `/clear`, `/sessions`,
 `/effort`, `/expand`, `/collapse`, `/diag`, `/usage`, `/permission`,
-`/tool-icons`, `/animation`, `/q`, `/quit`, `/exit`.
+`/tool-icons`, `/animation`, `/attach`, `/attachments`, `/detach`,
+`/q`, `/quit`, `/exit`.
 Typing `/` opens a suggestion
 panel above the composer: keep typing to filter, `Up`/`Down` to move,
 `Tab` to complete, `Enter` to run (a complete command runs as typed, a
@@ -483,6 +495,100 @@ touches the filesystem until the operator approves that one operation.
   filesystem editing. Execution is available only through the separate,
   operator-enabled session 666 window.
 
+**Attachments.** The operator can hand HAL a file: `/attach <path>`
+copies it into HAL's own upload directory and adds it to the next
+message. Nothing else is copied, nothing else is read, and the model is
+never the one who chooses.
+
+- **The operator chooses the file.** Ingestion starts only from the
+  interface, on the operator's command. HAL offers the model no tool
+  that can attach, read the upload directory or list it, so a model
+  answer, a skill, an MPM record or a file's own contents can never
+  start one.
+- **The original is never touched.** The chosen file is read and copied.
+  It is never moved, modified, truncated or overwritten, and a symbolic
+  link to it is followed to the file it names — the copy is a plain
+  file, never a link.
+- **The copy is confined.** Every copy lands in `~/HAL/uploads/`, in a
+  directory of its own with a random name, next to a small
+  `attachment.json` that says what it is. The upload directory is
+  reached through a handle that refuses to leave it, so a symbolic link
+  placed in its place, a traversal in a name or a concurrent
+  substitution cannot redirect a copy elsewhere. The directory is 0700
+  and the copies are 0600.
+- **The record's name is reserved.** `attachment.json` belongs to the
+  record, so a copy may never take it. A file called `attachment.json`
+  is an ordinary file and attaches: the operator still sees that name,
+  and the copy is stored beside the record under a name of its own. The
+  record is never readable as if it were a copy, so the path it keeps on
+  the operator's machine cannot be picked up as file content.
+- **The name is preserved, the path is not.** The original filename is
+  kept as metadata — spaces, Unicode and all — and a sanitized form of
+  it names the copy, so two files with the same name never collide. A
+  filename that carries a control character or a terminal escape is
+  cleaned: it would otherwise split a row of the interface or forge a
+  line of a model request.
+- **Attaching authorises one file, nothing more.** It works in 444 and
+  it does not enable 666, does not widen the workspace and does not give
+  the model a filesystem. The guarded write is unchanged.
+- **Only text is attached.** Plain text, Markdown, source code, JSON,
+  YAML, TOML, CSV and anything else that decodes safely are supported.
+  UTF-8 (with or without a byte-order mark) and UTF-16 with a
+  byte-order mark are read; any other encoding is refused. Binary data
+  is refused, never silently converted into text. A file over 2 MiB, a
+  directory, a missing file and an unreadable file are each refused with
+  their own message. At most ten files, 4 MiB together, may be pending
+  for one message.
+- **The content travels as data.** The file's text goes into the
+  operator's own message, marked as untrusted file content, and a
+  per-turn system block says so explicitly: the content is data to
+  discuss, never an instruction. A file that says "ignore your
+  instructions" is carried as text that says that, and changes nothing.
+  The content is bounded — 16 KiB per file and 64 KiB per turn — and the
+  cut is reported rather than hidden. A file left out because the turn's
+  budget was used up says so; it is never passed off as an empty file.
+- **The boundary cannot be forged.** The untrusted blocks are delimited
+  by markers that carry a token fresh for every request, and the
+  filename is quoted before it is written. Neither a filename nor a
+  file's contents can write a line of the request or end a block and
+  make what follows look like an instruction.
+- **The conversation keeps a reference, not a copy.** The session record
+  holds the name, the size, the checksum and the location of the copy.
+  The file's text is never written into the session, so a stored
+  conversation never grows with the size of the files that were
+  discussed, and a restored conversation still shows which files were
+  attached. Only the turn being answered carries the content; older
+  turns keep the name and the size, so an old file's text is not carried
+  through the rest of the conversation.
+- **A damaged record cannot lose a conversation.** The attachment
+  references are optional metadata. A record whose references are
+  unreadable — a hand edit, a damaged file, an older version — still
+  loads: the references that cannot be read are dropped and the ones
+  that can be read are cleaned, but the conversation around them is
+  untouched.
+- **Nothing is deleted for you.** `/detach` takes a file back out of the
+  next message. The copy stays in the upload directory: removing an
+  attachment is not a request to destroy the operator's file.
+- **The operator's own directory stays out of the conversation.** The
+  absolute path a file was copied from is kept in the `attachment.json`
+  sidecar beside the copy, where it is local provenance. It is not part
+  of the reference the session keeps, so it never enters a conversation
+  file, and it is never part of a model request.
+
+The pending files are named on their own row directly above the
+composer, with their sizes, so the operator can see what the next
+message will carry before sending it. `/attachments` lists them and the
+directory they live in, and `/detach <name>` removes one.
+
+**Retention.** HAL keeps every copy it makes. Nothing is removed on its
+own: not when a message is sent, not when a conversation is cleared, not
+when HAL exits. A copy in `~/HAL/uploads/` is the operator's file, and
+only the operator decides that it should go. To clean up, delete the
+attachment's own directory — `~/HAL/uploads/<id>/` — or the whole
+`~/HAL/uploads/` directory when no conversation needs it any more. The
+session records keep a reference to a copy that is gone; HAL reports
+such a file as unreadable rather than pretending it is empty.
+
 **Skills (MPM).** HAL discovers the skills MPM manages and uses the one
 that fits the request, without being told which to use.
 
@@ -658,6 +764,7 @@ internal/agenttools/  the 666 read/write/edit/bash executor
 internal/knowledge/   typed MPM knowledge tools (both modes)
 internal/persona/     identity, conversational contract, Dave Protocol
 internal/session/     model-independent JSONL conversation storage
+internal/attachments/ operator-chosen file ingestion: safe copies, decoding
 internal/provider/    OpenAI-compatible streaming client + contracts + mock
 internal/memory/      durable record tiers, admission rules, store interface
 internal/engine/      conversation core: session + provider + tool loop + boundary
@@ -685,6 +792,9 @@ legacy_base/          preserved DeepClaw/PicoClaw reference (separate module)
 - Copying is a UI feature, not a tool: OSC 52 writes to the terminal,
   never to the model. The clipboard is never reachable from the model,
   and the terminal's mouse modes are restored when HAL exits.
+- Attaching is a UI feature, not a tool: only the operator chooses a
+  file, only that file is copied, and the model is offered no way to
+  start an ingestion or to read the upload directory.
 - The frame always fits the terminal, so HAL never scrolls the terminal
   and never leaves the cursor hidden or the terminal in raw mode.
 
@@ -707,6 +817,17 @@ ceiling is absolute: a reasoning phase that keeps streaming is still
 bounded by it. When either fires, the HTTP request is closed, so the
 provider stops generating and stops billing. `Esc` does the same
 immediately.
+
+The attachment limits are fixed, so one operator action can never become
+an unbounded amount of work:
+
+| Limit | Value |
+|---|---|
+| One attached file | 2 MiB |
+| Attached files per message | 10 |
+| Pending attachments per message | 4 MiB |
+| Attached text sent per file | 16 KiB |
+| Attached text sent per turn | 64 KiB |
 
 ## Limitations (Milestone 003.1)
 

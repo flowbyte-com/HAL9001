@@ -129,6 +129,45 @@ terminal. Headless runs do not schedule animation ticks. When a turn
 finishes or is cancelled, stale ticks are discarded, so a completed clock
 cannot restart.
 
+## Attachments
+
+The operator attaches a file with `/attach <path>`. The path is taken
+whole, so a filename with spaces works; surrounding quotes are stripped
+and `~` is expanded.
+
+While files are pending, a row directly above the composer names them
+with their sizes (`📎 notes.md (1.2 KiB) · data.csv (48 B)`). The row
+is reserved only while files are pending, so an ordinary conversation
+keeps exactly the frame it had. The row is the first decoration to be
+dropped on a short terminal — the composer's own text is never pushed
+out of view for it — and every row it produces stays inside the
+terminal width.
+
+The same paperclip marks the files of a message in the transcript. That
+row is interface, not text: a selection never copies it.
+
+A filename is operator-supplied text, and it ends up on the screen. One
+that carries a newline or a terminal escape is cleaned before it is
+shown, so it can neither split a row of the frame nor write a sequence
+into the terminal. The same cleaning is applied to a name that comes
+back from a stored conversation, where it was written by hand.
+
+`/attach` and `/detach` are local commands and never reach the model.
+`/attachments` lists the pending files and the directory they live in.
+
+Every copy is kept in `~/HAL/uploads/`. HAL removes nothing on its own:
+not when a message is sent, not when a conversation is cleared, not when
+it exits. To remove a copy, delete its own directory —
+`~/HAL/uploads/<id>/` — or the whole `~/HAL/uploads/` directory. The
+conversation keeps a reference to a copy that is gone, and HAL reports
+such a file as unreadable rather than as an empty one.
+
+Each attachment's directory holds the copy and a small `attachment.json`
+that describes it. That name belongs to the description, so a copy may
+never take it: a file called `attachment.json` attaches like any other,
+keeps its name in the interface, and is stored beside the description
+under a name of its own.
+
 ## Clipboard
 
 - `/copy` and `/copy code` write OSC 52 (`CSI 52;c;<base64> BEL`) to

@@ -19,6 +19,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/flowbyte-com/HAL9001/internal/attachments"
 )
 
 // Role is a conversation participant.
@@ -50,6 +52,12 @@ type Message struct {
 	// authority: nothing here can enable a tool or change the current
 	// permission.
 	ToolLedger *ToolLedger `json:"tool_ledger,omitempty"`
+	// Attachments names the files the operator attached to this
+	// message. It is a reference, not a copy: the record holds the
+	// name, the size, the checksum and the location of the stored
+	// copy, never the contents, so a session file never grows with the
+	// size of the files that were discussed.
+	Attachments []attachments.Meta `json:"attachments,omitempty"`
 }
 
 // ToolLedgerVersion is the explicit schema version of ToolLedger. A
@@ -116,9 +124,9 @@ type ToolLedger struct {
 	Executions []ToolExecution `json:"executions"`
 }
 
-// messageWire is the on-disk shape used by UnmarshalJSON. The ledger is
-// carried as raw JSON so a damaged optional ledger can be ignored without
-// losing the conversation around it.
+// messageWire is the on-disk shape used by UnmarshalJSON. The ledger and
+// the attachment references are carried as raw JSON so a damaged optional
+// field can be ignored without losing the conversation around it.
 type messageWire struct {
 	Role        Role            `json:"role"`
 	Content     string          `json:"content"`
@@ -126,6 +134,7 @@ type messageWire struct {
 	TurnID      string          `json:"turn_id,omitempty"`
 	Attribution *Attribution    `json:"attribution,omitempty"`
 	ToolLedger  json.RawMessage `json:"tool_ledger,omitempty"`
+	Attachments json.RawMessage `json:"attachments,omitempty"`
 }
 
 // UnmarshalJSON keeps old sessions and damaged optional ledgers loadable.
@@ -142,11 +151,45 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		Timestamp:   w.Timestamp,
 		TurnID:      w.TurnID,
 		Attribution: w.Attribution,
+		Attachments: parseAttachments(w.Attachments),
 	}
 	if len(w.ToolLedger) > 0 {
 		m.ToolLedger = parseToolLedger(w.ToolLedger)
 	}
 	return nil
+}
+
+// parseAttachments reads the optional attachment references of a message.
+//
+// The references are optional metadata, and they are the only part of a
+// record that a damaged file, an older version or a hand edit can make
+// unreadable. A whole conversation must not be lost because of them:
+// the field that cannot be read at all is treated as absent, a single
+// damaged reference is dropped without taking the others with it, and
+// every reference that can be read is sanitised before it is used.
+func parseAttachments(raw json.RawMessage) []attachments.Meta {
+	if len(raw) == 0 {
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		// Not a list: the references are unreadable, but the message
+		// around them is still good.
+		return nil
+	}
+	out := make([]attachments.Meta, 0, len(items))
+	for _, item := range items {
+		var meta attachments.Meta
+		if err := json.Unmarshal(item, &meta); err != nil {
+			// One damaged reference does not lose the others.
+			continue
+		}
+		out = append(out, attachments.SanitizeMeta(meta))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ToolExecutions returns the valid evidence attached to this message. A
@@ -381,6 +424,11 @@ type Turn struct {
 	// exchange. It is attached to the assistant message and never used
 	// as authority.
 	Tools []ToolExecution
+	// Attachments names the files the operator attached to this
+	// exchange. The reference is stored with the user's message; the
+	// contents stay in the upload directory and are never written into
+	// the session.
+	Attachments []attachments.Meta
 }
 
 // NewTurnID mints a fresh, opaque turn identity.
@@ -585,6 +633,16 @@ func (s *Store) AppendTurn(role Role, content string, turn Turn) (Message, error
 	}
 	if role == RoleAssistant && len(turn.Tools) > 0 {
 		msg.ToolLedger = buildToolLedger(s.name, turn.ID, turn.Tools)
+	}
+	if role == RoleUser && len(turn.Attachments) > 0 {
+		// The references are cleaned on the way in as well as on the
+		// way out: a session record is a file on disk, and it should
+		// hold nothing that could rewrite the interface.
+		refs := make([]attachments.Meta, 0, len(turn.Attachments))
+		for _, a := range turn.Attachments {
+			refs = append(refs, attachments.SanitizeMeta(a))
+		}
+		msg.Attachments = refs
 	}
 	if turn.Attribution != nil {
 		// The attribution repeats the turn identity it belongs to, so a

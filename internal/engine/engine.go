@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/flowbyte-com/HAL9001/internal/agenttools"
+	"github.com/flowbyte-com/HAL9001/internal/attachments"
 	"github.com/flowbyte-com/HAL9001/internal/capability"
 	"github.com/flowbyte-com/HAL9001/internal/knowledge"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
@@ -63,6 +64,11 @@ type Engine struct {
 	// 444 and 666, and it cannot execute code, write files or change the
 	// permission mode.
 	web *websearch.Registry
+	// attachments reads the files the operator attached to the turn
+	// being answered. It is read-only here: the engine can compose the
+	// contents of a copy the operator already made, and it is offered
+	// no tool that could start an ingestion of its own.
+	attachments *attachments.Store
 }
 
 // maxToolSteps bounds a single provider conversation. It is a safety limit,
@@ -122,6 +128,17 @@ func (e *Engine) WithWebResearch(w *websearch.Registry) *Engine {
 	return e
 }
 
+// WithAttachments attaches the upload store.
+//
+// The store lets the engine read a copy the operator already made, so
+// the file can be discussed. It grants the engine no way to choose a
+// file: ingestion happens in the interface, on the operator's command,
+// and no tool is ever offered that could start one.
+func (e *Engine) WithAttachments(a *attachments.Store) *Engine {
+	e.attachments = a
+	return e
+}
+
 // permissionMode is the safe snapshot used for the system instruction and
 // the offered-tool list. It never replaces the gate's execution check.
 func (e *Engine) permissionMode() permission.Mode {
@@ -150,7 +167,12 @@ func (e *Engine) UseStore(sessions *session.Store) {
 // The guidance belongs to the request, not to the persona and not to the
 // history: it is composed into the system instruction for this turn and
 // nowhere else, so the next turn starts from the same instruction again.
-func (e *Engine) requestMessages(history []session.Message, guidance string) []provider.Message {
+//
+// expandTurn names the exchange whose attachments are included with
+// their contents. Older exchanges keep their attachment references, so
+// the model still knows which file was discussed without every file's
+// text being carried through the conversation.
+func (e *Engine) requestMessages(history []session.Message, guidance string, expandTurn string) []provider.Message {
 	messages := make([]provider.Message, 0, len(history)+1)
 	system := e.systemPrompt
 	if block := permissionBlock(e.permissionMode()); block != "" {
@@ -183,13 +205,27 @@ func (e *Engine) requestMessages(history []session.Message, guidance string) []p
 			system = guidance
 		}
 	}
+	if block := e.attachmentSystemBlock(history, expandTurn); block != "" {
+		if system != "" {
+			system += "\n\n" + block
+		} else {
+			system = block
+		}
+	}
 	if system != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: system})
 	}
+	// The boundary that delimits the untrusted attachment blocks is
+	// fresh for this request, so nothing inside a file can forge it.
+	boundary := attachmentBoundary()
 	for _, msg := range history {
+		content := msg.Content
+		if len(msg.Attachments) > 0 {
+			content = e.attachmentRequest(msg, msg.TurnID == expandTurn, boundary)
+		}
 		messages = append(messages, provider.Message{
 			Role:    string(msg.Role),
-			Content: msg.Content,
+			Content: content,
 		})
 	}
 	return messages
@@ -408,6 +444,17 @@ func (e *Engine) RespondStream(ctx context.Context, input string, emit func(stri
 // proposal. A prepared proposal is emitted as an event and the interface
 // decides what happens to it; the engine never writes anything itself.
 func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit func(Event)) (string, error) {
+	return e.RespondStreamEventsWithAttachments(ctx, input, nil, emit)
+}
+
+// RespondStreamEventsWithAttachments answers a turn that carries the
+// files the operator attached.
+//
+// The attachments are the operator's own choice: the interface copied
+// them into HAL's upload directory before the turn started. The engine
+// stores only their references, and it composes their contents into
+// this turn's request as untrusted data.
+func (e *Engine) RespondStreamEventsWithAttachments(ctx context.Context, input string, atts []attachments.Meta, emit func(Event)) (string, error) {
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("engine: empty input")
 	}
@@ -415,7 +462,7 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 	// the operator's message, the answer and the attribution of that
 	// answer all carry the same name in the session.
 	turnID := session.NewTurnID()
-	if _, err := e.sessions.AppendTurn(session.RoleUser, input, session.Turn{ID: turnID}); err != nil {
+	if _, err := e.sessions.AppendTurn(session.RoleUser, input, session.Turn{ID: turnID, Attachments: atts}); err != nil {
 		return "", err
 	}
 	if e.provider == nil {
@@ -435,7 +482,7 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 		d := decision
 		emit(Event{Skill: &d, Attribution: attribution, TurnID: turnID})
 	}
-	messages := e.requestMessages(history, skillBlock(loaded))
+	messages := e.requestMessages(history, skillBlock(loaded), turnID)
 	turn := userTurns(history)
 	tools := e.offeredTools()
 	resp, reply, proposal, evidence, err := e.toolTurn(ctx, messages, tools, turn, turnID, emit)

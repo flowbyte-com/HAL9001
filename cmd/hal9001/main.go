@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/flowbyte-com/HAL9001/internal/agenttools"
+	"github.com/flowbyte-com/HAL9001/internal/attachments"
 	"github.com/flowbyte-com/HAL9001/internal/buildinfo"
 	"github.com/flowbyte-com/HAL9001/internal/clipboard"
 	"github.com/flowbyte-com/HAL9001/internal/config"
@@ -105,6 +106,16 @@ func run(args []string) error {
 	// HAL's own configuration and session data.
 	ws.Protect(config.ConfigDir())
 	app.workspace = ws
+	// The upload store. A file the operator attaches is copied into
+	// ~/HAL/uploads, and the copy is what the conversation discusses.
+	// The store is created once and shared: the interface copies files
+	// into it on the operator's command, and the engine reads only the
+	// copies the operator already made.
+	store, err := attachments.Open(filepath.Join(ws.Root(), "uploads"))
+	if err != nil {
+		return err
+	}
+	app.attachments = store
 	// The MPM skill store. HAL reads skills from it and never writes to
 	// it: the catalogue is fetched once at startup and refreshed on
 	// demand. A missing store is not a reason to refuse to start.
@@ -203,6 +214,10 @@ type app struct {
 	// workspace is the single write capability shared by the engine
 	// (which prepares proposals) and the interface (which approves them).
 	workspace *workspace.Store
+	// attachments is the upload store. It copies the files the operator
+	// chooses into ~/HAL/uploads. Only the interface can start an
+	// ingestion, and no model-facing tool reaches it.
+	attachments *attachments.Store
 	// skills is the MPM skill store, shared by the engine (which routes
 	// each turn) and the interface (which lists and pins skills).
 	skills *skills.Selector
@@ -334,6 +349,7 @@ func (a *app) run() error {
 	m.SetMouse(a.cfg.Mouse)
 	m.SetWorkspace(a.workspace)
 	m.SetSkills(a.skills)
+	m.SetAttachments(a.attachments)
 	m.SetPermission(a.permission)
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
 	// The header shows the human-readable title; the immutable session
@@ -454,7 +470,8 @@ func (a *app) rebuildEngine() {
 		WithPermission(a.permission).
 		WithExecution(a.tools).
 		WithWebResearch(a.web).
-		WithKnowledge(a.knowledge)
+		WithKnowledge(a.knowledge).
+		WithAttachments(a.attachments)
 }
 
 // webStatus is the content-free Firecrawl line shown in /diag.
@@ -765,6 +782,7 @@ func sessionLines(history []session.Message) []tui.SessionLine {
 			TurnID:      msg.TurnID,
 			Tools:       msg.ToolExecutions(),
 			Attribution: msg.Attribution,
+			Files:       msg.Attachments,
 		})
 	}
 	return lines
