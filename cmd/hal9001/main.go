@@ -420,9 +420,18 @@ func (a *app) hasConfig() bool {
 }
 
 // providerFor builds the configured provider, or nil when nothing usable
-// is configured yet. No adapters beyond OpenAI-compatible ship in this
-// milestone.
-func (a *app) providerFor() *provider.OpenAICompatible {
+// is configured yet.
+//
+// The configured provider name is the endpoint's protocol category, so
+// "anthropic-compatible" reaches an endpoint that speaks the Anthropic
+// Messages API. Before this, the name was ignored: every endpoint was
+// spoken to as if it were OpenAI-compatible, which is why an
+// Anthropic-compatible endpoint could not be used at all.
+//
+// The wire protocol is named, never guessed from the URL. A local
+// endpoint may have no credential: a model server on the operator's own
+// machine usually does not need one.
+func (a *app) providerFor() provider.Provider {
 	endpoint, key := a.cfg.Endpoint, a.cfg.APIKey
 	if endpoint == "" {
 		endpoint = a.stored.Endpoint
@@ -430,16 +439,25 @@ func (a *app) providerFor() *provider.OpenAICompatible {
 	if key == "" {
 		key = a.stored.APIKey
 	}
-	if endpoint == "" || key == "" {
+	if endpoint == "" {
 		return nil
 	}
-	return &provider.OpenAICompatible{
-		Endpoint:         endpoint,
-		APIKey:           key,
+	wire, err := provider.NormalizeWireProtocol(a.cfg.Provider)
+	if err != nil {
+		return nil
+	}
+	if key == "" && wire != provider.WireOpenAI && wire != provider.WireAnthropic {
+		return nil
+	}
+	impl, err := provider.NewForProtocol(wire, endpoint, key, provider.Options{
 		DefaultMaxTokens: a.cfg.MaxTokens,
 		IdleTimeout:      seconds(a.cfg.StreamIdleSeconds),
 		TurnTimeout:      seconds(a.cfg.TurnTimeoutSeconds),
+	})
+	if err != nil {
+		return nil
 	}
+	return impl
 }
 
 // seconds converts a configured second count to a duration, leaving zero
@@ -535,8 +553,17 @@ func (a *app) webStatus() string {
 	return a.web.StatusLine()
 }
 
+// saveOnboard stores the first-run values.
+//
+// The protocol the operator configured is kept. Onboarding adds the
+// endpoint, the model and the key; it does not decide which protocol
+// the endpoint speaks. Forcing "openai-compatible" here is what made an
+// Anthropic-compatible endpoint impossible to configure: the choice was
+// overwritten before it could be made.
 func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
-	a.stored.Provider = "openai-compatible"
+	if strings.TrimSpace(a.stored.Provider) == "" {
+		a.stored.Provider = a.cfg.Provider
+	}
 	if a.cfg.Endpoint == "" {
 		a.stored.Endpoint = d.Endpoint
 	}
@@ -553,10 +580,35 @@ func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
 	return a.eng, nil
 }
 
+// testOnboard checks that the endpoint answers and reports how many
+// models it lists.
+//
+// The endpoint is spoken to with the protocol the operator configured,
+// so an Anthropic-compatible endpoint is tested the way it will be
+// used. An endpoint that offers no listing is reported as such: the
+// operator can still add a model identifier by hand.
 func (a *app) testOnboard(d tui.OnboardData) (string, error) {
-	client := &provider.OpenAICompatible{Endpoint: d.Endpoint, APIKey: d.Key}
-	ids, err := client.Models(context.Background())
+	wire, err := provider.NormalizeWireProtocol(a.cfg.Provider)
 	if err != nil {
+		return "", err
+	}
+	client, err := provider.NewForProtocol(wire, d.Endpoint, d.Key, provider.Options{
+		DefaultMaxTokens: a.cfg.MaxTokens,
+		IdleTimeout:      seconds(a.cfg.StreamIdleSeconds),
+		TurnTimeout:      seconds(a.cfg.TurnTimeoutSeconds),
+	})
+	if err != nil {
+		return "", err
+	}
+	lister, ok := client.(provider.ModelLister)
+	if !ok {
+		return "", fmt.Errorf("the %s protocol cannot list models", wire)
+	}
+	ids, err := lister.Models(context.Background())
+	if err != nil {
+		if errors.Is(err, provider.ErrNoModelListing) {
+			return "reachable, but it does not list its models; add the model id by hand", nil
+		}
 		return "", err
 	}
 	switch len(ids) {

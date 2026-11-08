@@ -1,0 +1,269 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Model listing.
+//
+// A listing is bounded twice: the response body is read through a
+// limit, and the number of models and pages is capped. A hostile or
+// broken endpoint cannot make HAL read an unbounded body or follow an
+// unbounded number of pages.
+//
+// The identifiers that come back are the endpoint's own. HAL keeps them
+// exactly as they are.
+
+const (
+	// maxModelListBytes bounds one model-listing response body.
+	maxModelListBytes = 4 << 20
+	// maxDiscoveredModels bounds how many models one listing returns.
+	maxDiscoveredModels = 500
+	// maxModelListPages bounds how many pages one listing follows.
+	maxModelListPages = 20
+	// modelListPageSize is the page size HAL asks for.
+	modelListPageSize = 100
+)
+
+// contextKeys are the field names endpoints use to advertise a context
+// window. The list is short and documented: HAL reads what an endpoint
+// reports and never guesses a number from a model identifier.
+var contextKeys = []string{
+	"context_length",
+	"context_window",
+	"max_context_length",
+	"max_model_len",
+	"max_input_tokens",
+	"n_ctx",
+}
+
+// outputKeys are the field names endpoints use to advertise an output
+// cap.
+var outputKeys = []string{
+	"max_output_tokens",
+	"max_completion_tokens",
+	"output_token_limit",
+}
+
+// advertisedContext reads the context and output limits an endpoint
+// reports for one model. A server that reports none leaves both at
+// zero, which means "unknown" and never "zero".
+func advertisedContext(entry map[string]any) (contextWindow int, maxOutput int) {
+	for _, key := range contextKeys {
+		if v := intField(entry, key); v > 0 {
+			contextWindow = v
+			break
+		}
+	}
+	for _, key := range outputKeys {
+		if v := intField(entry, key); v > 0 {
+			maxOutput = v
+			break
+		}
+	}
+	return contextWindow, maxOutput
+}
+
+// stringField reads a string field from a decoded object.
+func stringField(entry map[string]any, key string) string {
+	switch v := entry[key].(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(v)
+	}
+	return ""
+}
+
+// intField reads a numeric field from a decoded object. A number that
+// arrived as a string is accepted, because endpoints are inconsistent
+// about quoting their limits.
+func intField(entry map[string]any, key string) int {
+	switch v := entry[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0
+		}
+		return int(n)
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	return 0
+}
+
+// truncateText shortens a provider error body for an error message.
+func truncateText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "no response body"
+	}
+	if len(text) > 300 {
+		return text[:300] + "…"
+	}
+	return text
+}
+
+// modelFetchedAt is the timestamp discovery stamps on a record.
+func modelFetchedAt() time.Time { return time.Now() }
+
+// --- OpenAI-compatible listing ----------------------------------------
+
+// ListModels implements ModelCatalog for an OpenAI-compatible endpoint.
+func (o *OpenAICompatible) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	listURL := strings.TrimRight(o.Endpoint, "/") + "/models"
+	ctx, cancel := context.WithTimeout(ctx, DefaultDiscoveryTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("provider: %w", err)
+	}
+	if o.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+o.APIKey)
+	}
+	resp, err := o.client().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("provider: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("provider: authentication failed (%d): check the API key", resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		return nil, ErrNoModelListing
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("provider: %s", readErrorBody(resp))
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxModelListBytes))
+	if err != nil {
+		return nil, fmt.Errorf("provider: %w", err)
+	}
+	var listing struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &listing); err != nil {
+		return nil, fmt.Errorf("provider: bad model list: %w", err)
+	}
+	return modelInfos(listing.Data), nil
+}
+
+// modelInfos turns raw listing entries into model records, keeping the
+// identifiers exactly as the endpoint wrote them.
+func modelInfos(entries []map[string]any) []ModelInfo {
+	out := make([]ModelInfo, 0, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(stringField(entry, "id"))
+		if id == "" {
+			continue
+		}
+		contextWindow, maxOutput := advertisedContext(entry)
+		out = append(out, ModelInfo{
+			ID:              id,
+			Label:           strings.TrimSpace(stringField(entry, "display_name")),
+			ContextWindow:   contextWindow,
+			MaxOutputTokens: maxOutput,
+			Access:          AccessUnknown,
+		})
+		if len(out) >= maxDiscoveredModels {
+			break
+		}
+	}
+	return out
+}
+
+// --- Anthropic listing ------------------------------------------------
+
+// ListModels implements ModelCatalog for an Anthropic-compatible
+// endpoint.
+//
+// The Messages API lists models with cursor pagination: the response
+// says whether more models follow, and the last identifier of the page
+// is the cursor for the next one. HAL follows the cursor while it is
+// bounded by the page and model caps.
+func (a *AnthropicCompatible) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, DefaultDiscoveryTimeout)
+	defer cancel()
+	out := make([]ModelInfo, 0, modelListPageSize)
+	after := ""
+	for page := 0; page < maxModelListPages; page++ {
+		listURL := a.modelsURL()
+		query := url.Values{}
+		query.Set("limit", strconv.Itoa(modelListPageSize))
+		if after != "" {
+			query.Set("after_id", after)
+		}
+		listURL += "?" + query.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("provider: %w", err)
+		}
+		req.Header.Set("anthropic-version", a.version())
+		req.Header.Set("Accept", "application/json")
+		a.setCredential(req)
+		resp, err := a.client().Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("provider: %w", err)
+		}
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxModelListBytes))
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("provider: %w", readErr)
+		}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("provider: authentication failed (%d): check the API key", resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+			return nil, ErrNoModelListing
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("provider: HTTP %d: %s", resp.StatusCode, truncateText(string(raw)))
+		}
+		var listing struct {
+			Data    []map[string]any `json:"data"`
+			HasMore bool             `json:"has_more"`
+			LastID  string           `json:"last_id"`
+		}
+		if err := json.Unmarshal(raw, &listing); err != nil {
+			return nil, fmt.Errorf("provider: bad model list: %w", err)
+		}
+		out = append(out, modelInfos(listing.Data)...)
+		if len(out) >= maxDiscoveredModels {
+			return out[:maxDiscoveredModels], nil
+		}
+		if !listing.HasMore {
+			break
+		}
+		next := strings.TrimSpace(listing.LastID)
+		if next == "" || next == after {
+			// A cursor that does not advance would loop forever.
+			break
+		}
+		after = next
+	}
+	return out, nil
+}
+
+// modelsURL is the endpoint of the model listing.
+func (a *AnthropicCompatible) modelsURL() string { return a.base() + "/models" }
+
+// messagesURL is the endpoint of one Messages request.
+func (a *AnthropicCompatible) messagesURL() string { return a.base() + "/messages" }
