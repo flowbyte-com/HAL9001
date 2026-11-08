@@ -53,17 +53,6 @@ type providerTarget struct {
 	Budget provider.ContextBudget
 }
 
-// outputTokens returns the room the answer may use.
-//
-// The model's own cap wins; without one the protocol's default is used,
-// because the two protocols default differently.
-func (t providerTarget) outputTokens() int {
-	if t.MaxTokens > 0 {
-		return t.MaxTokens
-	}
-	return provider.DefaultOutputTokens(t.Wire)
-}
-
 // resolveTarget derives the runtime target from a stored configuration.
 //
 // The stored configuration is the source of truth: an endpoint's own
@@ -167,8 +156,27 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 	// target carries: the operator's own limit, the model identifier
 	// the endpoint may have reported a window for, and the room the
 	// answer may use.
-	target.Budget = a.contextBudget(target.ModelID, target.ContextWindow, target.outputTokens())
+	target.Budget = a.contextBudget(target.ModelID, target.ContextWindow, a.reservedOutput(target))
 	return target, nil
+}
+
+// reservedOutput returns the room the answer may use.
+//
+// The model's own cap wins; without one the configured cap is used;
+// without that the protocol's default, because the two protocols default
+// differently.
+//
+// It is the same number the adapter asks the provider for, so the room
+// that is held back from the request is the room the answer really
+// takes.
+func (a *app) reservedOutput(target providerTarget) int {
+	if target.MaxTokens > 0 {
+		return target.MaxTokens
+	}
+	if a.cfg.MaxTokens > 0 {
+		return a.cfg.MaxTokens
+	}
+	return provider.DefaultOutputTokens(target.Wire)
 }
 
 // legacyModelRecord finds the record of a model in a pre-version-2

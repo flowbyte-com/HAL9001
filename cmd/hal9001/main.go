@@ -588,7 +588,7 @@ func (a *app) rebuildEngine() {
 	// guarded metadata the background lookup recorded.
 	budgetID := target.ModelID
 	budgetLimit := target.ContextWindow
-	budgetOutput := target.outputTokens()
+	budgetOutput := a.reservedOutput(target)
 	a.eng = engine.New(a.store, p, modelFromTarget(target)).
 		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir)).
 		WithWorkspace(a.workspace).
