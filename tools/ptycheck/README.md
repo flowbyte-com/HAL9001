@@ -143,6 +143,37 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/attachment_checks.py
 ```
 
+The discovery checks start their own hostile provider on port 8263 and own
+their config, home, workspace and session store. The provider answers with
+a model catalogue that carries every trick a broken or hostile endpoint can
+use: an identifier that is an ANSI colour sequence, an identifier with
+surrounding whitespace, the same identifier twice, an identifier with an
+embedded newline, an identifier with a bell, an identifier that is far too
+long, and a display name that tries to rewrite the screen and to forge a
+row. The suite asserts on the raw byte stream, not on the rendered screen:
+an escape sequence that reaches the terminal is an escape sequence, whether
+or not the emulator happened to draw something sensible:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/discovery_checks.py
+```
+
+The budget checks start their own recording provider on port 8265 and own
+their config, home, workspace and session store. The provider writes every
+request it receives to a log, so the request that actually leaves the
+machine can be inspected. A conversation of forty-one messages is stored
+before the run: without a limit the whole conversation is transmitted, with
+a configured limit the transmitted request is smaller and fits the limit
+while keeping the newest request, and with a hundred-token limit nothing is
+transmitted at all — the request cannot be reduced, so it is refused with an
+explanation instead of being truncated:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/budget_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -224,6 +255,20 @@ python3 tools/ptycheck/attachment_checks.py
 - The link suite verifies OSC 8 destinations, label-only Markdown links,
   visible bare URLs, numbered lists, tables, unsafe-scheme rejection,
   fenced-code exclusion and plain reconstructed screen text.
+- The discovery suite runs the real binary against a provider that answers
+  with a hostile model catalogue: identifiers that are escape sequences,
+  identifiers with surrounding whitespace, with an embedded newline or a
+  bell, an identifier that is far too long, and a duplicate. The raw byte
+  stream carries no injected colour sequence and no injected hyperlink, no
+  row is forged, the refused identifiers are not listed, a legitimate
+  identifier survives exactly, the sanitised name is shown on one line, and
+  the conversation still works afterwards.
+- The budget suite runs the real binary against a provider that records
+  every request: without a limit the whole stored conversation is
+  transmitted, with a configured limit the transmitted request is smaller,
+  fits the limit and keeps the newest request, the interface says that
+  older context was dropped to fit, and with a hundred-token limit nothing
+  is transmitted and the refusal explains itself.
 - The composer PTY suite covers two, three and five-line pastes, a
   six-line paste whose caret window is the last five rows, a long wrapped
   Markdown link followed by a newline, and the footer remaining visible
@@ -315,3 +360,7 @@ by hand in a real terminal.
 | `polish_checks.py` | isolated transcript alignment, eye, tool/metadata and slash-dismissal checks with a static ledger fixture |
 | `fake_provider.py` | a local OpenAI-compatible streaming stub (`[[save]]`, `[[read]]`, `[[bash]]`, `[[attached]]`) |
 | `attachment_checks.py` | isolated attachment checks: safe copies, the pending row, untrusted content and session references |
+| `hostile_provider.py` | a local provider whose model catalogue carries hostile identifiers and labels |
+| `discovery_checks.py` | isolated discovery-hygiene checks: no injected escape sequence, no forged row, exact identifiers survive |
+| `recording_provider.py` | a local provider that records every request it receives |
+| `budget_checks.py` | isolated context-budget checks: the transmitted request honours the operator's limit, or nothing is sent |

@@ -224,14 +224,23 @@ type ContextMetadata struct {
 
 // Provisional context defaults.
 //
-// When nothing is known, HAL keeps working with a small conservative
-// budget and says so. The number is deliberately modest: a turn that
-// exceeds it is far more likely than a turn that is rejected for asking
-// for too much.
+// When nothing is known, HAL says so and keeps the provider's own
+// limit in force. The number below is the conservative guess HAL
+// reports next to that fact: it is not enforced, because a window
+// nobody reported is a number HAL made up, and trimming an operator's
+// conversation on the strength of a guess is worse than letting the
+// provider refuse a request that is genuinely too long.
+//
+// The number was raised from 8192 to 32768 when the budget interface
+// was written. A normal HAL request carries the persona, the
+// permission block, the MCP guidance and about a dozen tool
+// definitions: roughly three thousand tokens. A guess below that size
+// would be smaller than an ordinary request, which makes it a
+// meaningless figure rather than a conservative one.
 const (
-	// ProvisionalContextWindow is the context budget used when no
-	// authoritative number is known.
-	ProvisionalContextWindow = 8192
+	// ProvisionalContextWindow is the context budget reported when no
+	// authoritative number is known. It is not enforced.
+	ProvisionalContextWindow = 32768
 	// ProvisionalMaxOutputTokens is the output cap used with it.
 	ProvisionalMaxOutputTokens = 4096
 )
@@ -245,8 +254,8 @@ func ProvisionalContext() ContextMetadata {
 		Source:          ContextSourceProvisional,
 		Mode:            ContextModeProvisional,
 		Verified:        false,
-		Note: "the endpoint did not report a context window; using a conservative " +
-			"budget until the operator sets one",
+		Note: "the endpoint did not report a context window; the provider's own limit " +
+			"applies until the operator sets one",
 	}
 }
 

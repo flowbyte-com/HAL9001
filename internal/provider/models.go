@@ -168,26 +168,47 @@ func (o *OpenAICompatible) ListModels(ctx context.Context) ([]ModelInfo, error) 
 
 // modelInfos turns raw listing entries into model records, keeping the
 // identifiers exactly as the endpoint wrote them.
+//
+// What the endpoint says is untrusted: an identifier that could forge a
+// terminal row or that is not an identifier at all is refused, a
+// display label is sanitised, and a repeated identifier is listed once.
 func modelInfos(entries []map[string]any) []ModelInfo {
 	out := make([]ModelInfo, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
 	for _, entry := range entries {
-		id := strings.TrimSpace(stringField(entry, "id"))
-		if id == "" {
+		info, ok := modelRecord(entry, stringField(entry, "id"))
+		if !ok {
 			continue
 		}
-		contextWindow, maxOutput := advertisedContext(entry)
-		out = append(out, ModelInfo{
-			ID:              id,
-			Label:           strings.TrimSpace(stringField(entry, "display_name")),
-			ContextWindow:   contextWindow,
-			MaxOutputTokens: maxOutput,
-			Access:          AccessUnknown,
-		})
+		if seen[info.ID] {
+			continue
+		}
+		seen[info.ID] = true
+		out = append(out, info)
 		if len(out) >= maxDiscoveredModels {
 			break
 		}
 	}
 	return out
+}
+
+// modelRecord builds one model record from a raw listing entry.
+//
+// It reports false when the identifier the entry carries is not usable:
+// a malformed or unsafe identifier is refused, never repaired.
+func modelRecord(entry map[string]any, rawID string) (ModelInfo, bool) {
+	id, ok := SafeModelID(rawID)
+	if !ok {
+		return ModelInfo{}, false
+	}
+	contextWindow, maxOutput := advertisedContext(entry)
+	return ModelInfo{
+		ID:              id,
+		Label:           SafeDisplayText(stringField(entry, "display_name"), MaxModelLabelLength),
+		ContextWindow:   contextWindow,
+		MaxOutputTokens: maxOutput,
+		Access:          AccessUnknown,
+	}, true
 }
 
 // --- Anthropic listing ------------------------------------------------

@@ -51,6 +51,14 @@ type ModelRecord struct {
 	// Effort is the persisted reasoning level for models that support
 	// effort control. Empty means the built-in default for the model.
 	Effort string `json:"effort,omitempty"`
+	// ContextWindow is the context limit the operator set for this
+	// model, in tokens. Zero means the operator set none, and the
+	// provider's own window governs.
+	//
+	// The limit bounds the conversation HAL sends. It is the operator's
+	// own number: it is never confused with the maximum a provider
+	// advertises, and it is never a guess HAL made.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // Display returns the label or the id.

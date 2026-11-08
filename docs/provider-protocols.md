@@ -83,7 +83,9 @@ limit can raise it.
   own explanation, bounded in length, and the credential never appears
   in them.
 - The identifiers are the endpoint's **exact** strings. HAL never
-  rewrites, trims, lower-cases or otherwise tidies them.
+  rewrites, trims, lower-cases or otherwise tidies them — it either
+  uses them as they are or refuses them (see *Discovery metadata is
+  untrusted* below).
 - A listed model is **not claimed to work**. `ModelInfo.Access` is
   `unknown` until a request to that model has actually succeeded.
 - Discovery **never changes the active model**. Adding a model and
@@ -99,7 +101,7 @@ A context record always says where its number came from.
 | `provider` | the endpoint advertised it |
 | `local-runtime` | a local runtime reported the context it allocated |
 | `cached` | it was verified earlier and stored |
-| `provisional` | HAL guessed a conservative budget |
+| `provisional` | HAL knows nothing and says so |
 
 `ContextMetadata` keeps two numbers apart:
 
@@ -118,13 +120,76 @@ maximum must never silently become the budget.
 3. the provider's advertised maximum is the budget when there is no
    local allocation;
 4. a cached, previously verified record is used next;
-5. otherwise the **provisional** budget is used: a conservative 8k
+5. otherwise the **provisional** record is used: a conservative 32k
    context and a 4k output cap, `Verified: false`, with a note that
    says the endpoint reported nothing.
 
 A guessed number is never labelled verified. HAL never probes a context
 length by generating enormous requests, and a context-limit error never
 causes an uncontrolled retry or a claim about the exact maximum.
+
+### The budget is enforced
+
+The budget is not a number in a panel. It is applied to the request as
+it will be sent:
+
+- `internal/provider` owns the budget and the algorithm:
+  `ContextBudget`, `EstimateTokens`, `TrimToBudget`, `TrimReport` and
+  the typed `ContextBudgetError`;
+- `internal/engine` applies it in `chat()`, the last point before the
+  transmission, so it covers the plain turn and every round of the tool
+  loop;
+- `cmd/hal9001` resolves it and puts it on `provider.Model.Budget`.
+
+The resolution happens again for every request, because an endpoint may
+report a model's context window after the interface started. The
+lookup itself runs in the background: the interface never waits for a
+metadata lookup, and a late answer is used from the next request on.
+
+The rules of the trim:
+
+- the safety instructions are never dropped;
+- the operator's current request is never dropped;
+- older context is dropped only at exchange boundaries — a user
+  message with the assistant and tool messages that answer it — so a
+  tool call is never separated from its result;
+- the estimate accounts for the instructions, the history, the tool
+  definitions and the current request;
+- a request that still does not fit is **refused** with an explanation.
+  It is never truncated silently, and no retry is attempted;
+- nothing is summarised and nothing is rewritten. Older context is
+  dropped, not compacted.
+
+The token count is always an estimate — four characters per token plus
+a small overhead — and every message that quotes one calls it an
+estimate.
+
+The operator's `context_window` bounds the **conversation**: the room
+the request may use. An advertised or allocated window is the whole
+context the model accepts, so the answer is reserved from it.
+
+A **provisional** budget is reported but never enforced. HAL enforces
+what it knows; trimming an operator's conversation on the strength of a
+window nobody reported would discard context on the strength of a
+number HAL made up.
+
+### Discovery metadata is untrusted
+
+What an endpoint says about its models is untrusted data, and the two
+fields are treated differently:
+
+- an **identifier** is either valid or refused. It is never repaired:
+  an identifier with a control character, with surrounding whitespace,
+  that is empty or that is longer than 256 runes is refused, and the
+  model is not listed. A rewritten identifier would be sent to the
+  provider under a name the endpoint does not know;
+- a **display label** is sanitised: complete ANSI CSI and OSC sequences
+  are removed, the remaining control characters are dropped, line
+  breaks become spaces, and the result is bounded to 120 runes;
+- a repeated identifier is listed once.
+
+The identifier that reaches a provider request is the exact string the
+endpoint wrote, and the sanitised values are what reach the interface.
 
 ### Local runtime probing
 
@@ -137,7 +202,7 @@ A local endpoint may be asked what it actually allocated:
   `model_info` names the architecture's context length.
 
 Every probe is optional. A local server that answers none of them yields
-no metadata, and HAL then uses the provisional budget and says so.
+no metadata, and HAL then says that it knows nothing about the window.
 
 ## What is not here
 
@@ -146,3 +211,5 @@ no metadata, and HAL then uses the provisional budget and says so.
 - No model catalogue: the models come from the endpoint.
 - No protocol inference from a URL.
 - No automatic retry of a failed context probe.
+- No automatic compaction: older context is dropped, never summarised.
+- No trimming on a guessed window.

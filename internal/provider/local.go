@@ -149,18 +149,11 @@ func (l *localRuntime) listOpenAI(ctx context.Context) ([]ModelInfo, error) {
 	}
 	out := make([]ModelInfo, 0, len(listing.Data))
 	for _, entry := range listing.Data {
-		id := strings.TrimSpace(stringField(entry, "id"))
-		if id == "" {
+		info, ok := modelRecord(entry, stringField(entry, "id"))
+		if !ok {
 			continue
 		}
-		contextWindow, maxOutput := advertisedContext(entry)
-		out = append(out, ModelInfo{
-			ID:              id,
-			Label:           strings.TrimSpace(stringField(entry, "display_name")),
-			ContextWindow:   contextWindow,
-			MaxOutputTokens: maxOutput,
-			Access:          AccessUnknown,
-		})
+		out = append(out, info)
 		if len(out) >= maxDiscoveredModels {
 			break
 		}
@@ -186,20 +179,15 @@ func (l *localRuntime) listTags(ctx context.Context) ([]ModelInfo, error) {
 	}
 	out := make([]ModelInfo, 0, len(listing.Models))
 	for _, entry := range listing.Models {
-		id := strings.TrimSpace(stringField(entry, "name"))
-		if id == "" {
-			id = strings.TrimSpace(stringField(entry, "model"))
+		raw := stringField(entry, "name")
+		if raw == "" {
+			raw = stringField(entry, "model")
 		}
-		if id == "" {
+		info, ok := modelRecord(entry, raw)
+		if !ok {
 			continue
 		}
-		contextWindow, maxOutput := advertisedContext(entry)
-		out = append(out, ModelInfo{
-			ID:              id,
-			ContextWindow:   contextWindow,
-			MaxOutputTokens: maxOutput,
-			Access:          AccessUnknown,
-		})
+		out = append(out, info)
 		if len(out) >= maxDiscoveredModels {
 			break
 		}
@@ -225,21 +213,15 @@ func (l *localRuntime) listRuntimeModels(ctx context.Context) ([]ModelInfo, erro
 	}
 	out := make([]ModelInfo, 0, len(listing.Data))
 	for _, entry := range listing.Data {
-		id := strings.TrimSpace(stringField(entry, "id"))
-		if id == "" {
-			id = strings.TrimSpace(stringField(entry, "model"))
+		raw := stringField(entry, "id")
+		if raw == "" {
+			raw = stringField(entry, "model")
 		}
-		if id == "" {
+		info, ok := modelRecord(entry, raw)
+		if !ok {
 			continue
 		}
-		contextWindow, maxOutput := advertisedContext(entry)
-		out = append(out, ModelInfo{
-			ID:              id,
-			Label:           strings.TrimSpace(stringField(entry, "display_name")),
-			ContextWindow:   contextWindow,
-			MaxOutputTokens: maxOutput,
-			Access:          AccessUnknown,
-		})
+		out = append(out, info)
 		if len(out) >= maxDiscoveredModels {
 			break
 		}

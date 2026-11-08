@@ -773,6 +773,11 @@ func (m Model) diagRows() []string {
 			}
 		}
 	}
+	if m.hooks.ContextBudget != nil {
+		if budget := strings.TrimSpace(m.hooks.ContextBudget()); budget != "" {
+			composer("context", budget)
+		}
+	}
 	if len(m.lastTools) > 0 {
 		rows = append(rows, "  "+padTo(st.active.Render("last tools"), 16))
 		for _, a := range m.lastTools {

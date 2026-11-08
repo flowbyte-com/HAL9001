@@ -210,6 +210,10 @@ type Hooks struct {
 	// WebResearch reports the Firecrawl availability and limits for
 	// diagnostics. It never includes the API key.
 	WebResearch func() string
+	// ContextBudget describes the context budget that is enforced for
+	// the active model: its size, where it came from and how much of it
+	// is held back for the answer. It carries no conversation text.
+	ContextBudget func() string
 }
 
 // Engine runs the conversation behind the interface. It matches
@@ -349,6 +353,10 @@ type entry struct {
 	// presentation metadata about the turn: it is never part of the
 	// text, and it never reaches the model.
 	attribution *session.Attribution
+	// context reports that older context was dropped to fit the model's
+	// context budget. It is presentation metadata about the turn: it
+	// carries no conversation text.
+	context string
 	// files are the attachments the operator made with this message.
 	// They are references, shown beneath the message; the contents are
 	// never part of the text.
@@ -883,6 +891,9 @@ type responseMsg struct {
 	// tools is the execution-boundary record of every tool call in the
 	// turn. It never contains file contents or command text.
 	tools []engine.ToolActivity
+	// context reports that older context was dropped to fit the model's
+	// context budget. It carries no conversation text.
+	context string
 }
 type errorMsg struct {
 	id  int
@@ -909,6 +920,7 @@ func (m Model) runRespond(id int, input string, atts []attachments.Meta, ctx con
 		turn        string
 		stats       *provider.TurnStats
 		tools       []engine.ToolActivity
+		contextNote string
 	)
 	reply, err := m.respondEvents(ctx, input, atts, func(ev engine.Event) {
 		switch {
@@ -925,6 +937,8 @@ func (m Model) runRespond(id int, input string, atts []attachments.Meta, ctx con
 		case ev.Stats != nil:
 			s := *ev.Stats
 			stats = &s
+		case ev.Context != nil:
+			contextNote = ev.Context.Text
 		}
 	})
 	if err != nil {
@@ -939,6 +953,7 @@ func (m Model) runRespond(id int, input string, atts []attachments.Meta, ctx con
 		turn:        turn,
 		stats:       stats,
 		tools:       tools,
+		context:     contextNote,
 	}
 }
 
@@ -986,6 +1001,7 @@ func (m Model) runStream(id int, input string, atts []attachments.Meta, ctx cont
 		attribution *session.Attribution
 		turn        string
 		tools       []engine.ToolActivity
+		contextNote string
 	)
 	collect := func(ev engine.Event) {
 		if ev.Proposal != nil {
@@ -1003,6 +1019,9 @@ func (m Model) runStream(id int, input string, atts []attachments.Meta, ctx cont
 			// The diagnostics learn the selection while the turn is
 			// still running.
 			m.sender(skillDecisionMsg{id: id, turn: ev.TurnID, decision: d})
+		}
+		if ev.Context != nil {
+			contextNote = ev.Context.Text
 		}
 		emit(ev)
 	}
@@ -1035,6 +1054,7 @@ func (m Model) runStream(id int, input string, atts []attachments.Meta, ctx cont
 		attribution: attribution,
 		turn:        turn,
 		tools:       tools,
+		context:     contextNote,
 	})
 }
 
@@ -1357,6 +1377,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		i := m.appendEntry("assistant", msg.text)
 		m.entries[i].turnID = msg.turn
 		m.entries[i].tools = append([]engine.ToolActivity(nil), msg.tools...)
+		m.entries[i].context = msg.context
 		m.renderEntry(i)
 		m.renderConversation()
 		// Attach this turn's reported usage directly: the answer on screen
@@ -2449,6 +2470,14 @@ func (m *Model) renderAssistant(e *entry) ([]string, []bool) {
 		}
 		rows = append(rows, prefix+line)
 	}
+	// The context notice is a dim line under the answer: it tells the
+	// operator that older context was dropped to fit the model's budget,
+	// and it carries no conversation text.
+	contextRow := -1
+	if e.context != "" {
+		contextRow = len(rows)
+		rows = append(rows, prefix+m.contextRow(e.context))
+	}
 	toolStart := len(rows)
 	tools := make([]engine.ToolActivity, 0, len(e.tools))
 	for _, a := range e.tools {
@@ -2471,10 +2500,25 @@ func (m *Model) renderAssistant(e *entry) ([]string, []bool) {
 		}
 	}
 	deco := make([]bool, len(rows))
+	if contextRow >= 0 {
+		deco[contextRow] = true
+	}
 	for j := toolStart; j < len(rows); j++ {
 		deco[j] = true
 	}
 	return rows, deco
+}
+
+// contextRow renders the context-budget notice under an answer.
+//
+// The line is decoration, not part of the answer: it is dim, and a
+// selection never copies it.
+func (m *Model) contextRow(text string) string {
+	line := "context · " + text
+	if m.color {
+		line = m.theme.styles().footer.Render(line)
+	}
+	return line
 }
 
 // renderNote renders interface text — an error explanation, a write

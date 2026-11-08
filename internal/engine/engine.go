@@ -52,6 +52,9 @@ type Engine struct {
 	// skills routes each request to a skill and loads its guidance.
 	// Nil means no skill is ever selected.
 	skills *skills.Selector
+	// budgetResolver answers where the context budget of a request comes
+	// from. Nil means the budget on the model is the budget in force.
+	budgetResolver func() provider.ContextBudget
 	// permission is the read-only view of the operator's permission
 	// gate. Nil means the conversation is permanently 444.
 	permission permission.Gate
@@ -112,6 +115,22 @@ func (e *Engine) WithWorkspace(w *workspace.Store) *Engine {
 // turn is exactly the turn it was before.
 func (e *Engine) WithSkills(s *skills.Selector) *Engine {
 	e.skills = s
+	return e
+}
+
+// WithBudgetResolver sets where the context budget of a request comes
+// from.
+//
+// The budget is resolved before the request is sent, and an endpoint
+// may report a model's context window after the engine was built. A
+// resolver lets the application answer that question at request time
+// instead of once at build time, without the interface waiting for a
+// lookup.
+//
+// Without a resolver the engine uses the budget on the model it was
+// built with, which is the same number the application resolved.
+func (e *Engine) WithBudgetResolver(f func() provider.ContextBudget) *Engine {
+	e.budgetResolver = f
 	return e
 }
 
@@ -432,6 +451,10 @@ type Event struct {
 	// presentation-only: the interface uses it to show that a tool is
 	// running, while Tool remains the verified result.
 	ToolStart *ToolActivity
+	// Context tells the operator that older context was dropped to fit
+	// the model's context budget. It is presentation-only and carries
+	// no conversation text.
+	Context *provider.TrimNote
 }
 
 // ToolActivity is one tool call as the interface and diagnostics see it.
@@ -588,7 +611,7 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 	)
 	for step := 0; step < maxToolSteps; step++ {
 		resp, err := e.chat(ctx, current, tools, emit)
-		if err != nil && len(tools) > 0 && isToolRejection(err) {
+		if err != nil && len(tools) > 0 && !isBudgetRefusal(err) && isToolRejection(err) {
 			// A provider that cannot take function definitions must not
 			// lose the conversation: retry the same turn without them and
 			// stop offering tools for this engine.
@@ -859,7 +882,16 @@ func evidenceSummary(a ToolActivity, status session.ToolStatus) string {
 // The streaming path is preferred; a provider that cannot stream with
 // functions falls back to the ordinary stream, and a provider that cannot
 // stream at all uses the blocking call.
+//
+// This is the last point before the request is transmitted, so the
+// context budget is applied here: the request is trimmed on the fully
+// assembled messages and tools, and a request that cannot be reduced
+// to the budget is refused with an explanation rather than sent.
 func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []provider.Tool, emit func(Event)) (provider.Response, error) {
+	messages, err := e.applyContextBudget(messages, tools, emit)
+	if err != nil {
+		return provider.Response{}, err
+	}
 	deltaFn := func(d provider.Delta) error {
 		ev := Event{Text: d.Text, Reasoning: d.Reasoning != ""}
 		if ev.Text == "" && !ev.Reasoning {
@@ -879,6 +911,42 @@ func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []
 		return streamer.ChatStream(ctx, messages, e.model, deltaFn)
 	}
 	return e.provider.Chat(ctx, messages, e.model)
+}
+
+// applyContextBudget fits the assembled request into the model's
+// context budget.
+//
+// The budget is resolved before the turn, from the operator's limit, the
+// provider's advertisement, the local runtime's allocation, the cached
+// record or the conservative fallback. It is applied here, on the
+// request as it will be sent: the safety instructions are kept, the
+// newest exchange is kept, and older context is dropped only at
+// exchange boundaries, so a tool call is never separated from its
+// result.
+//
+// A request that does not fit even after every droppable exchange is
+// gone is refused with a clear explanation. It is never truncated
+// silently, and no retry is attempted.
+func (e *Engine) applyContextBudget(messages []provider.Message, tools []provider.Tool, emit func(Event)) ([]provider.Message, error) {
+	budget := e.model.Budget
+	if e.budgetResolver != nil {
+		// The application resolves the budget per request: an endpoint
+		// may report a model's context window after the engine was
+		// built, and the operator's own limit never changes.
+		budget = e.budgetResolver()
+	}
+	if budget.Limit <= 0 {
+		return messages, nil
+	}
+	trimmed, report, err := provider.TrimToBudget(messages, tools, budget)
+	if err != nil {
+		return nil, err
+	}
+	if report.DroppedExchanges > 0 && emit != nil {
+		notice := report.Note(budget)
+		emit(Event{Context: &notice})
+	}
+	return trimmed, nil
 }
 
 // userTurns counts the user messages in the history: the turn number the

@@ -1,0 +1,351 @@
+package provider
+
+import (
+	"fmt"
+	"strings"
+)
+
+// The context budget.
+//
+// A context budget is the room a request has. It is resolved before the
+// request is sent, it is applied to the request as it will be sent, and
+// it is enforced by dropping whole exchanges from the oldest end until
+// the request fits.
+//
+// Three things are never done:
+//
+//   - the safety instructions are never dropped. They carry the
+//     permission the request runs under, and a request without them
+//     would be a different request;
+//   - the operator's current request is never dropped to satisfy a
+//     budget;
+//   - a tool call is never separated from its result. The two belong to
+//     the same exchange, and an exchange is dropped whole or not at all.
+//
+// Nothing is summarised and nothing is rewritten: older context is
+// dropped, not compacted, and no retry is attempted.
+
+// ContextBudget is the resolved budget for one request.
+//
+// The budget is expressed in the room the request itself may use. The
+// answer's room is held back from it and reported separately, so the
+// operator can see how much of the window the answer may take.
+type ContextBudget struct {
+	// Limit is the room the request may use, in tokens. Zero means the
+	// provider's own window governs and HAL does not trim.
+	Limit int `json:"limit,omitempty"`
+	// ReservedOutput is the room held back for the answer, in tokens.
+	ReservedOutput int `json:"reserved_output,omitempty"`
+	// Source says where the limit came from.
+	Source ContextSource `json:"source,omitempty"`
+	// Mode says how the limit was chosen.
+	Mode ContextMode `json:"context_mode,omitempty"`
+	// Verified reports whether the number was verified. A provisional
+	// budget is never verified.
+	Verified bool `json:"verified,omitempty"`
+	// Note explains the budget to the operator.
+	Note string `json:"note,omitempty"`
+}
+
+// Usable reports whether the budget can be enforced at all.
+//
+// A budget that leaves no room for the request is not a budget:
+// enforcing it would mean refusing every request. The caller is told
+// so rather than being given a silent no-op.
+func (b ContextBudget) Usable() bool {
+	return b.Limit > 0
+}
+
+// BudgetFor turns a resolved context record into the budget the
+// application applies before a request.
+//
+// outputTokens is the answer HAL asks for: the model's own cap when it
+// has one, otherwise the protocol's default.
+//
+// The kinds of number mean different things and are translated here:
+//
+//   - the OPERATOR's limit is the room the conversation may use. It is
+//     what a manual context limit has always meant, and the answer is
+//     reserved on top of it: an operator who sets a limit is bounding
+//     the conversation, not the answer.
+//   - an ADVERTISED or ALLOCATED window is the whole context the model
+//     accepts, so the answer comes out of it.
+//
+// HAL never holds back more than half of an advertised window for the
+// answer: a window that leaves no room for the request would refuse
+// every turn, and the operator's number is meant to bound the
+// conversation rather than to switch it off.
+//
+// A PROVISIONAL record is not enforced. HAL enforces what it knows;
+// a guess about a window nobody reported would discard the operator's
+// context on the strength of a number HAL made up. The guess is
+// reported, and the provider's own limit applies until the operator
+// sets one or the endpoint reports the window.
+func BudgetFor(resolved ContextMetadata, outputTokens int) ContextBudget {
+	budget := ContextBudget{
+		Source:   resolved.Source,
+		Mode:     resolved.Mode,
+		Verified: resolved.Verified,
+		Note:     resolved.Note,
+	}
+	reserved := outputTokens
+	if reserved <= 0 {
+		reserved = DefaultMaxTokens
+	}
+	switch resolved.Source {
+	case ContextSourceOperator:
+		budget.Limit = resolved.ContextWindow
+		budget.ReservedOutput = reserved
+		if reserved > budget.Limit {
+			budget.Note = strings.TrimSpace(budget.Note + " the answer may use up to " +
+				fmt.Sprintf("%d tokens", reserved) +
+				" on top of the limit the operator set")
+		}
+	case ContextSourceProvisional:
+		// A guess is reported, never enforced.
+		budget.Limit = 0
+		budget.ReservedOutput = reserved
+	default:
+		total := resolved.ContextWindow
+		if total > 0 && reserved > total/2 {
+			reserved = total / 2
+		}
+		budget.Limit = total - reserved
+		budget.ReservedOutput = reserved
+	}
+	if budget.Limit < 0 {
+		budget.Limit = 0
+	}
+	return budget
+}
+
+// DefaultOutputTokens returns the answer cap an adapter uses when the
+// model sets none, for the given wire protocol.
+func DefaultOutputTokens(wire string) int {
+	if wire == WireAnthropic {
+		return DefaultAnthropicMaxTokens
+	}
+	return DefaultMaxTokens
+}
+
+// TrimReport says what the trim did.
+type TrimReport struct {
+	// DroppedExchanges counts the exchanges that were dropped.
+	DroppedExchanges int
+	// EstimatedTokens is the estimated size of the request that is left.
+	EstimatedTokens int
+	// Limit is the room the request had to fit into.
+	Limit int
+}
+
+// ContextBudgetError reports that a request cannot be reduced to the
+// budget.
+//
+// It is a typed error so the interface can tell it apart from a
+// provider failure: nothing went wrong at the provider, the request
+// simply does not fit the budget that applies to it.
+type ContextBudgetError struct {
+	// Estimated is the estimated size of the irreducible request.
+	Estimated int
+	// Limit is the room the request had to fit into.
+	Limit int
+	// Reason explains why the request could not be reduced.
+	Reason string
+}
+
+// Error implements the error interface.
+func (e *ContextBudgetError) Error() string {
+	return fmt.Sprintf(
+		"the request needs about %d tokens (estimated) but only %d are available in this model's context budget; %s",
+		e.Estimated, e.Limit, e.Reason)
+}
+
+// EstimateTokens approximates the size of a request in tokens.
+//
+// The estimate is four characters per token plus a small overhead per
+// message, per tool call and per tool definition. It is a rough number
+// on purpose: HAL never claims to know the provider's tokenizer, so
+// every message that quotes a token count calls it an estimate.
+func EstimateTokens(messages []Message, tools []Tool) int {
+	total := 0
+	for _, m := range messages {
+		total += len(m.Content)/4 + 4
+		for _, call := range m.ToolCalls {
+			total += len(call.Name)/4 + len(call.ArgumentsJSON())/4 + 4
+		}
+	}
+	for _, t := range tools {
+		total += len(t.Name)/4 + len(t.Description)/4 + len(t.Parameters)/4 + 8
+	}
+	return total
+}
+
+// TrimToBudget drops the oldest exchanges until the request fits the
+// budget.
+//
+// The messages are the fully assembled request: the safety
+// instructions, the conversation history and the current exchange. The
+// tools are the definitions that travel with every request.
+//
+// The rules are the ones the package documents: the safety instructions
+// and the newest exchange are kept, older context is dropped only at
+// exchange boundaries, and a request that still does not fit is refused
+// with an explanation rather than truncated.
+func TrimToBudget(messages []Message, tools []Tool, budget ContextBudget) ([]Message, TrimReport, error) {
+	report := TrimReport{
+		EstimatedTokens: EstimateTokens(messages, tools),
+		Limit:           budget.Limit,
+	}
+	if budget.Limit <= 0 {
+		// No budget: the provider's own window governs.
+		return messages, report, nil
+	}
+	if report.EstimatedTokens <= report.Limit {
+		return messages, report, nil
+	}
+	protected, exchanges := splitExchanges(messages)
+	if len(exchanges) == 0 {
+		// There is nothing that may be dropped.
+		return nil, report, &ContextBudgetError{
+			Estimated: report.EstimatedTokens,
+			Limit:     report.Limit,
+			Reason:    "the request holds nothing but the instructions that must never be dropped",
+		}
+	}
+	kept := exchanges
+	for len(kept) > 1 && report.EstimatedTokens > report.Limit {
+		kept = kept[1:]
+		report.DroppedExchanges++
+		report.EstimatedTokens = EstimateTokens(joinMessages(protected, kept), tools)
+	}
+	if report.EstimatedTokens > report.Limit {
+		return nil, report, &ContextBudgetError{
+			Estimated: report.EstimatedTokens,
+			Limit:     report.Limit,
+			Reason: "the safety instructions, the tool definitions and the current request do not fit; " +
+				"they are never dropped to satisfy a budget",
+		}
+	}
+	return joinMessages(protected, kept), report, nil
+}
+
+// splitExchanges separates the messages that are never dropped from
+// the conversation, and cuts the conversation into exchanges.
+//
+// An exchange is a user message together with the assistant and tool
+// messages that answer it. Dropping an exchange therefore never
+// separates a tool call from its result.
+//
+// A system message is protected: it is never dropped. The engine
+// assembles the safety instructions as the leading message, and the
+// protected messages are put back in front of the kept exchanges, so
+// the instructions keep their place at the head of the request.
+func splitExchanges(messages []Message) ([]Message, [][]Message) {
+	var protected []Message
+	var exchanges [][]Message
+	for _, m := range messages {
+		if m.Role == "system" {
+			// The safety instructions are never dropped.
+			protected = append(protected, m)
+			continue
+		}
+		if m.Role == "user" || len(exchanges) == 0 {
+			exchanges = append(exchanges, []Message{m})
+			continue
+		}
+		exchanges[len(exchanges)-1] = append(exchanges[len(exchanges)-1], m)
+	}
+	return protected, exchanges
+}
+
+// joinMessages assembles the protected messages and the kept exchanges
+// back into one request.
+//
+// The order of the exchanges is the order they were spoken in, and the
+// protected messages come first.
+func joinMessages(protected []Message, exchanges [][]Message) []Message {
+	out := make([]Message, 0, len(protected))
+	out = append(out, protected...)
+	for _, exchange := range exchanges {
+		out = append(out, exchange...)
+	}
+	return out
+}
+
+// TrimNote is the note the interface shows when context was dropped.
+type TrimNote struct {
+	// DroppedExchanges counts the exchanges that were dropped.
+	DroppedExchanges int
+	// Limit is the budget the request was fitted into.
+	Limit int
+	// Source says where the budget came from.
+	Source string
+	// Text is the sentence the interface shows.
+	Text string
+}
+
+// Note builds the note for a trim.
+func (r TrimReport) Note(budget ContextBudget) TrimNote {
+	return TrimNote{
+		DroppedExchanges: r.DroppedExchanges,
+		Limit:            budget.Limit,
+		Source:           string(budget.Source),
+		Text:             DroppedExchangesNote(r, budget),
+	}
+}
+
+// DroppedExchangesNote explains a trim to the operator.
+//
+// It names the number as a count of exchanges and never claims a token
+// count it cannot know.
+func DroppedExchangesNote(report TrimReport, budget ContextBudget) string {
+	if report.DroppedExchanges == 0 {
+		return ""
+	}
+	source := string(budget.Source)
+	if source == "" {
+		source = string(ContextSourceProvisional)
+	}
+	return fmt.Sprintf(
+		"%d older %s dropped to fit the %d-token context budget (%s)",
+		report.DroppedExchanges, pluralExchanges(report.DroppedExchanges), budget.Limit, source)
+}
+
+// pluralExchanges names the dropped exchanges.
+func pluralExchanges(n int) string {
+	if n == 1 {
+		return "exchange"
+	}
+	return "exchanges"
+}
+
+// DescribeBudget renders the budget for the diagnostics panel.
+//
+// It never claims an exact token count: the numbers it quotes are the
+// budget and its provenance, not a measurement of the request.
+func DescribeBudget(budget ContextBudget) string {
+	parts := []string{}
+	if budget.Limit > 0 {
+		parts = append(parts, fmt.Sprintf("%d tokens for the request", budget.Limit))
+	} else {
+		parts = append(parts, "the provider's own context window governs")
+	}
+	switch budget.Source {
+	case ContextSourceOperator:
+		parts = append(parts, "set by the operator")
+	case ContextSourceProvider:
+		parts = append(parts, "advertised by the provider")
+	case ContextSourceLocal:
+		parts = append(parts, "allocated by the local runtime")
+	case ContextSourceCached:
+		parts = append(parts, "verified earlier")
+	case ContextSourceProvisional:
+		parts = append(parts, "provisional: the endpoint reported no context window, so nothing is trimmed")
+	default:
+		parts = append(parts, "unknown source")
+	}
+	if budget.ReservedOutput > 0 {
+		parts = append(parts, fmt.Sprintf("%d reserved for the answer", budget.ReservedOutput))
+	}
+	return strings.Join(parts, " · ")
+}
