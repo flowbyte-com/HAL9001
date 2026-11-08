@@ -128,6 +128,24 @@ A guessed number is never labelled verified. HAL never probes a context
 length by generating enormous requests, and a context-limit error never
 causes an uncontrolled retry or a claim about the exact maximum.
 
+### Where the operator's limit comes from
+
+The operator's limit is the number in the model record of the **active
+endpoint**. A model belongs to one endpoint, and the limit belongs to the
+model, so the record is read from there and not from a flat list. A
+pre-version-2 configuration has no endpoint records; its flat list is
+the fallback, and the migration carries the limits into the endpoint
+record.
+
+The record carries two different numbers and they are never confused: in
+`manual` mode the window is the operator's own limit, in `auto` mode it
+is what the provider advertised. A record with a window and **no** mode
+was written by hand, so the number is honoured as the operator's limit.
+
+The lookup of a model's context is a request to the operator's provider,
+so it is made only for an endpoint whose `discovery` flag allows the
+catalogue to be probed.
+
 ### The budget is enforced
 
 The budget is not a number in a panel. It is applied to the request as
