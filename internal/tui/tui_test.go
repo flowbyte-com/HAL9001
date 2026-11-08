@@ -360,7 +360,7 @@ func TestPickerSwitchesModel(t *testing.T) {
 			}
 			return []ModelInfo{{ID: "a", Active: active == "a"}, {ID: "b", Active: active == "b"}}
 		},
-		SwitchModel: func(id string) (Engine, error) { switched = id; return nil, nil },
+		SwitchModel: func(endpointID, id string) (Engine, error) { switched = id; return nil, nil },
 	}
 	m := NewWithHooks(&scriptEngine{}, hooks)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

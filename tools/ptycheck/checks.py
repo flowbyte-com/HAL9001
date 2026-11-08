@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,14 @@ from pty_drive import HOME, run
 from termsim import render
 
 FAILURES = []
+
+# The theme configurations are written to a directory of their own.
+#
+# Two suites that run at the same time must not write the same file: one
+# suite would read the theme the other one just wrote, and a theme check
+# would fail for a reason that has nothing to do with the application.
+THEME_DIR = os.path.join(tempfile.gettempdir(), "hal9001-themes-%d" % os.getpid())
+os.makedirs(THEME_DIR, exist_ok=True)
 
 # userPreviewRows is the most rows a collapsed prompt may show. It
 # mirrors the interface's own limit.
@@ -124,7 +133,7 @@ THEMES = [
 
 
 def write_theme_config(name, theme):
-    path = os.path.join("/tmp", "hal9001-theme-%s.json" % re.sub(r"\W+", "-", name.lower()))
+    path = os.path.join(THEME_DIR, "hal9001-theme-%s.json" % re.sub(r"\W+", "-", name.lower()))
     with open(path, "w") as fh:
         json.dump({
             "provider": "openai-compatible",
@@ -1676,6 +1685,10 @@ def main():
     check("resize leaves no leftover rows", len(lines) == 15, str(len(lines)))
 
     print()
+    # The theme configurations belong to this run alone, so they go with
+    # it. A directory that is left behind would be a stale configuration
+    # that the next run could pick up.
+    shutil.rmtree(THEME_DIR, ignore_errors=True)
     if FAILURES:
         print("FAILED: " + ", ".join(FAILURES))
         return 1

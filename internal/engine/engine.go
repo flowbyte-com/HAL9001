@@ -268,6 +268,89 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 	return messages
 }
 
+// trimToContext drops the oldest exchanges until the request fits inside
+// the operator's context limit.
+//
+// The request that is trimmed is the complete one: the system
+// instruction, the conversation and the offered functions. The operator's
+// current message and the exchange in progress are always kept, and
+// whole exchanges are dropped, so a tool call never loses its result and
+// a result never loses its call.
+//
+// The token count is an estimate, not a measurement, and it is
+// deliberately conservative: a request that is trimmed a little too
+// early is still correct, while one that is trimmed too late fails at
+// the provider.
+//
+// A limit of zero means no trimming at all. A request that cannot fit
+// even after every old exchange is dropped is refused with an explicit
+// error rather than sent truncated.
+func trimToContext(messages []provider.Message, tools []provider.Tool, limit int) ([]provider.Message, error) {
+	if limit <= 0 {
+		return messages, nil
+	}
+	if estimateTokens(messages, tools) <= limit {
+		return messages, nil
+	}
+	head := 0
+	if len(messages) > 0 && messages[0].Role == "system" {
+		head = 1
+	}
+	// The exchanges: every user message starts one, and everything up
+	// to the next user message belongs to it. An assistant tool call and
+	// its result therefore always share an exchange.
+	starts := []int{}
+	for i := head; i < len(messages); i++ {
+		if messages[i].Role == "user" {
+			starts = append(starts, i)
+		}
+	}
+	if len(starts) == 0 {
+		return nil, fmt.Errorf("engine: the request does not fit inside the model's context limit of %d tokens", limit)
+	}
+	// The newest exchange holds the operator's current message and the
+	// exchange in progress. It is never dropped.
+	newest := starts[len(starts)-1]
+	keep := messages[newest:]
+	// The older exchanges are added back one whole exchange at a time,
+	// newest first. The oldest exchange is therefore the first to go,
+	// and no exchange is ever cut in half.
+	for i := len(starts) - 2; i >= 0; i-- {
+		candidate := make([]provider.Message, 0, len(messages))
+		candidate = append(candidate, messages[:head]...)
+		candidate = append(candidate, messages[starts[i]:newest]...)
+		candidate = append(candidate, keep...)
+		if estimateTokens(candidate, tools) <= limit {
+			return candidate, nil
+		}
+	}
+	// Only the newest exchange is left, and it still does not fit.
+	final := make([]provider.Message, 0, len(messages))
+	final = append(final, messages[:head]...)
+	final = append(final, keep...)
+	if estimateTokens(final, tools) <= limit {
+		return final, nil
+	}
+	return nil, fmt.Errorf("engine: the request does not fit inside the model's context limit of %d tokens", limit)
+}
+
+// estimateTokens approximates the size of a request in tokens.
+//
+// The estimate is four characters per token plus a small per-message
+// overhead, and the offered functions are counted too: they travel with
+// every request. It is a rough number on purpose: HAL never claims to
+// know the provider's tokenizer.
+func estimateTokens(messages []provider.Message, tools []provider.Tool) int {
+	total := 0
+	for _, m := range messages {
+		total += len(m.Content)/4 + 4
+	}
+	for _, t := range tools {
+		total += len(t.Name)/4 + len(t.Description)/4 + len(t.Parameters)/4 + 8
+	}
+	return total
+}
+
 // permissionBlock tells the model the authority for this request. It is
 // composed into the system instruction for this turn only and never stored.
 // It cannot grant anything: the executor checks the same gate at each
@@ -860,6 +943,16 @@ func evidenceSummary(a ToolActivity, status session.ToolStatus) string {
 // functions falls back to the ordinary stream, and a provider that cannot
 // stream at all uses the blocking call.
 func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []provider.Tool, emit func(Event)) (provider.Response, error) {
+	// The operator's context limit is enforced here, on the request that
+	// is actually sent: the system instruction, the conversation and the
+	// offered functions. Every provider call goes through this method,
+	// so no request can exceed the budget, and a request that cannot fit
+	// fails explicitly instead of being truncated.
+	budget, err := trimToContext(messages, tools, e.model.ContextWindow)
+	if err != nil {
+		return provider.Response{}, err
+	}
+	messages = budget
 	deltaFn := func(d provider.Delta) error {
 		ev := Event{Text: d.Text, Reasoning: d.Reasoning != ""}
 		if ev.Text == "" && !ev.Reasoning {

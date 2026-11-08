@@ -40,9 +40,12 @@ const (
 	EnvWorkspace = "HAL9001_WORKSPACE"
 )
 
-// ModelRecord is one configured model. The record is intentionally small
-// and extensible: future milestones may add endpoint overrides without
-// changing the shape.
+// ModelRecord is one configured model.
+//
+// A record always belongs to one endpoint: the identifier is the one the
+// provider returns, or the one the operator supplied by hand, and it is
+// never shared between endpoints by accident. The optional fields carry
+// the operator's choices and the provenance of the record.
 type ModelRecord struct {
 	// ID is the provider-side model identifier.
 	ID string `json:"id"`
@@ -51,6 +54,24 @@ type ModelRecord struct {
 	// Effort is the persisted reasoning level for models that support
 	// effort control. Empty means the built-in default for the model.
 	Effort string `json:"effort,omitempty"`
+	// ContextMode is "auto" or "manual". Empty means "auto".
+	ContextMode string `json:"context_mode,omitempty"`
+	// ContextWindow is an explicit context-window limit in tokens.
+	// Zero means the limit is unknown, or that the provider's own value
+	// is used in automatic mode.
+	ContextWindow int `json:"context_window,omitempty"`
+	// MaxOutputTokens is an explicit output-token limit. Zero means the
+	// provider's own default.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// Source is the provenance of the record: "manual", "migrated" or
+	// "discovered".
+	Source string `json:"source,omitempty"`
+	// FetchedAt is when the provider's catalogue confirmed the
+	// identifier (RFC 3339). Empty means it was never confirmed.
+	FetchedAt string `json:"fetched_at,omitempty"`
+	// Review is a note for the operator. A non-empty value means the
+	// record needs the operator's attention.
+	Review string `json:"review,omitempty"`
 }
 
 // Display returns the label or the id.
@@ -94,12 +115,28 @@ type MCPServerRecord struct {
 }
 
 // FileConfig is the persisted user configuration.
+//
+// Version 2 replaces the flat provider/endpoint/models fields with a list
+// of provider-scoped endpoints. The old fields are still written, mirrored
+// onto the active endpoint, so that an older HAL9001 build can still read
+// the file; they are migration input and never the source of truth.
 type FileConfig struct {
-	Provider    string        `json:"provider"`
-	Endpoint    string        `json:"endpoint"`
+	// Version is the schema version. Zero means the original flat file.
+	Version int `json:"version,omitempty"`
+	// Endpoints are the independently configured providers.
+	Endpoints []EndpointRecord `json:"endpoints,omitempty"`
+	// Selection names the active endpoint and the active model inside it.
+	Selection *ActiveSelection `json:"active,omitempty"`
+
+	// Provider, Endpoint, APIKey, Models and ActiveModel are the
+	// pre-version-2 fields. They are read as migration input and written
+	// as a mirror of the active endpoint.
+	Provider    string        `json:"provider,omitempty"`
+	Endpoint    string        `json:"endpoint,omitempty"`
 	APIKey      string        `json:"api_key,omitempty"`
 	Models      []ModelRecord `json:"models,omitempty"`
 	ActiveModel string        `json:"active_model,omitempty"`
+
 	// Theme names the active TUI preset (empty means HAL Classic).
 	Theme string `json:"theme,omitempty"`
 	// ActiveSession is the conversation HAL opens on the next launch. It
@@ -119,6 +156,9 @@ type FileConfig struct {
 }
 
 // Active returns the active model record (first model when unset).
+//
+// It is the pre-version-2 accessor. It still works on a version-2 file,
+// because the legacy fields are mirrored onto the active endpoint.
 func (f FileConfig) Active() (ModelRecord, bool) {
 	if len(f.Models) == 0 {
 		return ModelRecord{}, false
@@ -287,9 +327,15 @@ type Config struct {
 	Endpoint string
 	Model    string
 	APIKey   string
-	Session  string
-	StoreDir string
-	NoColor  bool
+	// EndpointID is the identifier of the endpoint the active model
+	// belongs to. It is empty on a pre-version-2 configuration.
+	EndpointID string
+	// WireProtocol is the wire protocol HAL speaks to the active
+	// endpoint. It is empty when the endpoint names none.
+	WireProtocol string
+	Session      string
+	StoreDir     string
+	NoColor      bool
 	// Mouse requests terminal mouse reporting, so the wheel scrolls the
 	// conversation and a drag selects text. On by default; --no-mouse
 	// turns it off and leaves the terminal's own selection in charge.
@@ -314,7 +360,15 @@ type Config struct {
 	// The list is empty unless the operator configured one.
 	MCPServers []MCPServerRecord
 	configured bool
+	// flagGiven names the flags the operator gave explicitly. A flag
+	// that was given overrides the stored configuration; a flag that
+	// was not given does not, so a stored endpoint is never overridden
+	// by a default.
+	flagGiven map[string]bool
 }
+
+// FlagGiven reports whether the operator gave this flag explicitly.
+func (c Config) FlagGiven(name string) bool { return c.flagGiven[name] }
 
 // DefaultWorkspaceDir returns the directory proposed writes may reach.
 func DefaultWorkspaceDir() string {
@@ -352,12 +406,43 @@ func LoadErr(args []string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// The active endpoint of a version-2 configuration supplies the
+	// provider, the endpoint, the credential and the model. A
+	// pre-version-2 file falls back to its flat fields.
+	active, hasActive := stored.ActiveEndpoint()
+	activeModel, hasActiveModel := stored.ActiveModelRecord()
+	providerName, wireProtocol := "", ""
+	if hasActive {
+		providerName = string(active.Protocol)
+		if wire, err := active.EffectiveWireProtocol(); err == nil {
+			wireProtocol = string(wire)
+		}
+	}
+	apiKey := ""
+	if hasActive {
+		// The endpoint's own credential always describes that
+		// endpoint. The global variable is a fallback for an endpoint
+		// that declares none, and CredentialValue applies that rule:
+		// one global variable never substitutes another endpoint's
+		// credential.
+		apiKey = active.CredentialValue()
+	} else {
+		// A pre-version-2 configuration has one global credential,
+		// and the environment still overrides it.
+		apiKey = firstNonEmpty(os.Getenv(EnvAPIKey), stored.CredentialValue())
+	}
+	modelID := ""
+	if hasActiveModel {
+		modelID = activeModel.ID
+	}
 	fs := flag.NewFlagSet("hal9001", flag.ContinueOnError)
 	cfg := Config{
-		Provider: firstNonEmpty(os.Getenv(EnvProvider), stored.Provider, "openai-compatible"),
-		Endpoint: firstNonEmpty(os.Getenv(EnvEndpoint), stored.Endpoint),
-		Model:    firstNonEmpty(os.Getenv(EnvModel), stored.ActiveModel),
-		APIKey:   firstNonEmpty(os.Getenv(EnvAPIKey), stored.APIKey),
+		Provider:     firstNonEmpty(os.Getenv(EnvProvider), providerName, stored.Provider, "openai-compatible"),
+		Endpoint:     firstNonEmpty(os.Getenv(EnvEndpoint), endpointOf(active, hasActive), stored.Endpoint),
+		Model:        firstNonEmpty(os.Getenv(EnvModel), modelID, stored.ActiveModel),
+		APIKey:       apiKey,
+		EndpointID:   activeEndpointID(active, hasActive),
+		WireProtocol: wireProtocol,
 		// Empty unless --session is given: the active session is
 		// resolved from the stored metadata at startup.
 		Session:            "",
@@ -394,6 +479,8 @@ func LoadErr(args []string) (Config, error) {
 		return cfg, err
 	}
 	cfg.Mouse = mouse
+	cfg.flagGiven = map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { cfg.flagGiven[f.Name] = true })
 	cfg.configured = strings.TrimSpace(cfg.Endpoint) != "" &&
 		strings.TrimSpace(cfg.Model) != "" &&
 		strings.TrimSpace(cfg.APIKey) != ""
@@ -498,6 +585,36 @@ func (c Config) Redacted() string {
 	if c.APIKey != "" {
 		key = "set"
 	}
-	return fmt.Sprintf("provider=%q endpoint=%q model=%q api_key=%s session=%q store=%q",
-		c.Provider, c.Endpoint, c.Model, key, c.Session, c.StoreDir)
+	return fmt.Sprintf("provider=%q endpoint=%q endpoint_id=%q model=%q api_key=%s session=%q store=%q",
+		c.Provider, c.Endpoint, c.EndpointID, c.Model, key, c.Session, c.StoreDir)
+}
+
+// endpointOf returns the base URL of the active endpoint.
+func endpointOf(endpoint EndpointRecord, ok bool) string {
+	if !ok {
+		return ""
+	}
+	return endpoint.BaseURL
+}
+
+// activeEndpointID returns the identifier of the active endpoint.
+func activeEndpointID(endpoint EndpointRecord, ok bool) string {
+	if !ok {
+		return ""
+	}
+	return endpoint.ID
+}
+
+// CredentialValue resolves a stored credential.
+//
+// A value of the form "$NAME" or "${NAME}" is an environment-variable
+// reference and is read from the environment. Any other value is a
+// literal secret and is used as it is. The result is a secret: it never
+// travels into a log, a notice or an error.
+func (f FileConfig) CredentialValue() string {
+	raw := strings.TrimSpace(f.APIKey)
+	if ref := envReference.FindStringSubmatch(raw); ref != nil {
+		return strings.TrimSpace(os.Getenv(ref[1]))
+	}
+	return raw
 }

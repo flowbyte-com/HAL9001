@@ -100,6 +100,10 @@ type Model struct {
 	Effort string `json:"effort,omitempty"`
 	// MaxTokens caps the response length. Zero means provider default.
 	MaxTokens int `json:"max_tokens,omitempty"`
+	// ContextWindow is the context limit the operator set for this
+	// model. Zero means HAL does not trim the conversation and the
+	// provider's own window governs.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // Config binds credentials to models. Secrets are never stored here: the

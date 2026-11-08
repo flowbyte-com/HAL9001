@@ -292,7 +292,7 @@ func TestEffortFollowsModelSwitch(t *testing.T) {
 	a.cfg.Endpoint, a.stored.Endpoint = srv.URL, srv.URL
 	a.rebuildEngine()
 
-	if _, err := a.switchModel("MiniMax-M2"); err != nil {
+	if _, err := a.switchModel("", "MiniMax-M2"); err != nil {
 		t.Fatal(err)
 	}
 	if level, supported := a.currentEffort(); !supported || level != "max" {
@@ -305,14 +305,14 @@ func TestEffortFollowsModelSwitch(t *testing.T) {
 		t.Errorf("M2 request effort = %v", got)
 	}
 
-	if _, err := a.switchModel("MiniMax-M3.1-Flash"); err != nil {
+	if _, err := a.switchModel("", "MiniMax-M3.1-Flash"); err != nil {
 		t.Fatal(err)
 	}
 	if level, _ := a.currentEffort(); level != "low" {
 		t.Errorf("M3.1 effort = %q, want low", level)
 	}
 
-	if _, err := a.switchModel("gpt-4o"); err != nil {
+	if _, err := a.switchModel("", "gpt-4o"); err != nil {
 		t.Fatal(err)
 	}
 	if _, supported := a.currentEffort(); supported {
