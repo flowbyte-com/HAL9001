@@ -113,6 +113,21 @@ func (m *Model) showEndpoints() tea.Cmd {
 	return nil
 }
 
+// refreshEngine adopts the engine the current configuration describes.
+//
+// A change of endpoint, credential or model settings changes the
+// provider itself. The interface keeps the engine it was given at
+// startup, so it has to be told about the new one: an interface that
+// kept the old engine would keep talking to the old endpoint.
+func (m *Model) refreshEngine() {
+	if m.hooks.RefreshEngine == nil {
+		return
+	}
+	if eng := m.hooks.RefreshEngine(); eng != nil {
+		m.engine = eng
+	}
+}
+
 // addModel stores a new model under one endpoint.
 //
 // Adding a model never changes the active model: the operator selects one
@@ -132,6 +147,7 @@ func (m *Model) addModel(args []string) tea.Cmd {
 		m.notice = "Cannot add the model: " + err.Error()
 		return nil
 	}
+	m.refreshEngine()
 	m.notice = fmt.Sprintf("Added model %s to endpoint %s. The active model is unchanged.", id, endpoint)
 	return nil
 }
@@ -161,6 +177,7 @@ func (m *Model) editModel(args []string) tea.Cmd {
 		m.notice = "Cannot change the model: " + err.Error()
 		return nil
 	}
+	m.refreshEngine()
 	m.notice = fmt.Sprintf("Model %s of endpoint %s updated.", id, endpoint)
 	return nil
 }
@@ -188,6 +205,7 @@ func (m *Model) removeModel(args []string) tea.Cmd {
 		m.notice = "Cannot remove the model: " + err.Error()
 		return nil
 	}
+	m.refreshEngine()
 	m.notice = fmt.Sprintf("Removed model %s from endpoint %s.", id, endpoint)
 	return nil
 }
@@ -358,6 +376,7 @@ func (m *Model) addEndpoint(args []string) tea.Cmd {
 		m.notice = "Cannot add the endpoint: " + err.Error()
 		return nil
 	}
+	m.refreshEngine()
 	m.notice = fmt.Sprintf("Added endpoint %s (%s).", spec.ID, spec.Name)
 	return nil
 }
@@ -386,6 +405,7 @@ func (m *Model) editEndpoint(args []string) tea.Cmd {
 		m.notice = "Cannot change the endpoint: " + err.Error()
 		return nil
 	}
+	m.refreshEngine()
 	m.notice = fmt.Sprintf("Endpoint %s updated.", spec.ID)
 	return nil
 }
@@ -409,6 +429,7 @@ func (m *Model) removeEndpoint(args []string) tea.Cmd {
 		m.notice = "Cannot remove the endpoint: " + err.Error()
 		return nil
 	}
+	m.refreshEngine()
 	m.notice = fmt.Sprintf("Removed endpoint %s.", args[0])
 	return nil
 }
@@ -451,14 +472,21 @@ func (m Model) updateModelCfg(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // modelCfgRows renders the management panel.
+//
+// Every line is flattened before it is drawn. A model identifier and an
+// endpoint name can come from the provider, and a hostile endpoint must
+// not be able to move the cursor, clear the screen or forge an extra row
+// with control characters in its own catalogue.
 func (m Model) modelCfgRows() []string {
 	st := m.theme.styles()
 	title := m.modelCfgTitle
 	if title == "" {
 		title = "Endpoints"
 	}
-	rows := []string{title + " (Esc back)", ""}
-	rows = append(rows, m.modelCfgLines...)
+	rows := []string{oneLine(title) + " (Esc back)", ""}
+	for _, line := range m.modelCfgLines {
+		rows = append(rows, oneLine(line))
+	}
 	rows = append(rows, "", st.footer.Render("  Up and down scroll · Esc back"))
 	return rows
 }

@@ -229,6 +229,15 @@ type Hooks struct {
 	// SwitchModel activates a configured model of one endpoint, returning
 	// the engine.
 	SwitchModel func(endpointID, modelID string) (Engine, error)
+	// RefreshEngine returns the engine the current configuration
+	// describes.
+	//
+	// It is called after a change that rebuilds the runtime. A change
+	// of endpoint, credential or model settings is a change of the
+	// provider itself, and the next request has to use the new one:
+	// an interface that keeps the old engine would keep talking to the
+	// old endpoint.
+	RefreshEngine func() Engine
 	// Endpoints returns the configured endpoints and their models.
 	Endpoints func() []EndpointInfo
 	// SaveEndpoint adds or updates one endpoint.

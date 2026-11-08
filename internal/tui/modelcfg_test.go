@@ -252,6 +252,46 @@ func TestEndpointEditRefusesAnUnknownSetting(t *testing.T) {
 	}
 }
 
+func TestEndpointEditRefreshesTheEngine(t *testing.T) {
+	fresh := &scriptEngine{}
+	hooks := Hooks{
+		SaveEndpoint:  func(EndpointSpec) error { return nil },
+		RefreshEngine: func() Engine { return fresh },
+	}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	m = runCommand(m, "/endpoint edit deepseek name=DeepSeek")
+	if m.engine != Engine(fresh) {
+		t.Error("the interface kept the old engine after the endpoint changed")
+	}
+}
+
+func TestEndpointAddRefreshesTheEngine(t *testing.T) {
+	fresh := &scriptEngine{}
+	hooks := Hooks{
+		SaveEndpoint:  func(EndpointSpec) error { return nil },
+		RefreshEngine: func() Engine { return fresh },
+	}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	m = runCommand(m, "/endpoint add deepseek DeepSeek openai-compatible https://api.deepseek.com/v1")
+	if m.engine != Engine(fresh) {
+		t.Error("the interface kept the old engine after the endpoint was added")
+	}
+}
+
+func TestAFailedEndpointEditKeepsTheEngine(t *testing.T) {
+	fresh := &scriptEngine{}
+	hooks := Hooks{
+		SaveEndpoint:  func(EndpointSpec) error { return errOnboard("the endpoint cannot be used") },
+		RefreshEngine: func() Engine { return fresh },
+	}
+	old := &scriptEngine{}
+	m := NewWithHooks(old, hooks)
+	m = runCommand(m, "/endpoint edit deepseek name=DeepSeek")
+	if m.engine != Engine(old) {
+		t.Error("the engine was replaced even though the change failed")
+	}
+}
+
 func TestUnknownSubcommandShowsTheUsage(t *testing.T) {
 	m := NewWithHooks(&scriptEngine{}, Hooks{})
 	m = runCommand(m, "/model frobnicate")

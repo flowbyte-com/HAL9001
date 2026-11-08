@@ -360,7 +360,15 @@ type Config struct {
 	// The list is empty unless the operator configured one.
 	MCPServers []MCPServerRecord
 	configured bool
+	// flagGiven names the flags the operator gave explicitly. A flag
+	// that was given overrides the stored configuration; a flag that
+	// was not given does not, so a stored endpoint is never overridden
+	// by a default.
+	flagGiven map[string]bool
 }
+
+// FlagGiven reports whether the operator gave this flag explicitly.
+func (c Config) FlagGiven(name string) bool { return c.flagGiven[name] }
 
 // DefaultWorkspaceDir returns the directory proposed writes may reach.
 func DefaultWorkspaceDir() string {
@@ -411,11 +419,17 @@ func LoadErr(args []string) (Config, error) {
 		}
 	}
 	apiKey := ""
-	switch {
-	case hasActive:
+	if hasActive {
+		// The endpoint's own credential always describes that
+		// endpoint. The global variable is a fallback for an endpoint
+		// that declares none, and CredentialValue applies that rule:
+		// one global variable never substitutes another endpoint's
+		// credential.
 		apiKey = active.CredentialValue()
-	case strings.TrimSpace(stored.APIKey) != "":
-		apiKey = stored.CredentialValue()
+	} else {
+		// A pre-version-2 configuration has one global credential,
+		// and the environment still overrides it.
+		apiKey = firstNonEmpty(os.Getenv(EnvAPIKey), stored.CredentialValue())
 	}
 	modelID := ""
 	if hasActiveModel {
@@ -426,7 +440,7 @@ func LoadErr(args []string) (Config, error) {
 		Provider:     firstNonEmpty(os.Getenv(EnvProvider), providerName, stored.Provider, "openai-compatible"),
 		Endpoint:     firstNonEmpty(os.Getenv(EnvEndpoint), endpointOf(active, hasActive), stored.Endpoint),
 		Model:        firstNonEmpty(os.Getenv(EnvModel), modelID, stored.ActiveModel),
-		APIKey:       firstNonEmpty(os.Getenv(EnvAPIKey), apiKey),
+		APIKey:       apiKey,
 		EndpointID:   activeEndpointID(active, hasActive),
 		WireProtocol: wireProtocol,
 		// Empty unless --session is given: the active session is
@@ -465,6 +479,8 @@ func LoadErr(args []string) (Config, error) {
 		return cfg, err
 	}
 	cfg.Mouse = mouse
+	cfg.flagGiven = map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { cfg.flagGiven[f.Name] = true })
 	cfg.configured = strings.TrimSpace(cfg.Endpoint) != "" &&
 		strings.TrimSpace(cfg.Model) != "" &&
 		strings.TrimSpace(cfg.APIKey) != ""

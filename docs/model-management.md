@@ -67,6 +67,25 @@ without reading the implementation.
 | `discovery` | Whether the provider's catalogue may be probed, and when it was last probed. |
 | `models` | The models of *this* endpoint. Model identifiers are scoped to it. |
 
+### Credentials
+
+An endpoint's credential is its own. The order is deliberate:
+
+1. the environment variable the endpoint names (`credential_env`);
+2. the literal secret the endpoint carries (`credential`);
+3. the global `HAL9001_API_KEY`, and only for an endpoint that declares
+   neither.
+
+The global variable is a backward-compatible fallback for a configuration
+that has one endpoint and no credential of its own. It never substitutes
+another endpoint's credential: an endpoint that names `credential_env` and
+finds that variable unset has **no** credential, and one global variable
+can never become the key of an unrelated endpoint.
+
+A `$NAME` or `${NAME}` reference stays a reference in the file. The
+resolved secret is never written to the configuration, a notice, a log or
+an error.
+
 ### Model fields
 
 | Field | Meaning |
@@ -101,6 +120,35 @@ are read as migration input and are never the source of truth once
 HAL never pretends that an arbitrary API is compatible. A `custom` endpoint
 without a supported `wire_protocol` is refused when it is selected, with a
 message naming the supported protocols.
+
+A protocol that contradicts its wire protocol is refused as well:
+`anthropic-compatible` cannot speak `openai-compatible`, and
+`openai-compatible` cannot speak `anthropic-compatible`. The contradiction
+is reported when the endpoint is written and when it is selected, never
+silently resolved in favour of one of the two.
+
+## The runtime
+
+A provider request needs four things at once: the endpoint address, the
+wire protocol, the credential and the model with its settings. They are
+resolved together, in one place, from one configuration, so a request can
+never carry the address of one configuration and the credential of
+another.
+
+Every change of the active endpoint or model rebuilds the runtime:
+
+* a switch of the active model, an edit of the active endpoint, the
+  addition or removal of a model and the removal of an endpoint all
+  rebuild the provider before the change is committed;
+* a change that cannot be used is refused **before** anything is written:
+  the last working runtime stays, the stored selection stays, and the
+  operator is told that the switch did not happen;
+* a request that was already in flight keeps the provider it started
+  with. A turn is never split across two providers.
+
+A version-2 configuration is the only source of truth. The legacy fields
+are a mirror and are never a fallback: an endpoint that was removed
+cannot come back through them.
 
 ## Migration
 
@@ -152,6 +200,23 @@ choice. A model record's `context_window` is the operator's number when
 the mode is `manual`; in `auto` mode it is the number the provider
 advertised, when it advertised one.
 
+**The manual limit is enforced.** It is not a number in a panel: it is
+applied to the request that is actually sent, which is the system
+instruction, the conversation and the offered functions together. The
+rules are:
+
+* whole exchanges are dropped, oldest first. An exchange starts at a user
+  message and ends before the next one, so an assistant tool call and its
+  result are always dropped together — a tool result is never orphaned
+  and a tool call never loses its result;
+* the current message and the exchange in progress are never dropped;
+* the conversation itself is never rewritten. There is no automatic
+  compaction in this milestone;
+* a request that does not fit even after every old exchange is dropped is
+  refused with an explicit error. The provider is never sent a request
+  that does not fit, and the operator's message is never silently
+  discarded.
+
 ## Operator commands
 
 ```
@@ -174,3 +239,14 @@ advertised, when it advertised one.
 Adding a model never changes the active model. Removing the active model, or
 an endpoint that holds the active model, is refused unless the operator names
 an explicit replacement with `--use <endpoint>/<model>`.
+
+The replacement may not live inside the endpoint that is being removed: that
+would leave a selection that points at nothing, and the removed endpoint
+would come back at the next launch. Removing the last endpoint clears the
+selection explicitly, and the legacy mirror is cleared with it, so the
+removed endpoint never returns.
+
+Onboarding keeps the protocol the operator chose. An endpoint created
+through the onboarding flow speaks the protocol that was selected, and the
+endpoint is tested with that protocol; the flow never decides that an
+endpoint is OpenAI-compatible.

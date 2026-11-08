@@ -381,9 +381,13 @@ func (m Model) pickerRows() []string {
 		if info.Active {
 			active = " (active)"
 		}
-		name := info.ID
+		// The identifier and the endpoint name can come from the
+		// provider. They are flattened before they are drawn: a hostile
+		// endpoint must not be able to move the cursor or forge a row
+		// with control characters in its own catalogue.
+		name := oneLine(info.ID)
 		if info.Endpoint != "" {
-			name = info.Endpoint + " · " + info.ID
+			name = oneLine(info.Endpoint) + " · " + name
 		}
 		line := marker + name + active
 		if i == m.pickerCursor {
@@ -391,7 +395,7 @@ func (m Model) pickerRows() []string {
 		}
 		rows = append(rows, line)
 		if info.Review != "" {
-			rows = append(rows, "    needs review: "+info.Review)
+			rows = append(rows, "    needs review: "+oneLine(info.Review))
 		}
 	}
 	if m.pickerNotice != "" {

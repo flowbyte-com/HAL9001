@@ -103,7 +103,7 @@ func (a *app) saveEndpoint(spec tui.EndpointSpec) error {
 		if err := next.AddEndpoint(rec); err != nil {
 			return err
 		}
-		return a.commitConfig(next)
+		return a.commitTarget(next)
 	}
 	err := next.UpdateEndpoint(spec.ID, func(e *config.EndpointRecord) error {
 		if spec.Name != "" {
@@ -132,7 +132,7 @@ func (a *app) saveEndpoint(spec tui.EndpointSpec) error {
 	if err != nil {
 		return err
 	}
-	return a.commitConfig(next)
+	return a.commitTarget(next)
 }
 
 // deleteEndpoint removes one endpoint and its models.
@@ -147,22 +147,36 @@ func (a *app) deleteEndpoint(id, replacement string) error {
 	}
 	if next.ActiveEndpointID() == id {
 		if strings.TrimSpace(replacement) == "" {
-			return fmt.Errorf("endpoint %q holds the active model %q — name a replacement with --use <endpoint>/<model>",
-				id, next.ActiveModelID())
+			if len(next.Endpoints) > 1 {
+				return fmt.Errorf("endpoint %q holds the active model %q — name a replacement with --use <endpoint>/<model>",
+					id, next.ActiveModelID())
+			}
+			// The last endpoint is going away: there is nothing left
+			// to select. The selection is cleared explicitly, so no
+			// dangling selection can point at a removed endpoint.
+			next.Selection = nil
+		} else {
+			endpoint, model, err := splitReplacement(replacement)
+			if err != nil {
+				return err
+			}
+			if endpoint == id {
+				// The replacement lives inside the endpoint that is
+				// being removed. Accepting it would leave a selection
+				// that points at nothing, and the next launch would
+				// resolve the removed endpoint from the mirror.
+				return fmt.Errorf("the replacement %q is inside endpoint %q, which is being removed", replacement, id)
+			}
+			if _, ok := next.ModelFor(endpoint, model); !ok {
+				return fmt.Errorf("no model %q under endpoint %q", model, endpoint)
+			}
+			next.SetActive(endpoint, model)
 		}
-		endpoint, model, err := splitReplacement(replacement)
-		if err != nil {
-			return err
-		}
-		if _, ok := next.ModelFor(endpoint, model); !ok {
-			return fmt.Errorf("no model %q under endpoint %q", model, endpoint)
-		}
-		next.SetActive(endpoint, model)
 	}
 	if err := next.RemoveEndpoint(id); err != nil {
 		return err
 	}
-	return a.commitConfig(next)
+	return a.commitTarget(next)
 }
 
 // addModel stores a new model under one endpoint.
@@ -189,11 +203,7 @@ func (a *app) addModel(endpointID string, spec tui.ModelSpec) error {
 	if err := next.AddModelTo(endpointID, rec); err != nil {
 		return err
 	}
-	if err := a.commitConfig(next); err != nil {
-		return err
-	}
-	a.rebuildEngine()
-	return nil
+	return a.commitTarget(next)
 }
 
 // editModel changes one model's settings.
@@ -229,11 +239,7 @@ func (a *app) editModel(endpointID, modelID string, spec tui.ModelSpec) error {
 	if err != nil {
 		return err
 	}
-	if err := a.commitConfig(next); err != nil {
-		return err
-	}
-	a.rebuildEngine()
-	return nil
+	return a.commitTarget(next)
 }
 
 // deleteModel removes one model.
@@ -256,6 +262,9 @@ func (a *app) deleteModel(endpointID, modelID, replacement string) error {
 		if err != nil {
 			return err
 		}
+		if endpoint == endpointID && model == modelID {
+			return fmt.Errorf("the replacement is the model that is being removed")
+		}
 		if _, ok := next.ModelFor(endpoint, model); !ok {
 			return fmt.Errorf("no model %q under endpoint %q", model, endpoint)
 		}
@@ -264,11 +273,7 @@ func (a *app) deleteModel(endpointID, modelID, replacement string) error {
 	if err := next.RemoveModel(endpointID, modelID); err != nil {
 		return err
 	}
-	if err := a.commitConfig(next); err != nil {
-		return err
-	}
-	a.rebuildEngine()
-	return nil
+	return a.commitTarget(next)
 }
 
 // modelDetails describes one model's settings, one line per setting.
@@ -385,11 +390,45 @@ func (a *app) discover(endpointID string) ([]string, error) {
 // The file is written first. Only a successful write replaces the running
 // configuration, so the interface and the file never disagree.
 func (a *app) commitConfig(next config.FileConfig) error {
+	next = withCurrentSchema(next)
 	next.SyncLegacyMirror()
 	if err := config.SaveFile(config.ConfigPath(), next); err != nil {
 		return err
 	}
 	a.stored = next
+	return nil
+}
+
+// withCurrentSchema adopts the current schema version when the
+// configuration describes endpoints.
+//
+// A configuration that holds endpoints is a version-2 file. Writing it
+// with an older version would make the next launch read it as a legacy
+// file and ignore the endpoints entirely: the operator's first endpoint
+// would exist in the file and nowhere else.
+func withCurrentSchema(next config.FileConfig) config.FileConfig {
+	if len(next.Endpoints) > 0 && next.Version < config.ConfigVersion {
+		next.Version = config.ConfigVersion
+	}
+	return next
+}
+
+// commitTarget writes a prepared configuration and rebuilds the runtime
+// from it.
+//
+// The runtime that would use the new configuration is built first. A
+// configuration that cannot be used is refused: the last working runtime
+// stays, and the active selection is never committed for a
+// configuration that does not work.
+func (a *app) commitTarget(next config.FileConfig) error {
+	next = withCurrentSchema(next)
+	if _, err := a.providerForConfig(next); err != nil {
+		return err
+	}
+	if err := a.commitConfig(next); err != nil {
+		return err
+	}
+	a.rebuildEngine()
 	return nil
 }
 

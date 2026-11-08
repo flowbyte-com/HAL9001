@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -196,16 +195,34 @@ func TestCloneIsIndependent(t *testing.T) {
 	}
 }
 
-func TestCredentialValuePrefersTheEnvironment(t *testing.T) {
-	t.Setenv(EnvAPIKey, "from-the-environment")
+// The endpoint's own credential wins. The global variable is a fallback
+// for an endpoint that declares none, and never substitutes the
+// credential of another endpoint.
+func TestCredentialValuePrefersTheEndpointOwnCredential(t *testing.T) {
+	t.Setenv(EnvAPIKey, "the-global-key")
+	t.Setenv("HAL_TEST_KEY", "the-endpoint-key")
 	endpoint := EndpointRecord{CredentialEnv: "HAL_TEST_KEY", Credential: "literal"}
-	t.Setenv("HAL_TEST_KEY", "from-the-named-variable")
-	if got := endpoint.CredentialValue(); got != "from-the-environment" {
-		t.Errorf("credential = %q", got)
+	if got := endpoint.CredentialValue(); got != "the-endpoint-key" {
+		t.Errorf("credential = %q, want the endpoint's own", got)
 	}
-	os.Unsetenv(EnvAPIKey)
-	if got := endpoint.CredentialValue(); got != "from-the-named-variable" {
-		t.Errorf("credential = %q", got)
+	literal := EndpointRecord{Credential: "literal"}
+	if got := literal.CredentialValue(); got != "literal" {
+		t.Errorf("credential = %q, want the literal", got)
+	}
+}
+
+func TestCredentialValueFallsBackToTheGlobalOnlyWithoutOne(t *testing.T) {
+	t.Setenv(EnvAPIKey, "the-global-key")
+	bare := EndpointRecord{}
+	if got := bare.CredentialValue(); got != "the-global-key" {
+		t.Errorf("credential = %q, want the global fallback", got)
+	}
+	// A named variable that is not set means this endpoint has no
+	// credential: the global belongs to other endpoints.
+	t.Setenv("HAL_TEST_KEY", "")
+	named := EndpointRecord{CredentialEnv: "HAL_TEST_KEY"}
+	if got := named.CredentialValue(); got != "" {
+		t.Errorf("credential = %q, want none", got)
 	}
 }
 
@@ -291,6 +308,70 @@ func TestEffectiveWireProtocol(t *testing.T) {
 	}
 	if _, err := (EndpointRecord{Protocol: ProtocolCustom}).EffectiveWireProtocol(); err == nil {
 		t.Error("a custom endpoint without a wire protocol was accepted")
+	}
+}
+
+// A protocol that contradicts its wire protocol is refused, not
+// silently resolved: HAL never pretends that an endpoint speaks a
+// dialect it does not.
+func TestAContradictingWireProtocolIsRefused(t *testing.T) {
+	cases := []EndpointRecord{
+		{ID: "a", Name: "A", Protocol: ProtocolAnthropic, WireProtocol: WireOpenAI, BaseURL: "https://x/v1"},
+		{ID: "b", Name: "B", Protocol: ProtocolOpenAI, WireProtocol: WireAnthropic, BaseURL: "https://x/v1"},
+		{ID: "c", Name: "C", Protocol: ProtocolAnthropic, WireProtocol: "grpc", BaseURL: "https://x/v1"},
+	}
+	for _, endpoint := range cases {
+		if _, err := endpoint.EffectiveWireProtocol(); err == nil {
+			t.Errorf("%+v: the contradiction was accepted", endpoint)
+		}
+		if err := endpoint.Validate(); err == nil {
+			t.Errorf("%+v: the contradiction was accepted by the validation", endpoint)
+		}
+		fc := testConfig()
+		if err := fc.AddEndpoint(endpoint); err == nil {
+			t.Errorf("%+v: the contradiction was written to the configuration", endpoint)
+		}
+	}
+	// The same protocol and wire protocol are accepted.
+	ok := EndpointRecord{
+		ID: "d", Name: "D", Protocol: ProtocolAnthropic,
+		WireProtocol: WireAnthropic, BaseURL: "https://x/v1",
+	}
+	if _, err := ok.EffectiveWireProtocol(); err != nil {
+		t.Errorf("the matching pair was refused: %v", err)
+	}
+}
+
+// A version-2 configuration without an active endpoint clears the
+// legacy mirror. Leaving the address of a removed endpoint in the file
+// would bring that endpoint back at the next launch.
+func TestTheLegacyMirrorIsClearedWithoutAnActiveEndpoint(t *testing.T) {
+	fc := testConfig()
+	fc.Endpoint = "https://api.minimax.io/v1"
+	fc.APIKey = "$MINIMAX_API_KEY"
+	fc.ActiveModel = "MiniMax-M3.1-Flash"
+	fc.Models = []ModelRecord{{ID: "MiniMax-M3.1-Flash"}}
+	fc.Selection = nil
+
+	fc.SyncLegacyMirror()
+	if fc.Endpoint != "" {
+		t.Errorf("the mirror still holds the address %q", fc.Endpoint)
+	}
+	if fc.APIKey != "" {
+		t.Errorf("the mirror still holds the credential %q", fc.APIKey)
+	}
+	if fc.Provider != "" {
+		t.Errorf("the mirror still holds the provider %q", fc.Provider)
+	}
+	if fc.ActiveModel != "" {
+		t.Errorf("the mirror still holds the active model %q", fc.ActiveModel)
+	}
+	if len(fc.Models) != 0 {
+		t.Errorf("the mirror still holds models: %+v", fc.Models)
+	}
+	// The endpoints themselves are untouched.
+	if len(fc.Endpoints) != 2 {
+		t.Errorf("the endpoints changed: %+v", fc.Endpoints)
 	}
 }
 

@@ -326,9 +326,24 @@ func credentialKind(endpoint EndpointRecord) string {
 //
 // The mirror always describes the active endpoint: it is a compatibility
 // view, never the source of truth once the file carries version 2.
+//
+// A version-2 file with no active endpoint clears the mirror. Leaving it
+// would keep the address of a deleted endpoint in the file, and the next
+// launch would resolve that address as the active one: a deleted
+// endpoint would come back.
 func (f *FileConfig) SyncLegacyMirror() {
+	if f.Version < ConfigVersion {
+		// A pre-version-2 file owns these fields itself. There is no
+		// endpoint to mirror them from.
+		return
+	}
 	endpoint, ok := f.ActiveEndpoint()
 	if !ok {
+		f.Provider = ""
+		f.Endpoint = ""
+		f.APIKey = ""
+		f.Models = nil
+		f.ActiveModel = ""
 		return
 	}
 	f.Provider = string(endpoint.Protocol)

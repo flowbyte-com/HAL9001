@@ -378,11 +378,20 @@ func (a *app) run() error {
 	}
 
 	hooks := tui.Hooks{
-		SaveOnboard:    a.saveOnboard,
-		TestOnboard:    a.testOnboard,
-		HasConfig:      a.hasConfig,
-		ListModels:     a.listModels,
-		SwitchModel:    a.switchModel,
+		SaveOnboard: a.saveOnboard,
+		TestOnboard: a.testOnboard,
+		HasConfig:   a.hasConfig,
+		ListModels:  a.listModels,
+		SwitchModel: a.switchModel,
+		RefreshEngine: func() tui.Engine {
+			// A typed nil pointer must never reach the interface:
+			// it would look like an engine and panic on the first
+			// request.
+			if a.eng == nil {
+				return nil
+			}
+			return a.eng
+		},
 		Endpoints:      a.endpointInfos,
 		SaveEndpoint:   a.saveEndpoint,
 		DeleteEndpoint: a.deleteEndpoint,
@@ -455,28 +464,6 @@ func (a *app) hasConfig() bool {
 	return false
 }
 
-// providerFor builds the provider of the active endpoint, or nil when
-// nothing usable is configured yet.
-//
-// The wire protocol is the one the endpoint names. HAL never pretends that
-// an arbitrary API is compatible: an endpoint whose wire protocol is not
-// implemented is refused, with a message that names the supported ones.
-func (a *app) providerFor() (provider.Provider, error) {
-	endpoint := a.cfg.Endpoint
-	if endpoint == "" {
-		return nil, nil
-	}
-	wire := a.cfg.WireProtocol
-	if wire == "" {
-		wire = provider.WireOpenAI
-	}
-	return provider.NewForProtocol(wire, endpoint, a.cfg.APIKey, provider.Options{
-		DefaultMaxTokens: a.cfg.MaxTokens,
-		IdleTimeout:      seconds(a.cfg.StreamIdleSeconds),
-		TurnTimeout:      seconds(a.cfg.TurnTimeoutSeconds),
-	})
-}
-
 // seconds converts a configured second count to a duration, leaving zero
 // as "use the built-in default".
 func seconds(n int) time.Duration {
@@ -484,27 +471,6 @@ func seconds(n int) time.Duration {
 		return 0
 	}
 	return time.Duration(n) * time.Second
-}
-
-func (a *app) modelFor() provider.Model {
-	id := a.activeModelID()
-	model := provider.Model{
-		ID:     id,
-		Effort: a.effortFor(id),
-	}
-	// The output limit is a per-model setting: it belongs to the model,
-	// not to the endpoint and not to the whole installation.
-	if record, ok := a.stored.ActiveModelRecord(); ok && record.MaxOutputTokens > 0 {
-		model.MaxTokens = record.MaxOutputTokens
-	}
-	// A manual context limit is the operator's own: HAL trims the
-	// conversation to it. In automatic mode the limit stays unset and
-	// the provider's own window governs.
-	if record, ok := a.stored.ActiveModelRecord(); ok &&
-		record.ContextMode == config.ContextManual && record.ContextWindow > 0 {
-		model.ContextWindow = record.ContextWindow
-	}
-	return model
 }
 
 // effortFor resolves the effort level for a model: the operator's stored
@@ -551,8 +517,28 @@ func (a *app) setEffort(level string) (tui.Engine, error) {
 	if normalized == "" {
 		return nil, fmt.Errorf("unknown effort level %q", level)
 	}
-	a.stored.SetEffort(id, normalized)
-	if err := config.SaveFile(config.ConfigPath(), a.stored); err != nil {
+	// The change is prepared on a copy and only adopted once it is
+	// written, so a failed write leaves the running configuration and
+	// the file in step.
+	next := a.stored.Clone()
+	endpointID := next.ActiveEndpointID()
+	if endpointID != "" {
+		if _, ok := next.EndpointByID(endpointID); ok {
+			if err := next.UpdateModel(endpointID, id, func(record *config.ModelRecord) error {
+				record.Effort = normalized
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+			if err := a.commitConfig(next); err != nil {
+				return nil, err
+			}
+			a.rebuildEngine()
+			return a.eng, nil
+		}
+	}
+	next.SetEffort(id, normalized)
+	if err := a.commitConfig(next); err != nil {
 		return nil, err
 	}
 	a.rebuildEngine()
@@ -560,17 +546,29 @@ func (a *app) setEffort(level string) (tui.Engine, error) {
 }
 
 func (a *app) rebuildEngine() {
+	// The provider and the model are resolved from one target, so a
+	// request can never carry the endpoint of one configuration and the
+	// credential of another.
+	target, err := a.resolveTarget(a.stored)
+	var p provider.Provider
+	if err == nil {
+		p, err = a.providerForTarget(target)
+	}
+	if err != nil {
+		// The configuration cannot be used. The last working runtime
+		// stays, so a broken endpoint never takes the conversation
+		// down and never sends a request to the wrong place.
+		a.providerErr = err
+		if a.eng != nil {
+			return
+		}
+	} else {
+		a.providerErr = nil
+	}
 	// A typed nil pointer must never reach the provider interface: the
 	// engine's "no provider" check would pass and the first request would
 	// dereference a nil client.
-	var p provider.Provider
-	if impl, err := a.providerFor(); err != nil {
-		a.providerErr = err
-	} else if impl != nil {
-		p = impl
-		a.providerErr = nil
-	}
-	a.eng = engine.New(a.store, p, a.modelFor()).
+	a.eng = engine.New(a.store, p, modelFromTarget(target)).
 		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir)).
 		WithWorkspace(a.workspace).
 		WithSkills(a.skills).
@@ -612,7 +610,7 @@ func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
 		rec := config.EndpointRecord{
 			ID:         endpointID,
 			Name:       endpointID,
-			Protocol:   config.ProtocolOpenAI,
+			Protocol:   a.onboardProtocol(),
 			BaseURL:    d.Endpoint,
 			Credential: d.Key,
 			Discovery:  config.DiscoveryRecord{Enabled: true},
@@ -642,17 +640,72 @@ func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
 		}
 	}
 	next.SetActive(endpointID, d.Model)
-	if err := a.commitConfig(next); err != nil {
+	if err := a.commitTarget(next); err != nil {
 		return nil, err
 	}
 	a.model = d.Model
-	a.rebuildEngine()
 	return a.eng, nil
 }
 
+// onboardProtocol returns the protocol a new endpoint gets.
+//
+// The protocol the operator chose is kept. Onboarding adds the endpoint,
+// the model and the key; it does not decide which protocol the endpoint
+// speaks. Forcing "openai-compatible" here is what made an
+// Anthropic-compatible endpoint impossible to configure: the choice was
+// overwritten before it could be made.
+func (a *app) onboardProtocol() config.Protocol {
+	// An explicit operator choice wins.
+	if a.cfg.FlagGiven("provider") {
+		return protocolFromName(a.cfg.Provider)
+	}
+	if name := strings.TrimSpace(os.Getenv(config.EnvProvider)); name != "" {
+		return protocolFromName(name)
+	}
+	// An endpoint that already exists keeps its protocol.
+	if endpoint, ok := a.stored.ActiveEndpoint(); ok {
+		return endpoint.Protocol
+	}
+	return protocolFromName(a.cfg.Provider)
+}
+
+// protocolFromName maps a configured protocol name onto the taxonomy.
+func protocolFromName(name string) config.Protocol {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case string(config.ProtocolAnthropic), "anthropic":
+		return config.ProtocolAnthropic
+	case string(config.ProtocolLocal), "ollama", "llamacpp":
+		return config.ProtocolLocal
+	case string(config.ProtocolCustom):
+		return config.ProtocolCustom
+	default:
+		return config.ProtocolOpenAI
+	}
+}
+
+// testOnboard checks that the endpoint answers and reports how many
+// models it lists.
+//
+// The endpoint is spoken to with the protocol the operator configured,
+// so an Anthropic-compatible endpoint is tested the way it will be used.
 func (a *app) testOnboard(d tui.OnboardData) (string, error) {
-	client := &provider.OpenAICompatible{Endpoint: d.Endpoint, APIKey: d.Key}
-	ids, err := client.Models(context.Background())
+	wire, err := wireProtocolFor(string(a.onboardProtocol()))
+	if err != nil {
+		return "", err
+	}
+	client, err := provider.NewForProtocol(wire, d.Endpoint, d.Key, provider.Options{
+		DefaultMaxTokens: a.cfg.MaxTokens,
+		IdleTimeout:      seconds(a.cfg.StreamIdleSeconds),
+		TurnTimeout:      seconds(a.cfg.TurnTimeoutSeconds),
+	})
+	if err != nil {
+		return "", err
+	}
+	lister, ok := client.(provider.ModelLister)
+	if !ok {
+		return "", fmt.Errorf("the %s wire protocol cannot list a catalogue", wire)
+	}
+	ids, err := lister.Models(context.Background())
 	if err != nil {
 		return "", err
 	}
@@ -778,12 +831,17 @@ func (a *app) switchModel(endpointID, id string) (tui.Engine, error) {
 			return nil, fmt.Errorf("endpoint %q has no model %q", endpointID, id)
 		}
 		next.SetActive(endpointID, id)
-		if err := a.commitConfig(next); err != nil {
-			return nil, err
-		}
+	} else {
+		// A pre-version-2 configuration has one flat model list.
+		next.ActiveModel = id
+	}
+	// The runtime that would use the new selection is built before
+	// anything is written. A selection that cannot be used is refused:
+	// the last working runtime and the last stored selection stay.
+	if err := a.commitTarget(next); err != nil {
+		return nil, err
 	}
 	a.model = id
-	a.rebuildEngine()
 	return a.eng, nil
 }
 
@@ -833,7 +891,15 @@ func (a *app) newSession() (tui.Engine, error) {
 	return a.eng, nil
 }
 
+// activeModelID returns the model the next request uses.
+//
+// The stored selection is the source of truth: a version-2 configuration
+// names the endpoint and the model together, and that pair is what the
+// request carries.
 func (a *app) activeModelID() string {
+	if a.stored.Selection != nil && a.stored.ActiveModelID() != "" {
+		return a.stored.ActiveModelID()
+	}
 	if a.model != "" {
 		return a.model
 	}

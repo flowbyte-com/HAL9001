@@ -19,6 +19,10 @@ What is proved:
   * /model remove refuses to remove the active model without an explicit
     replacement, and removes it with one.
   * /endpoint list and /endpoint add work.
+  * /endpoint remove refuses to remove the active endpoint without a
+    replacement, refuses a replacement inside the removed endpoint,
+    removes it with a replacement from another endpoint, and clears the
+    selection when the last endpoint goes away.
   * The configuration on disk has the version-2 shape.
 
 Usage:
@@ -82,6 +86,11 @@ def main():
     os.environ["HAL9001_CONFIG"] = config
     os.environ["HAL9001_HOME"] = home
     os.environ["HAL9001_SESSION"] = "models"
+    # The second endpoint names an environment variable for its
+    # credential. The variable is set here so that the endpoint is
+    # usable: an endpoint whose credential variable is unset has no
+    # credential at all, and the interface would ask for setup again.
+    os.environ["DEEPSEEK_KEY"] = "test-key"
 
     import pty_drive
     from termsim import render
@@ -231,6 +240,65 @@ def main():
         for prefix, want in (("/mod", "/model"), ("/end", "/endpoint")):
             raw, screen = capture([(2.0, prefix.encode()), (0.8, b"")])
             check("the suggestions find %s" % want, shown(raw, want), screen.text())
+
+        # 8. Removing an endpoint follows the replacement rules.
+        #
+        # The active endpoint holds the active model, so it cannot go
+        # away without an explicit replacement: the removal and the
+        # switch happen together, or neither happens.
+        raw, screen = capture([(2.0, b"/model add deepseek deepseek-chat\r"), (1.2, b"")])
+        check("/model add under the second endpoint works",
+              shown(raw, "Added model"), screen.text())
+        raw, screen = capture([(2.0, b"/endpoint remove minimax\r"), (1.0, b"")])
+        check("removing the active endpoint is refused",
+              "holds the active model" in raw.decode("utf-8", "replace"), screen.text())
+        kept = stored()
+        check("the active endpoint is still there",
+              any(e.get("id") == "minimax" for e in kept.get("endpoints") or []),
+              json.dumps(kept.get("endpoints"), indent=2)[:1200])
+        check("the selection did not move",
+              (kept.get("active") or {}).get("endpoint") == "minimax",
+              json.dumps(kept.get("active"), indent=2))
+
+        # A replacement inside the endpoint that is being removed would
+        # leave a selection that points at nothing.
+        raw, screen = capture([(2.0, b"/endpoint remove minimax --use minimax/deepseek-chat\r"),
+                               (1.0, b"")])
+        check("a replacement inside the removed endpoint is refused",
+              "inside" in raw.decode("utf-8", "replace"), screen.text())
+        check("the endpoint was not removed",
+              any(e.get("id") == "minimax"
+                  for e in (stored().get("endpoints") or [])),
+              json.dumps(stored().get("endpoints"), indent=2)[:1200])
+
+        # A replacement in another endpoint is accepted, and the removal
+        # and the switch happen together.
+        raw, screen = capture([(2.0, b"/endpoint remove minimax --use deepseek/deepseek-chat\r"),
+                               (1.2, b"")])
+        check("removing the active endpoint with a replacement works",
+              shown(raw, "Removed endpoint"), screen.text())
+        swapped = stored()
+        check("the endpoint was removed",
+              not any(e.get("id") == "minimax" for e in swapped.get("endpoints") or []),
+              json.dumps(swapped.get("endpoints"), indent=2)[:1200])
+        check("the replacement became the active selection",
+              (swapped.get("active") or {}).get("endpoint") == "deepseek" and
+              (swapped.get("active") or {}).get("model") == "deepseek-chat",
+              json.dumps(swapped.get("active"), indent=2))
+
+        # Removing the last endpoint clears the selection explicitly: no
+        # dangling selection can point at an endpoint that is gone.
+        raw, screen = capture([(2.0, b"/endpoint remove deepseek\r"), (1.2, b"")])
+        check("removing the last endpoint works",
+              shown(raw, "Removed endpoint"), screen.text())
+        empty = stored()
+        check("no endpoint is left", not (empty.get("endpoints") or []),
+              json.dumps(empty.get("endpoints"), indent=2)[:1200])
+        check("the selection was cleared", not empty.get("active"),
+              json.dumps(empty.get("active"), indent=2))
+        check("the legacy mirror was cleared", not empty.get("endpoint"),
+              json.dumps({k: empty.get(k) for k in ("endpoint", "api_key", "active_model")},
+                         indent=2))
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

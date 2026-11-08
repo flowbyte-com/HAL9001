@@ -143,19 +143,26 @@ func (e EndpointRecord) Model(id string) (ModelRecord, bool) {
 // CredentialValue returns the secret this endpoint uses, or an empty
 // string when it has none.
 //
-// The order is deliberate: the environment override wins, then the
-// environment variable the operator named, then a literal secret. The
-// result is a secret: it never travels into a notice, a log or an error.
+// The endpoint's own configuration always wins: the environment variable
+// the operator named, then a literal secret. The global HAL9001_API_KEY
+// is a backward-compatible fallback and is used only by an endpoint that
+// declares neither, so one global variable can never substitute another
+// endpoint's credential.
+//
+// The result is a secret: it never travels into a notice, a log or an
+// error.
 func (e EndpointRecord) CredentialValue() string {
-	if key := strings.TrimSpace(os.Getenv(EnvAPIKey)); key != "" {
-		return key
-	}
 	if name := strings.TrimSpace(e.CredentialEnv); name != "" {
-		if key := strings.TrimSpace(os.Getenv(name)); key != "" {
-			return key
-		}
+		// The operator named this endpoint's credential. A variable
+		// that is not set means this endpoint has no credential: the
+		// global fallback belongs to other endpoints and must not be
+		// sent here.
+		return strings.TrimSpace(os.Getenv(name))
 	}
-	return strings.TrimSpace(e.Credential)
+	if secret := strings.TrimSpace(e.Credential); secret != "" {
+		return secret
+	}
+	return strings.TrimSpace(os.Getenv(EnvAPIKey))
 }
 
 // HasCredential reports whether a credential can be resolved for this
@@ -175,6 +182,9 @@ func (e EndpointRecord) HasCredential() bool {
 func (e EndpointRecord) EffectiveWireProtocol() (WireProtocol, error) {
 	switch e.Protocol {
 	case ProtocolOpenAI:
+		if e.WireProtocol != "" && e.WireProtocol != WireOpenAI {
+			return "", fmt.Errorf("endpoint %q is %s and cannot speak %s", e.ID, e.Protocol, e.WireProtocol)
+		}
 		return WireOpenAI, nil
 	case ProtocolLocal:
 		if e.WireProtocol == "" {
@@ -185,6 +195,9 @@ func (e EndpointRecord) EffectiveWireProtocol() (WireProtocol, error) {
 		}
 		return e.WireProtocol, nil
 	case ProtocolAnthropic:
+		if e.WireProtocol != "" && e.WireProtocol != WireAnthropic {
+			return "", fmt.Errorf("endpoint %q is %s and cannot speak %s", e.ID, e.Protocol, e.WireProtocol)
+		}
 		return WireAnthropic, nil
 	case ProtocolCustom:
 		switch e.WireProtocol {
