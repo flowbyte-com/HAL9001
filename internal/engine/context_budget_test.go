@@ -12,27 +12,34 @@ import (
 
 // The context budget.
 //
-// A manual context limit is a promise about the request that is actually
-// sent. These tests watch the request the provider receives, not the
-// configuration that describes it.
+// The budget is applied by the provider package: the engine hands it the
+// fully assembled request and it decides what may be dropped. These
+// tests watch the request the provider receives, not the configuration
+// that describes it.
+//
+// The behaviour they pin down is the behaviour the operator was promised:
+// a configured limit reaches the request, the offered functions count
+// towards it, a request that cannot be reduced is refused before it is
+// transmitted, a tool call never loses its result, and the conversation
+// itself is never rewritten.
 
-// budgetProvider records the complete request it receives.
-type budgetProvider struct {
+// budgetSpy records the complete request it receives.
+type budgetSpy struct {
 	requests [][]provider.Message
 	tools    [][]provider.Tool
 	reply    provider.Response
 }
 
-func (p *budgetProvider) Name() string { return "budget" }
+func (p *budgetSpy) Name() string { return "budget" }
 
-func (p *budgetProvider) Chat(_ context.Context, messages []provider.Message, _ provider.Model) (provider.Response, error) {
+func (p *budgetSpy) Chat(_ context.Context, messages []provider.Message, _ provider.Model) (provider.Response, error) {
 	p.requests = append(p.requests, append([]provider.Message(nil), messages...))
 	p.tools = append(p.tools, nil)
 	return p.reply, nil
 }
 
 // last returns the last request the provider received.
-func (p *budgetProvider) last(t *testing.T) []provider.Message {
+func (p *budgetSpy) last(t *testing.T) []provider.Message {
 	t.Helper()
 	if len(p.requests) == 0 {
 		t.Fatal("the provider was never called")
@@ -40,8 +47,8 @@ func (p *budgetProvider) last(t *testing.T) []provider.Message {
 	return p.requests[len(p.requests)-1]
 }
 
-// budgetSession builds a session with a long conversation.
-func budgetSession(t *testing.T, exchanges int, size int) *session.Store {
+// budgetConversation builds a session with a long conversation.
+func budgetConversation(t *testing.T, exchanges int, size int) *session.Store {
 	t.Helper()
 	st, err := session.Open(t.TempDir(), "budget")
 	if err != nil {
@@ -60,21 +67,32 @@ func budgetSession(t *testing.T, exchanges int, size int) *session.Store {
 	return st
 }
 
+// operatorBudget is the budget an operator-configured limit produces.
+func operatorBudget(limit int) provider.ContextBudget {
+	return provider.ContextBudget{
+		Limit:          limit,
+		ReservedOutput: 20,
+		Source:         provider.ContextSourceOperator,
+		Mode:           provider.ContextModeConfigured,
+		Verified:       true,
+	}
+}
+
 // A manual context limit is enforced on the request that is sent.
 //
 // The limit is not a label in the configuration: the request the
 // provider receives fits inside it, and it is shorter than the
 // conversation it was built from.
 func TestTheManualContextLimitIsEnforcedOnTheRequest(t *testing.T) {
-	st := budgetSession(t, 40, 200)
-	spy := &budgetProvider{reply: provider.Response{Content: "ok"}}
-	eng := New(st, spy, provider.Model{ID: "m", ContextWindow: 500})
+	st := budgetConversation(t, 40, 200)
+	spy := &budgetSpy{reply: provider.Response{Content: "ok"}}
+	eng := New(st, spy, provider.Model{ID: "m", ContextWindow: 500, Budget: operatorBudget(500)})
 
 	if _, err := eng.Respond(context.Background(), "and now?"); err != nil {
 		t.Fatal(err)
 	}
 	request := spy.last(t)
-	if got := estimateTokens(request, nil); got > 500 {
+	if got := provider.EstimateTokens(request, nil); got > 500 {
 		t.Errorf("the request is %d tokens, over the limit of 500", got)
 	}
 	// The conversation is longer than the request: something was left
@@ -101,9 +119,9 @@ func TestTheManualContextLimitIsEnforcedOnTheRequest(t *testing.T) {
 // The offered functions travel with every request, so they count
 // towards the budget.
 func TestTheContextLimitCountsTheOfferedFunctions(t *testing.T) {
-	st := budgetSession(t, 10, 100)
-	spy := &budgetProvider{reply: provider.Response{Content: "ok"}}
-	eng := New(st, spy, provider.Model{ID: "m", ContextWindow: 400})
+	st := budgetConversation(t, 10, 100)
+	spy := &budgetSpy{reply: provider.Response{Content: "ok"}}
+	eng := New(st, spy, provider.Model{ID: "m", ContextWindow: 400, Budget: operatorBudget(400)})
 	tools := []provider.Tool{{
 		Name:        "a_tool_with_a_long_name",
 		Description: strings.Repeat("d", 400),
@@ -117,7 +135,7 @@ func TestTheContextLimitCountsTheOfferedFunctions(t *testing.T) {
 		t.Fatalf("the turn failed: %v", err)
 	}
 	request := spy.last(t)
-	if got := estimateTokens(request, tools); got > 400 {
+	if got := provider.EstimateTokens(request, tools); got > 400 {
 		t.Errorf("the request is %d tokens, over the limit of 400", got)
 	}
 }
@@ -130,14 +148,14 @@ func TestARequestThatCannotFitIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spy := &budgetProvider{reply: provider.Response{Content: "ok"}}
-	eng := New(st, spy, provider.Model{ID: "m", ContextWindow: 20})
+	spy := &budgetSpy{reply: provider.Response{Content: "ok"}}
+	eng := New(st, spy, provider.Model{ID: "m", ContextWindow: 20, Budget: operatorBudget(20)})
 
 	_, err = eng.Respond(context.Background(), strings.Repeat("x", 400))
 	if err == nil {
 		t.Fatal("a request that cannot fit was sent anyway")
 	}
-	if !strings.Contains(err.Error(), "context limit") {
+	if !strings.Contains(err.Error(), "context budget") {
 		t.Errorf("the refusal does not explain itself: %v", err)
 	}
 	if len(spy.requests) != 0 {
@@ -168,7 +186,7 @@ func TestTheContextLimitNeverOrphansAToolExchange(t *testing.T) {
 		{Role: "user", Content: "third question"},
 	}
 	for _, limit := range []int{12, 15, 20, 25, 30, 35, 40, 45, 50} {
-		kept, err := trimToContext(messages, nil, limit)
+		kept, _, err := provider.TrimToBudget(messages, nil, operatorBudget(limit))
 		if err != nil {
 			t.Fatalf("limit %d: %v", limit, err)
 		}
@@ -204,7 +222,7 @@ func TestTheContextLimitNeverOrphansAToolExchange(t *testing.T) {
 	}
 	// A limit that even the current exchange does not fit is refused
 	// with an explicit error, never a broken request.
-	if _, err := trimToContext(messages, nil, 10); err == nil {
+	if _, _, err := provider.TrimToBudget(messages, nil, operatorBudget(10)); err == nil {
 		t.Error("a request that cannot fit was trimmed anyway")
 	}
 }
@@ -212,9 +230,9 @@ func TestTheContextLimitNeverOrphansAToolExchange(t *testing.T) {
 // The request that carries a tool exchange keeps the exchange whole,
 // even when the older conversation is dropped to make room.
 func TestTheRequestKeepsTheToolExchangeWhole(t *testing.T) {
-	st := budgetSession(t, 20, 200)
-	spy := &budgetProvider{reply: provider.Response{Content: "ok"}}
-	eng := New(st, spy, provider.Model{ID: "m", ContextWindow: 400})
+	st := budgetConversation(t, 20, 200)
+	spy := &budgetSpy{reply: provider.Response{Content: "ok"}}
+	eng := New(st, spy, provider.Model{ID: "m", ContextWindow: 400, Budget: operatorBudget(400)})
 
 	messages := []provider.Message{
 		{Role: "system", Content: "system"},

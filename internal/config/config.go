@@ -57,8 +57,14 @@ type ModelRecord struct {
 	// ContextMode is "auto" or "manual". Empty means "auto".
 	ContextMode string `json:"context_mode,omitempty"`
 	// ContextWindow is an explicit context-window limit in tokens.
-	// Zero means the limit is unknown, or that the provider's own value
-	// is used in automatic mode.
+	//
+	// It is the context limit the operator set for this model. Zero
+	// means the limit is unknown, or that the provider's own value is
+	// used in automatic mode.
+	//
+	// The limit bounds the conversation HAL sends. It is the operator's
+	// own number: it is never confused with the maximum a provider
+	// advertises, and it is never a guess HAL made.
 	ContextWindow int `json:"context_window,omitempty"`
 	// MaxOutputTokens is an explicit output-token limit. Zero means the
 	// provider's own default.

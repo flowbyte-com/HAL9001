@@ -104,6 +104,16 @@ type Model struct {
 	// model. Zero means HAL does not trim the conversation and the
 	// provider's own window governs.
 	ContextWindow int `json:"context_window,omitempty"`
+	// Budget is the context budget that is enforced before a request is
+	// sent. It is resolved from the operator's limit, the provider's
+	// advertisement, the local runtime's allocation, the cached record
+	// and the provisional record, in that order, and it carries the
+	// provenance of the number it holds.
+	//
+	// A provisional budget is reported, not enforced: its Limit is zero,
+	// which means the provider's own window governs and HAL trims
+	// nothing.
+	Budget ContextBudget `json:"budget,omitempty"`
 }
 
 // Config binds credentials to models. Secrets are never stored here: the

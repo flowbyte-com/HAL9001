@@ -173,3 +173,15 @@ func isToolRejection(err error) bool {
 	}
 	return false
 }
+
+// isBudgetRefusal reports whether the error is the context budget
+// refusing a request that cannot be reduced.
+//
+// It is neither a provider failure nor a tool rejection. The refusal
+// is decided before the request leaves the machine, and sending the
+// same oversized request again without its tool definitions would
+// refuse it for the same reason.
+func isBudgetRefusal(err error) bool {
+	var budgetErr *provider.ContextBudgetError
+	return errors.As(err, &budgetErr)
+}

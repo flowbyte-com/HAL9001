@@ -62,7 +62,7 @@ cmd/hal9001      flags/env/file config, session store, TUI launch
 internal/tui     chat, onboarding, model picker, permission overlay (no logic)
 internal/engine  RespondStream(): store user msg → streamed provider → tool loop → boundary → store reply
 internal/session JSONL conversation storage (model-independent)
-internal/provider OpenAI-compatible streaming client, contracts, mock
+internal/provider OpenAI-compatible and Anthropic Messages clients, model and context discovery, contracts, mock
 internal/memory  record tiers, admission validation, Store interface
 internal/config  three-value onboarding, user config file (0600)
 internal/persona identity, conversational contract, Dave Protocol

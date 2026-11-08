@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -26,7 +26,7 @@ import (
 type AnthropicCompatible struct {
 	// Endpoint is the API base URL.
 	Endpoint string
-	// APIKey is the credential. It travels only in the x-api-key header.
+	// APIKey is the credential. It travels only in a header.
 	APIKey string
 	// Client is the HTTP client. Nil uses a client with the same
 	// safeguards as the OpenAI-compatible adapter.
@@ -40,36 +40,66 @@ type AnthropicCompatible struct {
 	// AnthropicVersion is the API version header. Empty uses the version
 	// the Messages API is currently documented with.
 	AnthropicVersion string
+	// KeyHeader names the header the credential travels in. Empty uses
+	// the Messages API's own header, x-api-key. A gateway that wants a
+	// bearer token says so explicitly: HAL never guesses it from the
+	// URL.
+	KeyHeader string
 }
 
 // DefaultAnthropicVersion is the API version HAL sends when the endpoint
 // names none.
 const DefaultAnthropicVersion = "2023-06-01"
 
+// DefaultAnthropicKeyHeader is the header the Messages API carries its
+// credential in.
+const DefaultAnthropicKeyHeader = "x-api-key"
+
+// DefaultAnthropicMaxTokens caps one Anthropic response when nothing
+// else says otherwise.
+//
+// The Messages API requires max_tokens and refuses a value above the
+// model's own output limit, so a request that is too large is rejected
+// outright. The shared default is larger than the smallest documented
+// Anthropic output limit, so the Anthropic adapter uses a smaller one:
+// a value every documented model accepts is worth more than a larger
+// value that some models refuse. An operator who knows the model's limit
+// can raise it in the configuration.
+const DefaultAnthropicMaxTokens = 4096
+
 // Name implements Provider.
 func (a *AnthropicCompatible) Name() string { return "anthropic-compatible" }
+
+// setCredential puts the credential in its header. The credential never
+// appears in a URL, a log line or an error message.
+func (a *AnthropicCompatible) setCredential(req *http.Request) {
+	key := strings.TrimSpace(a.APIKey)
+	if key == "" {
+		return
+	}
+	header := strings.TrimSpace(a.KeyHeader)
+	if header == "" {
+		header = DefaultAnthropicKeyHeader
+	}
+	if strings.EqualFold(header, "authorization") {
+		req.Header.Set(header, "Bearer "+key)
+		return
+	}
+	req.Header.Set(header, key)
+}
 
 func (a *AnthropicCompatible) client() *http.Client {
 	if a.Client != nil {
 		return a.Client
 	}
-	return &http.Client{
-		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			TLSHandshakeTimeout:   15 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second,
-			ExpectContinueTimeout: time.Second,
-			ForceAttemptHTTP2:     true,
-		},
-	}
+	return newHTTPClient()
 }
 
 func (a *AnthropicCompatible) maxTokens() int {
 	if a.DefaultMaxTokens > 0 {
 		return a.DefaultMaxTokens
 	}
-	return DefaultMaxTokens
+	return DefaultAnthropicMaxTokens
 }
 
 func (a *AnthropicCompatible) effectiveMaxTokens(model Model) int {
@@ -130,6 +160,9 @@ type anthropicBlock struct {
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Content   string `json:"content,omitempty"`
 	IsError   bool   `json:"is_error,omitempty"`
+	// Thinking carries the model's reasoning. It is never displayed as
+	// the answer.
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // anthropicMessage is one message of a conversation.
@@ -181,14 +214,11 @@ type anthropicResponse struct {
 	} `json:"error"`
 }
 
-// anthropicMessageStart is the opening frame of a streamed turn.
-type anthropicMessageStart struct {
-	Usage *anthropicUsage `json:"usage"`
-}
-
 // anthropicEvent is one streamed event.
 type anthropicEvent struct {
-	Type         string                 `json:"type"`
+	Type string `json:"type"`
+	// Message is the opening message object. It carries the prompt
+	// accounting the endpoint reported with the first event.
 	Message      *anthropicMessageStart `json:"message"`
 	ContentBlock *anthropicBlock        `json:"content_block"`
 	Index        int                    `json:"index"`
@@ -199,6 +229,14 @@ type anthropicEvent struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// anthropicMessageStart is the message object of the opening event.
+type anthropicMessageStart struct {
+	ID    string          `json:"id"`
+	Model string          `json:"model"`
+	Role  string          `json:"role"`
+	Usage *anthropicUsage `json:"usage"`
 }
 
 // anthropicDelta is the payload of a content-block delta.
@@ -356,16 +394,14 @@ func (a *AnthropicCompatible) requestBody(messages []Message, model Model, strea
 }
 
 func (a *AnthropicCompatible) post(ctx context.Context, body []byte, stream bool) (*http.Response, error) {
-	url := a.base() + "/messages"
+	url := a.messagesURL()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("provider: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", a.version())
-	if a.APIKey != "" {
-		req.Header.Set("x-api-key", a.APIKey)
-	}
+	a.setCredential(req)
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
 	}
@@ -418,9 +454,11 @@ func (a *AnthropicCompatible) Chat(ctx context.Context, messages []Message, mode
 			out.Stats.VisibleChunks++
 			out.Stats.VisibleRunes += len([]rune(block.Text))
 		case "thinking":
-			out.Reasoning += block.Text
+			// The reasoning text lives in its own field. Reading it
+			// from the text field would lose it silently.
+			out.Reasoning += block.Thinking
 			out.Stats.ReasoningChunks++
-			out.Stats.ReasoningRunes += len([]rune(block.Text))
+			out.Stats.ReasoningRunes += len([]rune(block.Thinking))
 		case "tool_use":
 			call := ToolCall{ID: block.ID, Name: block.Name}
 			if len(block.Input) > 0 {
@@ -457,46 +495,18 @@ func anthropicUsageStats(u anthropicUsage) Usage {
 }
 
 // Models probes the provider's catalogue for the discovery flow.
+//
+// The listing follows the endpoint's pagination and stays inside the
+// bounds HAL sets on a discovery run, so a catalogue with thousands of
+// entries cannot make HAL read them all.
 func (a *AnthropicCompatible) Models(ctx context.Context) ([]string, error) {
-	url := a.base() + "/models"
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	models, err := a.ListModels(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
+		return nil, err
 	}
-	if a.APIKey != "" {
-		req.Header.Set("x-api-key", a.APIKey)
-		req.Header.Set("anthropic-version", a.version())
-	}
-	resp, err := a.client().Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("provider: authentication failed (%d): check the API key", resp.StatusCode)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("provider: %s", readErrorBody(resp))
-	}
-	var listing struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
-	}
-	if err := json.Unmarshal(raw, &listing); err != nil {
-		return nil, fmt.Errorf("provider: bad model list: %w", err)
-	}
-	ids := make([]string, 0, len(listing.Data))
-	for _, m := range listing.Data {
-		if strings.TrimSpace(m.ID) != "" {
-			ids = append(ids, m.ID)
-		}
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
 	}
 	return ids, nil
 }
@@ -516,6 +526,18 @@ type anthropicToolCall struct {
 	ID   string
 	Name string
 	JSON string
+}
+
+// sortedCallIndexes returns the block indices of the streamed calls in
+// order. The order of a map is random, and a tool result must answer
+// the call it belongs to.
+func sortedCallIndexes(calls map[int]*anthropicToolCall) []int {
+	indexes := make([]int, 0, len(calls))
+	for index := range calls {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	return indexes
 }
 
 func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message, model Model, tools []Tool, emit func(Delta) error) (Response, error) {
@@ -638,24 +660,30 @@ func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message
 					}
 				}
 			case "input_json_delta":
-				if call, ok := calls[event.Index]; ok {
-					call.JSON += event.Delta.PartialJSON
+				// The arguments of a call arrive in pieces. A stream
+				// that skipped the opening event still carries them,
+				// so the call is created on demand rather than
+				// dropping what arrived.
+				call, ok := calls[event.Index]
+				if !ok {
+					call = &anthropicToolCall{}
+					calls[event.Index] = call
 				}
+				call.JSON += event.Delta.PartialJSON
 			}
 		case "message_delta":
 			if event.Usage != nil {
-				stats.HasUsage = true
 				usage := anthropicUsageStats(*event.Usage)
-				// The closing frame reports only the output tokens.
-				// The prompt tokens come from the opening frame, so
-				// they are carried over rather than lost.
+				// The closing event reports only the tokens the model
+				// produced. The prompt accounting arrived with the
+				// opening event and is kept.
 				if usage.PromptTokens == 0 {
 					usage.PromptTokens = stats.Usage.PromptTokens
 				}
-				if usage.CachedTokens == 0 {
-					usage.CachedTokens = stats.Usage.CachedTokens
-				}
+				// The Messages API reports no total; HAL adds the two
+				// halves so the total matches what the operator sees.
 				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				stats.HasUsage = true
 				stats.Usage = usage
 			}
 			reason := event.StopReason
@@ -674,7 +702,11 @@ func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message
 			watch.grace()
 		}
 	}
-	for _, call := range calls {
+	// The calls are reported in the order the model produced them: the
+	// engine answers them in that order, and a tool result has to match
+	// the call it answers.
+	for _, index := range sortedCallIndexes(calls) {
+		call := calls[index]
 		if call == nil || strings.TrimSpace(call.Name) == "" {
 			continue
 		}

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/flowbyte-com/HAL9001/internal/agenttools"
@@ -263,6 +264,16 @@ type app struct {
 	// the tools of the configured servers, but it is not a permission
 	// authority: every call is checked at its execution boundary.
 	mcp *mcp.Registry
+	// contexts holds the context metadata an endpoint reported for a
+	// model, keyed by the model identifier. It is the input to the
+	// context-budget resolution, and it keeps the provenance of every
+	// number it holds.
+	//
+	// The background lookup writes it and the resolution reads it, so
+	// it is guarded by contextMu.
+	contexts map[string]provider.ContextMetadata
+	// contextMu guards the recorded context metadata.
+	contextMu sync.Mutex
 }
 
 // mcpServer converts one stored configuration record into a client
@@ -416,6 +427,7 @@ func (a *app) run() error {
 		SessionTitle:   func() string { return a.sessionTitle },
 		SessionID:      func() string { return a.session },
 		WebResearch:    a.webStatus,
+		ContextBudget:  a.contextBudgetDescription,
 	}
 	m := tui.NewWithHooks(a.eng, hooks)
 	m.SetModelName(a.activeModelID())
@@ -568,6 +580,15 @@ func (a *app) rebuildEngine() {
 	// A typed nil pointer must never reach the provider interface: the
 	// engine's "no provider" check would pass and the first request would
 	// dereference a nil client.
+	// The budget is resolved again for every request: an endpoint may
+	// report a model's context window after the engine was built, and
+	// the operator's own limit never changes. The model identifier, the
+	// operator's limit and the room the answer may use are read here,
+	// on the interface's own thread. The request path only reads the
+	// guarded metadata the background lookup recorded.
+	budgetID := target.ModelID
+	budgetLimit := target.ContextWindow
+	budgetOutput := target.outputTokens()
 	a.eng = engine.New(a.store, p, modelFromTarget(target)).
 		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir)).
 		WithWorkspace(a.workspace).
@@ -576,7 +597,13 @@ func (a *app) rebuildEngine() {
 		WithExecution(a.tools).
 		WithWebResearch(a.web).
 		WithKnowledge(a.knowledge).
-		WithAttachments(a.attachments)
+		WithAttachments(a.attachments).
+		// The budget is resolved per request: the endpoint may report a
+		// model's context window after the engine was built, and the
+		// operator's own limit never changes.
+		WithBudgetResolver(func() provider.ContextBudget {
+			return a.currentBudget(budgetID, budgetLimit, budgetOutput)
+		})
 	// The MCP registry is wired in on its own, and only when there is
 	// one. Folding it into the chain above would pass a typed nil
 	// interface into the engine, and the engine would then call through
@@ -600,6 +627,12 @@ func (a *app) webStatus() string {
 // active endpoint is completed, and a new one is created when there is
 // none yet. The model is added to that endpoint, and only then does it
 // become the active one.
+//
+// The protocol the operator configured is kept. Onboarding adds the
+// endpoint, the model and the key; it does not decide which protocol
+// the endpoint speaks. Forcing "openai-compatible" here is what made an
+// Anthropic-compatible endpoint impossible to configure: the choice was
+// overwritten before it could be made.
 func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
 	next := a.stored.Clone()
 	endpointID := next.ActiveEndpointID()
@@ -644,6 +677,11 @@ func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
 		return nil, err
 	}
 	a.model = d.Model
+	// The context the endpoint reports for the new model is looked up
+	// in the background, so the interface never waits for a metadata
+	// lookup. The budget the engine enforces is resolved again on the
+	// next request, so a late answer is still used.
+	a.refreshContextInBackground(d.Model)
 	return a.eng, nil
 }
 
@@ -687,9 +725,14 @@ func protocolFromName(name string) config.Protocol {
 // models it lists.
 //
 // The endpoint is spoken to with the protocol the operator configured,
-// so an Anthropic-compatible endpoint is tested the way it will be used.
+// so an Anthropic-compatible endpoint is tested the way it will be
+// used. An endpoint that offers no listing is reported as such: the
+// operator can still add a model identifier by hand.
 func (a *app) testOnboard(d tui.OnboardData) (string, error) {
 	wire, err := wireProtocolFor(string(a.onboardProtocol()))
+	if err != nil {
+		return "", err
+	}
 	if err != nil {
 		return "", err
 	}
@@ -701,12 +744,28 @@ func (a *app) testOnboard(d tui.OnboardData) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// The catalogue is preferred when the endpoint offers one: it
+	// carries the display names the endpoint reported, and a display
+	// name is untrusted text that has to be sanitised before it
+	// reaches the interface.
+	if catalog, ok := client.(provider.ModelCatalog); ok {
+		models, err := provider.Discover(context.Background(), catalog, provider.DiscoveryOptions{Limit: 5})
+		if err == nil && len(models) > 0 {
+			return describeDiscoveredModels(models), nil
+		}
+		if err != nil && !errors.Is(err, provider.ErrNoModelListing) {
+			return "", err
+		}
+	}
 	lister, ok := client.(provider.ModelLister)
 	if !ok {
-		return "", fmt.Errorf("the %s wire protocol cannot list a catalogue", wire)
+		return "", fmt.Errorf("the %s protocol cannot list models", wire)
 	}
 	ids, err := lister.Models(context.Background())
 	if err != nil {
+		if errors.Is(err, provider.ErrNoModelListing) {
+			return "reachable, but it does not list its models; add the model id by hand", nil
+		}
 		return "", err
 	}
 	switch len(ids) {
@@ -717,6 +776,30 @@ func (a *app) testOnboard(d tui.OnboardData) (string, error) {
 	default:
 		return fmt.Sprintf("reachable, %d models", len(ids)), nil
 	}
+}
+
+// discoveredNameLimit bounds one model name in the connection summary.
+//
+// The summary is one line of interface text: a name that is too long
+// belongs in the model list, not in a notice.
+const discoveredNameLimit = 48
+
+// describeDiscoveredModels names the models an endpoint reported.
+//
+// The names are display-only text and are sanitised again here, so a
+// name that carries an escape sequence or a line break cannot forge a
+// row of the interface. The identifiers themselves are never rewritten:
+// the exact name the endpoint wrote is the one a request carries.
+func describeDiscoveredModels(models []provider.ModelInfo) string {
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		name := m.Display()
+		if name == "" {
+			name = m.ID
+		}
+		names = append(names, provider.SafeDisplayText(name, discoveredNameLimit))
+	}
+	return fmt.Sprintf("reachable, %d models: %s", len(models), strings.Join(names, ", "))
 }
 
 func (a *app) currentOnboard() tui.OnboardData {
@@ -842,6 +925,11 @@ func (a *app) switchModel(endpointID, id string) (tui.Engine, error) {
 		return nil, err
 	}
 	a.model = id
+	// What the endpoint says about this model's context is looked up in
+	// the background, so the interface never waits for a metadata
+	// lookup. The lookup is bounded and is never retried; an endpoint
+	// that says nothing leaves the budget provisional.
+	a.refreshContextInBackground(id)
 	return a.eng, nil
 }
 

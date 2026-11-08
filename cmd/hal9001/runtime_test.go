@@ -434,15 +434,23 @@ func TestOnboardingKeepsTheAnthropicProtocol(t *testing.T) {
 		t.Errorf("the wire protocol = %q", wire)
 	}
 	ask(t, a, "hello")
-	requests := rec.recorded()
-	if len(requests) != 1 {
-		t.Fatalf("requests = %d", len(requests))
+	// The endpoint may also be asked for its catalogue: the context of
+	// the new model is looked up in the background. Only the
+	// conversation request is the one under test here.
+	var messages []recordedRequest
+	for _, request := range rec.recorded() {
+		if strings.HasSuffix(request.Path, "/messages") {
+			messages = append(messages, request)
+		}
 	}
-	if !strings.HasSuffix(requests[0].Path, "/messages") {
-		t.Errorf("the path = %q, want the Anthropic messages path", requests[0].Path)
+	if len(messages) != 1 {
+		t.Fatalf("conversation requests = %d", len(messages))
 	}
-	if requests[0].APIKey != "ANTHROPIC_KEY" {
-		t.Errorf("the credential = %q", requests[0].APIKey)
+	if !strings.HasSuffix(messages[0].Path, "/messages") {
+		t.Errorf("the path = %q, want the Anthropic messages path", messages[0].Path)
+	}
+	if messages[0].APIKey != "ANTHROPIC_KEY" {
+		t.Errorf("the credential = %q", messages[0].APIKey)
 	}
 }
 

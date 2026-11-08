@@ -154,16 +154,44 @@ func migrateEndpoint(fc FileConfig) EndpointRecord {
 		if id == "" {
 			continue
 		}
-		rec.Models = append(rec.Models, ModelRecord{
-			ID:          id,
-			Label:       m.Label,
-			Effort:      m.Effort,
-			ContextMode: ContextAuto,
-			Source:      SourceMigrated,
-			Review:      ReviewNote(baseURL, id),
-		})
+		rec.Models = append(rec.Models, migrateModelRecord(m, ReviewNote(baseURL, id)))
 	}
 	return rec
+}
+
+// migrateModelRecord turns one legacy model record into a version-2 one.
+//
+// The limits the operator configured are carried over: a record with an
+// explicit context window or output cap keeps it, and it is not turned
+// into an automatic mode or into a zero. The mode is only filled in
+// when the legacy record did not name one, and a record with a window
+// and no mode is a limit the operator wrote by hand: it becomes a manual
+// limit, because the number was configured and not advertised.
+func migrateModelRecord(m ModelRecord, review string) ModelRecord {
+	out := ModelRecord{
+		ID:              strings.TrimSpace(m.ID),
+		Label:           m.Label,
+		Effort:          m.Effort,
+		ContextWindow:   m.ContextWindow,
+		MaxOutputTokens: m.MaxOutputTokens,
+		Source:          SourceMigrated,
+		Review:          review,
+	}
+	switch m.ContextMode {
+	case ContextAuto, ContextManual:
+		out.ContextMode = m.ContextMode
+	case "":
+		if m.ContextWindow > 0 {
+			out.ContextMode = ContextManual
+		} else {
+			out.ContextMode = ContextAuto
+		}
+	default:
+		// An unknown mode is kept as it is written: the record is
+		// refused when it is used, never silently repaired.
+		out.ContextMode = m.ContextMode
+	}
+	return out
 }
 
 // migrateActiveModel keeps the active model the legacy file named.
@@ -185,12 +213,9 @@ func migrateActiveModel(fc FileConfig, endpoint EndpointRecord) (string, Endpoin
 	if note == "" {
 		note = "the active model was not listed among the configured models — verify it"
 	}
-	endpoint.Models = append(endpoint.Models, ModelRecord{
-		ID:          active,
-		ContextMode: ContextAuto,
-		Source:      SourceMigrated,
-		Review:      note,
-	})
+	endpoint.Models = append(endpoint.Models, migrateModelRecord(ModelRecord{
+		ID: active,
+	}, note))
 	return active, endpoint
 }
 
@@ -352,6 +377,10 @@ func (f *FileConfig) SyncLegacyMirror() {
 	f.ActiveModel = f.ActiveModelID()
 	f.Models = make([]ModelRecord, 0, len(endpoint.Models))
 	for _, m := range endpoint.Models {
+		// The mirror is a compatibility view for an older build. It
+		// never carries the per-model settings of the new schema:
+		// the endpoint's own records are the source of truth, and the
+		// limits are read from there.
 		f.Models = append(f.Models, ModelRecord{ID: m.ID, Label: m.Label, Effort: m.Effort})
 	}
 }

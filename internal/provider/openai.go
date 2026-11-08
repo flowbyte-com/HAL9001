@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -68,16 +67,7 @@ func (o *OpenAICompatible) client() *http.Client {
 	if o.Client != nil {
 		return o.Client
 	}
-	return &http.Client{
-		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			TLSHandshakeTimeout:   15 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second,
-			ExpectContinueTimeout: time.Second,
-			ForceAttemptHTTP2:     true,
-		},
-	}
+	return newHTTPClient()
 }
 
 type openAIMessage struct {
@@ -387,45 +377,17 @@ func (o *OpenAICompatible) Chat(ctx context.Context, messages []Message, model M
 // powers the onboarding connection test: success means the endpoint and
 // key work, and the count tells the operator models are reachable. The
 // key travels only in the Authorization header, never into errors or logs.
+//
+// The listing itself is bounded, and an endpoint that does not offer
+// one is reported as such rather than as a bare status code.
 func (o *OpenAICompatible) Models(ctx context.Context) ([]string, error) {
-	url := strings.TrimRight(o.Endpoint, "/") + "/models"
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	models, err := o.ListModels(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
+		return nil, err
 	}
-	if o.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.APIKey)
-	}
-	resp, err := o.client().Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("provider: authentication failed (%d): check the API key", resp.StatusCode)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("provider: %s", readErrorBody(resp))
-	}
-	var listing struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
-	}
-	if err := json.Unmarshal(raw, &listing); err != nil {
-		return nil, fmt.Errorf("provider: bad model list: %w", err)
-	}
-	ids := make([]string, 0, len(listing.Data))
-	for _, m := range listing.Data {
-		if strings.TrimSpace(m.ID) != "" {
-			ids = append(ids, m.ID)
-		}
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
 	}
 	return ids, nil
 }

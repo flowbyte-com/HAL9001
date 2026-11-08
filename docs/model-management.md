@@ -159,6 +159,10 @@ The migration from the pre-version-2 file:
   environment reference, a literal secret stays a literal secret;
 * moves every legacy model under that endpoint, because there was only one
   endpoint to move them to;
+* keeps the limits the operator configured: a legacy record's
+  `context_window` and `max_output_tokens` survive the migration, and a
+  record with a window and no mode becomes a **manual** limit, because the
+  number was configured and not advertised;
 * **never** moves a model to a different provider: a model identifier that
   looks like another vendor's model is flagged for review, not relocated;
 * flags a legacy model for operator review when its identifier looks like a
@@ -200,6 +204,12 @@ choice. A model record's `context_window` is the operator's number when
 the mode is `manual`; in `auto` mode it is the number the provider
 advertised, when it advertised one.
 
+The two numbers travel together on the model: `ContextWindow` is the
+operator's own limit, and `Budget` is the effective budget that is
+enforced. The limit is the input to the resolution, never a second,
+competing budget. A record with a window and no mode was written by
+hand, so the number is honoured as the operator's own limit.
+
 **The manual limit is enforced.** It is not a number in a panel: it is
 applied to the request that is actually sent, which is the system
 instruction, the conversation and the offered functions together. The
@@ -216,6 +226,27 @@ rules are:
   refused with an explicit error. The provider is never sent a request
   that does not fit, and the operator's message is never silently
   discarded.
+
+The enforcement lives in the provider layer and in one place:
+`internal/provider.TrimToBudget` decides what may be dropped, and
+`internal/engine.Engine.applyContextBudget` calls it on the fully
+assembled request, immediately before the request leaves the machine.
+The application only resolves the budget; it never trims a request
+itself.
+
+The budget is resolved again for every request, because an endpoint may
+report a model's context window after the engine was built. The lookup
+is bounded, runs in the background and is never retried, and it is made
+only for an endpoint whose `discovery` flag allows the catalogue to be
+probed.
+
+## The legacy configuration
+
+A pre-version-2 file keeps its own limits: a legacy model record's
+`context_window` and `max_output_tokens` are the operator's numbers, and
+the runtime resolution keeps them. The migration carries them into the
+version-2 endpoint record as well, so an explicitly configured limit is
+never turned into an automatic mode and never becomes a zero.
 
 ## Operator commands
 

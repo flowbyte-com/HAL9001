@@ -40,6 +40,28 @@ type providerTarget struct {
 	// ContextWindow is the operator's context limit in tokens. It is
 	// enforced only in manual mode.
 	ContextWindow int
+	// Budget is the effective context budget: the room the request may
+	// use, the room held back for the answer, and the provenance of the
+	// number that was chosen.
+	//
+	// It is resolved from every known source — the operator's own
+	// limit, the provider's advertisement, the local runtime's
+	// allocation, a record verified earlier and the conservative
+	// fallback — and it is what the engine enforces. The operator's
+	// ContextWindow is the input to that resolution, never a second,
+	// competing budget.
+	Budget provider.ContextBudget
+}
+
+// outputTokens returns the room the answer may use.
+//
+// The model's own cap wins; without one the protocol's default is used,
+// because the two protocols default differently.
+func (t providerTarget) outputTokens() int {
+	if t.MaxTokens > 0 {
+		return t.MaxTokens
+	}
+	return provider.DefaultOutputTokens(t.Wire)
 }
 
 // resolveTarget derives the runtime target from a stored configuration.
@@ -89,7 +111,7 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 			target.Effort = effortForRecord(model)
 			target.MaxTokens = model.MaxOutputTokens
 			target.ContextMode = model.ContextMode
-			target.ContextWindow = model.ContextWindow
+			target.ContextWindow = operatorLimitFor(model)
 		}
 	} else {
 		// A pre-version-2 configuration: one global endpoint, one
@@ -98,9 +120,17 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 		target.Credential = a.cfg.APIKey
 		target.Wire = provider.WireOpenAI
 		target.ModelID = a.cfg.Model
-		if record, ok := stored.Active(); ok {
+		if record, ok := legacyModelRecord(a, stored, target.ModelID); ok {
 			target.ModelID = record.ID
 			target.Effort = effortForRecord(record)
+			// The legacy record carries the operator's own limits
+			// too. They are the same limits the version-2 record
+			// carries, and they survive the migration: a legacy
+			// model with an explicit context window or output cap
+			// keeps it when the runtime is resolved.
+			target.MaxTokens = record.MaxOutputTokens
+			target.ContextMode = record.ContextMode
+			target.ContextWindow = operatorLimitFor(record)
 		}
 	}
 
@@ -115,7 +145,7 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 			target.Effort = effortForRecord(record)
 			target.MaxTokens = record.MaxOutputTokens
 			target.ContextMode = record.ContextMode
-			target.ContextWindow = record.ContextWindow
+			target.ContextWindow = operatorLimitFor(record)
 		} else {
 			target.Effort = ""
 			target.MaxTokens = 0
@@ -133,7 +163,60 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 	if target.Wire == "" {
 		target.Wire = provider.WireOpenAI
 	}
+	// The budget is resolved last, because it depends on everything the
+	// target carries: the operator's own limit, the model identifier
+	// the endpoint may have reported a window for, and the room the
+	// answer may use.
+	target.Budget = a.contextBudget(target.ModelID, target.ContextWindow, target.outputTokens())
 	return target, nil
+}
+
+// legacyModelRecord finds the record of a model in a pre-version-2
+// configuration.
+//
+// The stored file comes first: it is the file the operator wrote. The
+// resolved runtime configuration is the fallback, because it is the
+// same flat list and it carries the operator's own limits.
+func legacyModelRecord(a *app, stored config.FileConfig, id string) (config.ModelRecord, bool) {
+	if record, ok := stored.Active(); ok {
+		return record, true
+	}
+	if id == "" {
+		return config.ModelRecord{}, false
+	}
+	for _, record := range stored.Models {
+		if record.ID == id {
+			return record, true
+		}
+	}
+	for _, record := range a.cfg.Models {
+		if record.ID == id {
+			return record, true
+		}
+	}
+	return config.ModelRecord{}, false
+}
+
+// operatorLimitFor reports the context limit the operator configured for
+// one model record.
+//
+// The record carries two different numbers, and they are never confused:
+// in manual mode the window is the operator's own limit, in automatic
+// mode it is what the provider advertised. A record with a window and no
+// mode was written by hand, so the number is honoured as the operator's
+// own limit rather than treated as an advertisement.
+func operatorLimitFor(record config.ModelRecord) int {
+	if record.ContextWindow <= 0 {
+		return 0
+	}
+	switch record.ContextMode {
+	case config.ContextManual:
+		return record.ContextWindow
+	case config.ContextAuto:
+		return 0
+	default:
+		return record.ContextWindow
+	}
 }
 
 // overrides reports the operator's explicit overrides: the flags they
@@ -185,6 +268,11 @@ func wireProtocolFor(name string) (string, error) {
 		return provider.WireOpenAI, nil
 	case "anthropic-compatible", "anthropic":
 		return provider.WireAnthropic, nil
+	case "local", "ollama", "llamacpp", "llama.cpp", "vllm":
+		// A local runtime speaks the OpenAI dialect unless it names
+		// another one. The endpoint record owns that choice; this
+		// mapping is only the fallback for a name that carries none.
+		return provider.WireOpenAI, nil
 	default:
 		return "", fmt.Errorf("unsupported wire protocol %q (supported: %s, %s)",
 			name, provider.WireOpenAI, provider.WireAnthropic)
@@ -241,6 +329,20 @@ func (a *app) modelFor() provider.Model {
 }
 
 // modelFromTarget builds the provider's model from a target.
+//
+// The two context numbers are both carried, and they mean different
+// things:
+//
+//   - ContextWindow is the operator's own limit. It is the input to the
+//     budget resolution, not the budget itself;
+//   - Budget is the effective budget: the room the request may use, the
+//     room held back for the answer, and the provenance of the number
+//     that was chosen.
+//
+// The engine enforces the budget. Keeping both numbers here is what
+// makes a configured manual limit reach the outgoing request: the limit
+// is resolved into the budget, and the budget is what the engine
+// applies.
 func modelFromTarget(target providerTarget) provider.Model {
 	model := provider.Model{
 		ID:     target.ModelID,
@@ -251,11 +353,11 @@ func modelFromTarget(target providerTarget) provider.Model {
 	if target.MaxTokens > 0 {
 		model.MaxTokens = target.MaxTokens
 	}
-	// A manual context limit is the operator's own: HAL trims the
-	// conversation to it. In automatic mode the limit stays unset and
-	// the provider's own window governs.
-	if target.ContextMode == config.ContextManual && target.ContextWindow > 0 {
-		model.ContextWindow = target.ContextWindow
-	}
+	// The operator's own context limit. It is zero when the operator
+	// configured none, or when the model is in automatic mode and the
+	// number in the record is the provider's advertisement.
+	model.ContextWindow = target.ContextWindow
+	// The effective budget, with its provenance.
+	model.Budget = target.Budget
 	return model
 }

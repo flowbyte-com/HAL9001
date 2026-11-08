@@ -4,9 +4,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"sync/atomic"
 	"time"
 )
+
+// newHTTPClient builds the client an adapter uses when the operator did
+// not supply one.
+//
+// There is deliberately no overall Client.Timeout: a legitimate long
+// answer must not be cut mid-sentence. The turn ceiling and the idle
+// watchdog bound the request instead, and both close the connection when
+// they fire.
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+			ExpectContinueTimeout: time.Second,
+			ForceAttemptHTTP2:     true,
+		},
+	}
+}
 
 // Turn diagnostics and the safeguards around a single streamed turn.
 //
