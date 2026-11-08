@@ -271,6 +271,15 @@ var commandTable = []*command{
 			return nil
 		},
 	},
+	{
+		name:        "/mcp",
+		usage:       "/mcp <subcommand> [server]",
+		description: "Control configured external tool servers",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			return m.mcpCmd(args)
+		},
+	},
 	// The attachment commands come last: the panel shows the head of
 	// the registry first, and the exit commands must stay in that first
 	// window.

@@ -24,6 +24,7 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/attachments"
 	"github.com/flowbyte-com/HAL9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/mcp"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
@@ -251,6 +252,7 @@ const (
 	viewApprove
 	viewSkills
 	viewPermission
+	viewMCP
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -557,6 +559,20 @@ type Model struct {
 	lastTools []engine.ToolActivity
 	// permissionNotice is local to the permission overlay.
 	permissionNotice string
+	// mcp is the operator-facing Model Context Protocol surface. Nil
+	// means no MCP server is configured.
+	mcp MCPController
+	// mcpFocus is the server whose tools the MCP panel shows, and the
+	// lists below are what the last action discovered.
+	mcpFocus     string
+	mcpTools     []mcp.ToolInfo
+	mcpResources []mcp.ResourceInfo
+	mcpPrompts   []mcp.PromptInfo
+	// mcpDocument is a resource or prompt document the operator asked to
+	// read. It is shown here and never stored in the session.
+	mcpDocument      string
+	mcpDocumentTitle string
+	mcpDocumentCut   bool
 }
 
 // New builds the interface. Color follows ColorEnabled at construction so
@@ -662,6 +678,13 @@ func (m *Model) SetSkills(sel *skills.Selector) { m.skills = sel }
 // commands report that attachments are unavailable, and nothing else
 // changes.
 func (m *Model) SetAttachments(store AttachmentStore) { m.attachStore = store }
+
+// SetMCP attaches the Model Context Protocol surface.
+//
+// The interface can look at the configured servers and connect or
+// disconnect them. It cannot create a server, change a policy or grant
+// a permission: those stay with the operator and the configuration file.
+func (m *Model) SetMCP(controller MCPController) { m.mcp = controller }
 
 // SetEffort sets the active reasoning level and whether the model
 // supports it, for the footer and the selector.
@@ -1074,12 +1097,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateSkills(msg)
 	case viewPermission:
 		return m.updatePermission(msg)
+	case viewMCP:
+		return m.updateMCP(msg)
 	}
 	return m.updateChat(msg)
 }
 
 func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case mcpActionMsg:
+		m.applyMCPAction(msg)
+		return m, nil
 	case tea.WindowSizeMsg:
 		anchor := m.anchor()
 		m.width, m.height = msg.Width, msg.Height
@@ -3059,6 +3087,8 @@ func (m Model) activePanel() []string {
 		return m.skillsRows()
 	case viewPermission:
 		return m.permissionRows()
+	case viewMCP:
+		return m.mcpRows()
 	}
 	return nil
 }

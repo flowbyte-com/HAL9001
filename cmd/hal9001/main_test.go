@@ -16,6 +16,8 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/config"
 	"github.com/flowbyte-com/HAL9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/mcp"
+	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/usage"
@@ -719,5 +721,31 @@ func TestRenameSession(t *testing.T) {
 	}
 	if len(history) != 1 || history[0].Content != "hi" {
 		t.Errorf("history changed by rename: %+v", history)
+	}
+}
+
+// TestFirstMessageWithNoMCPConfiguration proves the empty-registry
+// startup path: a configuration with no mcp_servers still answers the
+// first message and offers no MCP tool.
+func TestFirstMessageWithNoMCPConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HAL9001_CONFIG", filepath.Join(dir, "config.json"))
+	cap := &captureServer{}
+	srv := httptest.NewServer(cap.handler())
+	defer srv.Close()
+
+	a := newTestApp(t, "MiniMax-M3.1-Flash")
+	a.cfg.Endpoint, a.stored.Endpoint = srv.URL, srv.URL
+	a.permission = permission.New()
+	a.mcp = mcp.NewRegistry(a.permission)
+	a.rebuildEngine()
+	if servers := a.mcp.Servers(); len(servers) != 0 {
+		t.Fatalf("an empty configuration reported servers: %#v", servers)
+	}
+	if _, err := a.eng.RespondStream(context.Background(), "hello", nil); err != nil {
+		t.Fatal(err)
+	}
+	if tools, ok := cap.body["tools"]; ok && tools != nil {
+		t.Fatalf("the first request offered MCP tools: %#v", tools)
 	}
 }

@@ -453,3 +453,56 @@ func TestMouseFlagsConflict(t *testing.T) {
 		t.Fatal("--no-mouse with --mouse must be an error")
 	}
 }
+
+// TestMCPServersLoadFromFile checks the operator-controlled MCP server
+// record: the list is read from the same configuration file as everything
+// else, and an absent list means no server at all.
+func TestMCPServersLoadFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	isolateConfig(t)
+	t.Setenv("HAL9001_CONFIG", path)
+	t.Setenv(EnvAPIKey, "k")
+	if err := SaveFile(path, FileConfig{
+		Provider: "openai-compatible",
+		Endpoint: "https://api.example.com/v1",
+		Models:   []ModelRecord{{ID: "m"}},
+		MCPServers: []MCPServerRecord{
+			{
+				Name:         "local",
+				Command:      "mock-mcp",
+				Args:         []string{"--stdio"},
+				Env:          map[string]string{"MOCK_TOKEN": "${MOCK_TOKEN}"},
+				AllowedTools: []string{"read"},
+			},
+			{
+				Name:           "remote",
+				Transport:      "http",
+				URL:            "https://mcp.example.com/mcp",
+				Headers:        map[string]string{"X-Api-Key": "${MOCK_KEY}"},
+				TokenEnv:       "MOCK_TOKEN",
+				TimeoutSeconds: 12,
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Load(nil)
+	if len(cfg.MCPServers) != 2 {
+		t.Fatalf("servers = %#v", cfg.MCPServers)
+	}
+	if cfg.MCPServers[0].Name != "local" || cfg.MCPServers[0].Command != "mock-mcp" || len(cfg.MCPServers[0].AllowedTools) != 1 {
+		t.Errorf("local = %#v", cfg.MCPServers[0])
+	}
+	if cfg.MCPServers[1].Transport != "http" || cfg.MCPServers[1].TimeoutSeconds != 12 || cfg.MCPServers[1].TokenEnv != "MOCK_TOKEN" {
+		t.Errorf("remote = %#v", cfg.MCPServers[1])
+	}
+}
+
+func TestMCPServersDefaultToEmpty(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv(EnvAPIKey, "k")
+	cfg := Load(nil)
+	if len(cfg.MCPServers) != 0 {
+		t.Fatalf("unconfigured servers = %#v", cfg.MCPServers)
+	}
+}

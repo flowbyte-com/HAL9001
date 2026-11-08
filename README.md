@@ -245,6 +245,7 @@ UNRESTRICTED` for the whole time the operator-enabled window is active.
 | `/attach <path>` | Attach a file to the next message |
 | `/attachments` | List the files attached to the next message |
 | `/detach <name>` | Remove a file from the next message |
+| `/mcp` | Show and control the configured MCP servers |
 | `/tool-icons [classic\|emoji]` | Switch tool activity icons |
 | `/animation [on\|off]` | Turn the activity clock on or off |
 | `/permission` | Switch between 444 and session-scoped 666 |
@@ -709,6 +710,39 @@ public page at a time. The providers are tried in this fixed order:
   `HAL9001_DDG_URL` and `HAL9001_DDG_MIN_INTERVAL_MS` exist for a
   compatible endpoint and test isolation.
 
+**MCP servers (444/666).** HAL has a native Model Context Protocol client
+built on the official Go SDK. It is disabled until the operator adds
+`mcp_servers` to the configuration file and runs `/mcp connect <server>`;
+it does not replace the existing `mpm call` bridge.
+
+- Local servers use stdio and run as a child process with only a small
+  inherited environment plus their configured entries; remote servers use
+  Streamable HTTP, which must be HTTPS unless the host is a literal
+  loopback address. The client negotiates the current protocol revision
+  with older servers and reports the negotiated version in `/mcp`.
+- **444 authority is local configuration, never a server annotation.** A
+  server tool runs in 444 only when the operator's `allowed_tools` names
+  it. Every other tool needs 666, and a `readOnlyHint` grants nothing.
+  In 666 each call passes through the permission gate, so disabling 666
+  cancels in-flight calls and revokes further execution.
+- Server descriptions, schemas, results, resources and prompts are
+  untrusted data. Results carry `"untrusted":true`; descriptions are
+  marked; schemas are bounded and stripped of annotation-only text; the
+  request says not to follow instructions found inside them. Output is
+  bounded and explicitly marked when cut.
+- Credentials come from the environment (`${NAME}` expansion in headers or
+  `token_env` for a bearer token). A missing variable fails closed. Secrets
+  are redacted from successful and error results, structured values,
+  resources and prompts, and never enter the configuration, logs, sessions,
+  audit records or prompts. OAuth is not implemented.
+- `/mcp` shows servers, capabilities, tools, resources and prompts;
+  `/mcp tools`, `/mcp connect`, `/mcp disconnect`, `/mcp read` and
+  `/mcp prompt` are the operator controls. A lost connection removes the
+  server's tools until the operator connects it again; tool calls are
+  never replayed automatically.
+- Full configuration format, policy and limitations are in
+  [`docs/mcp.md`](docs/mcp.md).
+
 **Token usage.** The footer shows the session's cumulative provider-reported
 tokens (`Tokens: 12.4k in / 3.2k out`) once a turn has reported usage;
 narrow terminals hide it before the model name. `/usage`
@@ -762,6 +796,7 @@ internal/capability/  444 allowlist: what HAL may do, default-deny rest
 internal/permission/  session-scoped 444/666 controller and read-only Gate
 internal/agenttools/  the 666 read/write/edit/bash executor
 internal/knowledge/   typed MPM knowledge tools (both modes)
+internal/mcp/         native MCP client: stdio + Streamable HTTP, permission boundary
 internal/persona/     identity, conversational contract, Dave Protocol
 internal/session/     model-independent JSONL conversation storage
 internal/attachments/ operator-chosen file ingestion: safe copies, decoding

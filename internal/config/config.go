@@ -61,6 +61,38 @@ func (m ModelRecord) Display() string {
 	return m.ID
 }
 
+// MCPServerRecord is one configured Model Context Protocol server.
+//
+// The record is operator-controlled: HAL reads it, never writes it from a
+// model response, and never changes it on its own. A secret belongs in
+// the environment, not in this file: a value of the form ${NAME} is read
+// from the environment when the server is connected.
+type MCPServerRecord struct {
+	// Name identifies the server. It must be unique.
+	Name string `json:"name"`
+	// Transport is "stdio" (the default) or "http".
+	Transport string `json:"transport,omitempty"`
+	// Command and Args start a local server over stdio.
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	// Env holds extra environment variables for a local server.
+	Env map[string]string `json:"env,omitempty"`
+	// CWD is the working directory of a local server.
+	CWD string `json:"cwd,omitempty"`
+	// URL is the endpoint of a remote Streamable HTTP server.
+	URL string `json:"url,omitempty"`
+	// Headers are extra HTTP headers.
+	Headers map[string]string `json:"headers,omitempty"`
+	// TokenEnv names an environment variable holding a bearer token.
+	TokenEnv string `json:"token_env,omitempty"`
+	// TimeoutSeconds bounds one call to this server.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// AllowedTools names the tools this server may run in 444. It is the
+	// trusted local policy: every other tool needs 666, whatever the
+	// server says about itself.
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+}
+
 // FileConfig is the persisted user configuration.
 type FileConfig struct {
 	Provider    string        `json:"provider"`
@@ -80,6 +112,10 @@ type FileConfig struct {
 	StreamIdleSeconds int `json:"stream_idle_timeout_seconds,omitempty"`
 	// TurnTimeoutSeconds bounds one whole turn.
 	TurnTimeoutSeconds int `json:"turn_timeout_seconds,omitempty"`
+	// MCPServers lists the Model Context Protocol servers HAL may use.
+	// The list is empty by default: HAL talks to no MCP server until the
+	// operator configures one.
+	MCPServers []MCPServerRecord `json:"mcp_servers,omitempty"`
 }
 
 // Active returns the active model record (first model when unset).
@@ -274,7 +310,10 @@ type Config struct {
 	StreamIdleSeconds int
 	// TurnTimeoutSeconds bounds one whole turn. Zero means the default.
 	TurnTimeoutSeconds int
-	configured         bool
+	// MCPServers lists the configured Model Context Protocol servers.
+	// The list is empty unless the operator configured one.
+	MCPServers []MCPServerRecord
+	configured bool
 }
 
 // DefaultWorkspaceDir returns the directory proposed writes may reach.
@@ -325,6 +364,7 @@ func LoadErr(args []string) (Config, error) {
 		StoreDir:           DefaultStoreDir(),
 		WorkspaceDir:       firstNonEmpty(os.Getenv(EnvWorkspace), DefaultWorkspaceDir()),
 		Models:             append([]ModelRecord(nil), stored.Models...),
+		MCPServers:         append([]MCPServerRecord(nil), stored.MCPServers...),
 		MaxTokens:          firstNonZero(envInt(EnvMaxTokens), stored.MaxTokens),
 		StreamIdleSeconds:  firstNonZero(envInt(EnvStreamIdleTimeout), stored.StreamIdleSeconds),
 		TurnTimeoutSeconds: firstNonZero(envInt(EnvTurnTimeout), stored.TurnTimeoutSeconds),

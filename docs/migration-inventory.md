@@ -31,7 +31,9 @@ seeded), then review, then Prompt Workshop, then continuity, then MPM.
 - Coding profiles and turn-profile machinery: superseded by the
   unconditional allowlist.
 - Channel integrations (Telegram, Discord, Matrix, …), gateway, cron,
-  auth, plugins, MCP client: out of scope for the native foundation.
+  auth and plugins: out of scope for the native foundation. (The native
+  MCP client is implemented separately in `internal/mcp`; the MPM bridge
+  remains the knowledge integration.)
 - Provider ecosystem beyond the contract: reimplemented per-adapter in
   the provider milestone, not ported.
 

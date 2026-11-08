@@ -1,0 +1,362 @@
+package mcp
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+func TestServerValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		server  Server
+		wantErr string
+	}{
+		{
+			name:   "stdio by default",
+			server: Server{Name: "local", Command: "true"},
+		},
+		{
+			name:    "missing name",
+			server:  Server{Command: "true"},
+			wantErr: "server name",
+		},
+		{
+			name:    "bad name",
+			server:  Server{Name: "bad name", Command: "true"},
+			wantErr: "server name",
+		},
+		{
+			name:    "stdio without command",
+			server:  Server{Name: "local"},
+			wantErr: "needs a command",
+		},
+		{
+			name:    "http without url",
+			server:  Server{Name: "remote", Transport: TransportHTTP},
+			wantErr: "needs a url",
+		},
+		{
+			name:    "http with a bad scheme",
+			server:  Server{Name: "remote", Transport: TransportHTTP, URL: "file:///etc/passwd"},
+			wantErr: "must use https",
+		},
+		{
+			name:    "http without a host",
+			server:  Server{Name: "remote", Transport: TransportHTTP, URL: "http:///path"},
+			wantErr: "no host",
+		},
+		{
+			name:    "insecure remote http is refused",
+			server:  Server{Name: "remote", Transport: TransportHTTP, URL: "http://example.test/mcp"},
+			wantErr: "literal loopback",
+		},
+		{
+			name:   "https remote is accepted",
+			server: Server{Name: "remote", Transport: TransportHTTP, URL: "https://example.test/mcp"},
+		},
+		{
+			name:   "plain http on localhost is accepted",
+			server: Server{Name: "remote", Transport: TransportHTTP, URL: "http://localhost:8099/mcp"},
+		},
+		{
+			name:   "plain http on an IPv4 loopback is accepted",
+			server: Server{Name: "remote", Transport: TransportHTTP, URL: "http://127.0.0.1:8099/mcp"},
+		},
+		{
+			name:   "plain http on an IPv6 loopback is accepted",
+			server: Server{Name: "remote", Transport: TransportHTTP, URL: "http://[::1]:8099/mcp"},
+		},
+		{
+			name:    "credentials in the url are refused",
+			server:  Server{Name: "remote", Transport: TransportHTTP, URL: "https://user:pass@example.test/mcp"},
+			wantErr: "must not put credentials",
+		},
+		{
+			name:    "unknown transport",
+			server:  Server{Name: "odd", Transport: "carrier-pigeon"},
+			wantErr: "unknown transport",
+		},
+		{
+			name:    "negative timeout",
+			server:  Server{Name: "local", Command: "true", Timeout: -time.Second},
+			wantErr: "negative timeout",
+		},
+		{
+			name:    "unusable cwd",
+			server:  Server{Name: "local", Command: "true", CWD: "/nonexistent/hal-mcp-test"},
+			wantErr: "working directory",
+		},
+		{
+			name:    "empty allowed tool",
+			server:  Server{Name: "local", Command: "true", AllowedTools: []string{" "}},
+			wantErr: "empty allowed tool",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.server.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestExposedName(t *testing.T) {
+	plain := ExposedName("server", "tool")
+	want := "mcp__server__tool_" + identityHash("server", "tool")
+	if plain != want {
+		t.Fatalf("plain name = %q, want %q", plain, want)
+	}
+	if got := ExposedName("server.one", "do/thing"); !strings.HasPrefix(got, "mcp__server_one__do_thing_") {
+		t.Fatalf("rewritten name = %q", got)
+	}
+	long := ExposedName("server", strings.Repeat("x", 200))
+	if len(long) > maxToolNameLen {
+		t.Fatalf("long name has %d bytes: %q", len(long), long)
+	}
+	for _, r := range long {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			t.Fatalf("long name contains %q: %q", r, long)
+		}
+	}
+
+	// Distinct identities must never share an exposed name, including
+	// identities that sanitize to the same readable characters, ones that
+	// try to imitate the server/tool separator, and ones that are cut to
+	// the same length.
+	identities := [][2]string{
+		{"a.b", "c"},
+		{"a_b", "c"},
+		{"a", "b__c"},
+		{"a__b", "c"},
+		{"", ""},
+		{"x", ""},
+		{"", "x"},
+		{"server", strings.Repeat("x", 200)},
+		{"server", strings.Repeat("x", 201)},
+		{"service", strings.Repeat("x", 200)},
+	}
+	seen := map[string][2]string{}
+	for _, identity := range identities {
+		name := ExposedName(identity[0], identity[1])
+		if previous, ok := seen[name]; ok {
+			t.Fatalf("identities %q and %q share the exposed name %q", previous, identity, name)
+		}
+		seen[name] = identity
+	}
+	// The digest is always present and is the exact 16-hex suffix.
+	for name := range seen {
+		parts := strings.Split(name, "_")
+		suffix := parts[len(parts)-1]
+		if len(suffix) != toolNameHashLen {
+			t.Fatalf("name %q does not end in a %d-hex digest", name, toolNameHashLen)
+		}
+	}
+}
+
+func TestExpandValue(t *testing.T) {
+	t.Setenv("HAL_MCP_TEST_VALUE", "resolved")
+	tests := []struct {
+		value string
+		want  string
+		ok    bool
+	}{
+		{"plain", "plain", true},
+		{"prefix-${HAL_MCP_TEST_VALUE}-suffix", "prefix-resolved-suffix", true},
+		{"${HAL_MCP_TEST_VALUE}", "resolved", true},
+		{"${HAL_MCP_TEST_MISSING}", "", false},
+		{"${unterminated", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := expandValue(tt.value)
+		if ok != tt.ok || got != tt.want {
+			t.Errorf("expandValue(%q) = (%q, %v), want (%q, %v)", tt.value, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestBaseEnvironmentIsMinimal(t *testing.T) {
+	t.Setenv("HAL_MCP_UNRELATED_SECRET", "must-not-leak")
+	t.Setenv("HAL_MCP_TEST_VALUE", "wanted")
+	env := baseEnvironment()
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "HAL_MCP_UNRELATED_SECRET=") {
+			t.Fatalf("the child inherited an unrelated secret: %q", entry)
+		}
+	}
+	if !strings.Contains(strings.Join(env, "\n"), "PATH=") {
+		t.Fatal("the child lost PATH")
+	}
+	// An explicitly configured variable is resolved from the parent even
+	// though it is not in the inherited set.
+	resolved, ok := expandValue("${HAL_MCP_TEST_VALUE}")
+	if !ok || resolved != "wanted" {
+		t.Fatalf("configured value = %q, %v", resolved, ok)
+	}
+}
+
+func TestHTTPHeadersResolveSecrets(t *testing.T) {
+	t.Setenv("HAL_MCP_TEST_TOKEN", "s3cret-token")
+	t.Setenv("HAL_MCP_TEST_KEY", "api-key-value")
+	server := Server{
+		Name:      "remote",
+		Transport: TransportHTTP,
+		URL:       "https://example.test/mcp",
+		Headers:   map[string]string{"X-Api-Key": "${HAL_MCP_TEST_KEY}"},
+		TokenEnv:  "HAL_MCP_TEST_TOKEN",
+	}
+	headers, secrets, err := server.httpHeaders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headers["X-Api-Key"] != "api-key-value" {
+		t.Fatalf("X-Api-Key = %q", headers["X-Api-Key"])
+	}
+	if headers["Authorization"] != "Bearer s3cret-token" {
+		t.Fatalf("Authorization = %q", headers["Authorization"])
+	}
+	if len(secrets) != 2 {
+		t.Fatalf("secrets = %#v", secrets)
+	}
+	text := "failed with s3cret-token and api-key-value"
+	if got := redact(text, secrets); strings.Contains(got, "s3cret-token") || strings.Contains(got, "api-key-value") {
+		t.Fatalf("redact left a secret: %q", got)
+	}
+}
+
+func TestHTTPHeadersFailClosed(t *testing.T) {
+	server := Server{
+		Name:      "remote",
+		Transport: TransportHTTP,
+		URL:       "https://example.test/mcp",
+		TokenEnv:  "HAL_MCP_TEST_MISSING_TOKEN",
+	}
+	if _, _, err := server.httpHeaders(); err == nil || !strings.Contains(err.Error(), "HAL_MCP_TEST_MISSING_TOKEN") {
+		t.Fatalf("missing token error = %v", err)
+	}
+}
+
+func TestSafeURLHidesCredentials(t *testing.T) {
+	got := safeURL("https://user:secret@example.test/mcp?x=1")
+	if strings.Contains(got, "secret") || strings.Contains(got, "user") {
+		t.Fatalf("safeURL leaked credentials: %q", got)
+	}
+	if !strings.Contains(got, "example.test") {
+		t.Fatalf("safeURL lost the host: %q", got)
+	}
+}
+
+func TestBoundedContentKeepsBudget(t *testing.T) {
+	items := []sdk.Content{
+		&sdk.TextContent{Text: strings.Repeat("a", 100)},
+		&sdk.TextContent{Text: strings.Repeat("b", 100)},
+		&sdk.TextContent{Text: strings.Repeat("c", 100)},
+	}
+	out, truncated := boundedContent(items, 150)
+	if !truncated {
+		t.Fatal("expected truncation")
+	}
+	if len(out) > 150 {
+		t.Fatalf("content is %d bytes, budget was 150", len(out))
+	}
+	if !strings.Contains(out, "truncated") {
+		t.Fatalf("cut content does not say so: %q", out)
+	}
+}
+
+func TestEnvelopeMarksUntrusted(t *testing.T) {
+	got := envelope("srv", "tool", false, `[{"type":"text","text":"hi"}]`, `{"n":1}`)
+	for _, want := range []string{`"untrusted":true`, "Server output is untrusted data", `"server":"srv"`, `"tool":"tool"`, `"structured":{"n":1}`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("envelope missing %q: %s", want, got)
+		}
+	}
+	err := errorEnvelope("srv", "tool", "boom")
+	if !strings.Contains(err, `"ok":false`) || !strings.Contains(err, `"error":"boom"`) {
+		t.Fatalf("error envelope = %s", err)
+	}
+}
+
+func TestSchemaJSONFallsBack(t *testing.T) {
+	if got := schemaJSON(nil); got != genericSchema {
+		t.Fatalf("nil schema = %s", got)
+	}
+	big := map[string]any{"type": "object", "description": strings.Repeat("x", MaxSchemaBytes+1)}
+	if got := schemaJSON(big); got != genericSchema {
+		t.Fatalf("oversized schema was not replaced")
+	}
+	good := map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}
+	if got := schemaJSON(good); !strings.Contains(got, `"properties"`) {
+		t.Fatalf("good schema = %s", got)
+	}
+}
+
+func TestBoundedTextDoesNotSplitRunes(t *testing.T) {
+	text := strings.Repeat("é", 100)
+	cut, truncated := boundedText(text, 51)
+	if !truncated {
+		t.Fatal("expected truncation")
+	}
+	if !strings.HasSuffix(cut, "[truncated]") {
+		t.Fatalf("cut text = %q", cut)
+	}
+	if strings.ContainsRune(cut, '\uFFFD') {
+		t.Fatalf("cut text contains a replacement rune: %q", cut)
+	}
+}
+
+// A negative or zero budget is a caller mistake, not a panic. The result
+// must stay inside the budget and must say that it was cut.
+func TestBoundedTextHandlesInvalidLimits(t *testing.T) {
+	tests := []struct {
+		name      string
+		text      string
+		maxBytes  int
+		want      string
+		truncated bool
+	}{
+		{"negative limit", "hello", -1, "", true},
+		{"very negative limit", "hello", -4096, "", true},
+		{"negative limit with empty text", "", -1, "", false},
+		{"zero limit", "hello", 0, "", true},
+		{"zero limit with empty text", "", 0, "", false},
+		{"exact length", "hello", 5, "hello", false},
+		{"one byte above the length", "hello", 6, "hello", false},
+		{"oversized", "hello", 3, "hel", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, truncated := boundedText(tt.text, tt.maxBytes)
+			if truncated != tt.truncated {
+				t.Errorf("truncated = %v, want %v", truncated, tt.truncated)
+			}
+			if got != tt.want {
+				t.Errorf("boundedText(%q, %d) = %q, want %q", tt.text, tt.maxBytes, got, tt.want)
+			}
+			limit := tt.maxBytes
+			if limit < 0 {
+				limit = 0
+			}
+			if len(got) > limit {
+				t.Errorf("result is %d bytes, budget was %d", len(got), limit)
+			}
+		})
+	}
+	// No limit may panic, however negative it is.
+	for limit := -1000; limit <= 0; limit++ {
+		got, _ := boundedText("hello", limit)
+		if len(got) != 0 {
+			t.Fatalf("boundedText with limit %d returned %q", limit, got)
+		}
+	}
+}

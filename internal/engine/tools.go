@@ -65,6 +65,9 @@ func (e *Engine) offeredTools() []provider.Tool {
 	if e.knowledge != nil {
 		out = append(out, e.knowledge.Tools()...)
 	}
+	if e.mcp != nil {
+		out = append(out, e.mcp.Tools()...)
+	}
 	return out
 }
 
