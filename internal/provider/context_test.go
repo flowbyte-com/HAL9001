@@ -196,14 +196,21 @@ func TestTrimToBudgetCountsTheToolDefinitions(t *testing.T) {
 }
 
 func TestBudgetForKeepsTheProvenance(t *testing.T) {
-	operator := BudgetFor(ContextMetadata{
-		ContextWindow: 100,
+	// The operator's window is a total: the answer comes out of it.
+	operator, err := BudgetFor(ContextMetadata{
+		ContextWindow: 8192,
 		Source:        ContextSourceOperator,
 		Mode:          ContextModeConfigured,
 		Verified:      true,
-	}, 20)
-	if operator.Limit != 100 {
-		t.Fatalf("the operator's limit was not kept: %#v", operator)
+	}, OutputAllowance{Tokens: 4096, Configured: true})
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
+	if operator.Limit != 4096 {
+		t.Fatalf("the answer was not reserved from the operator's window: %#v", operator)
+	}
+	if operator.ReservedOutput != 4096 {
+		t.Fatalf("the reservation was lost: %#v", operator)
 	}
 	if operator.Source != ContextSourceOperator || operator.Mode != ContextModeConfigured {
 		t.Fatalf("the provenance was lost: %#v", operator)
@@ -212,12 +219,15 @@ func TestBudgetForKeepsTheProvenance(t *testing.T) {
 		t.Fatalf("an operator limit is verified: %#v", operator)
 	}
 
-	advertised := BudgetFor(ContextMetadata{
+	advertised, err := BudgetFor(ContextMetadata{
 		ContextWindow: 200000,
 		Source:        ContextSourceProvider,
 		Mode:          ContextModeMax,
 		Verified:      true,
-	}, 15000)
+	}, OutputAllowance{Tokens: 15000})
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
 	if advertised.Limit != 200000-15000 {
 		t.Fatalf("the answer was not reserved from the advertised window: %#v", advertised)
 	}
@@ -225,36 +235,160 @@ func TestBudgetForKeepsTheProvenance(t *testing.T) {
 		t.Fatalf("the reservation was lost: %#v", advertised)
 	}
 
-	provisional := BudgetFor(ProvisionalContext(), 15000)
+	provisional, err := BudgetFor(ProvisionalContext(), OutputAllowance{Tokens: 15000})
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
 	if provisional.Source != ContextSourceProvisional {
 		t.Fatalf("the provisional source was lost: %#v", provisional)
 	}
 	if provisional.Verified {
 		t.Fatalf("a provisional budget is never verified: %#v", provisional)
 	}
-	// A guess is reported, never enforced: the provider's own window
-	// governs until the operator sets a limit or the endpoint reports
-	// one.
-	if provisional.Limit != 0 {
-		t.Fatalf("a guess must not be enforced: %#v", provisional)
+	// A provisional window is a conservative total, not an unlimited
+	// history: the request is bounded even when nobody reported
+	// anything.
+	if provisional.Limit != ProvisionalContextWindow-15000 {
+		t.Fatalf("the provisional total was not measured: %#v", provisional)
+	}
+	if provisional.Limit <= 0 {
+		t.Fatalf("a provisional budget must still bound the request: %#v", provisional)
 	}
 	if !strings.Contains(DescribeBudget(provisional), "provisional") {
 		t.Fatalf("the description does not name the source: %q", DescribeBudget(provisional))
 	}
 }
 
-func TestBudgetForNeverHoldsBackMoreThanHalfOfAWindow(t *testing.T) {
-	// A small advertised window must still leave room for the request.
-	budget := BudgetFor(ContextMetadata{
+// The window is a total in every case: the operator's own limit, the
+// provider's advertisement, a local runtime's allocation and a record
+// verified earlier are all measured the same way.
+func TestEveryWindowIsMeasuredAsATotal(t *testing.T) {
+	for _, source := range []ContextSource{
+		ContextSourceOperator,
+		ContextSourceProvider,
+		ContextSourceLocal,
+		ContextSourceCached,
+	} {
+		budget, err := BudgetFor(ContextMetadata{
+			ContextWindow: 8192,
+			Source:        source,
+			Verified:      true,
+		}, OutputAllowance{Tokens: 4096, Configured: true})
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		if budget.Limit != 4096 {
+			t.Errorf("%s: the limit = %d, want 4096", source, budget.Limit)
+		}
+		if budget.ReservedOutput != 4096 {
+			t.Errorf("%s: the reservation = %d, want 4096", source, budget.ReservedOutput)
+		}
+	}
+}
+
+// A configured output allowance that does not fit inside the window is a
+// contradiction between two numbers the operator wrote down. It is
+// refused, with both numbers named.
+func TestAConfiguredAllowanceThatDoesNotFitIsRefused(t *testing.T) {
+	for _, reserved := range []int{8192, 9000, 100000} {
+		budget, err := BudgetFor(ContextMetadata{
+			ContextWindow: 8192,
+			Source:        ContextSourceOperator,
+			Verified:      true,
+		}, OutputAllowance{Tokens: reserved, Configured: true})
+		if err == nil {
+			t.Fatalf("reserved %d: the contradiction was accepted: %#v", reserved, budget)
+		}
+		var allowance *ContextAllowanceError
+		if !errors.As(err, &allowance) {
+			t.Fatalf("reserved %d: the error is not an allowance error: %v", reserved, err)
+		}
+		if allowance.Total != 8192 || allowance.Reserved != reserved {
+			t.Errorf("reserved %d: the error does not name both numbers: %v", reserved, err)
+		}
+		if budget.Limit != 0 {
+			t.Errorf("reserved %d: a refused budget must not carry a limit: %#v", reserved, budget)
+		}
+	}
+}
+
+// A default that does not fit is reduced conservatively: a window must
+// always leave room for the request.
+func TestADefaultThatDoesNotFitIsReducedConservatively(t *testing.T) {
+	budget, err := BudgetFor(ContextMetadata{
 		ContextWindow: 8000,
 		Source:        ContextSourceProvider,
 		Verified:      true,
-	}, 15000)
+	}, OutputAllowance{Tokens: 15000})
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
 	if budget.Limit <= 0 {
 		t.Fatalf("the window left no room for the request: %#v", budget)
 	}
 	if budget.ReservedOutput > 8000/2 {
 		t.Fatalf("more than half the window was reserved: %#v", budget)
+	}
+	if budget.Limit != 8000-budget.ReservedOutput {
+		t.Fatalf("the limit is not what is left of the window: %#v", budget)
+	}
+}
+
+// A window that is known never produces a zero or a negative budget: a
+// zero budget would be read as "no budget at all".
+func TestAKnownWindowNeverProducesAZeroBudget(t *testing.T) {
+	for _, total := range []int{2, 3, 7, 100, 8192} {
+		budget, err := BudgetFor(ContextMetadata{
+			ContextWindow: total,
+			Source:        ContextSourceProvider,
+			Verified:      true,
+		}, OutputAllowance{Tokens: 15000})
+		if err != nil {
+			t.Fatalf("total %d: %v", total, err)
+		}
+		if budget.Limit <= 0 {
+			t.Errorf("total %d: the budget = %d", total, budget.Limit)
+		}
+		if budget.Limit != total-budget.ReservedOutput {
+			t.Errorf("total %d: the limit is not what is left of the window: %#v", total, budget)
+		}
+	}
+}
+
+// A window that cannot hold anything at all is refused with a clear
+// error. It never becomes a zero budget, which would be read as "no
+// budget at all" and would let an unbounded request through.
+func TestAWindowThatCanHoldNothingIsRefused(t *testing.T) {
+	budget, err := BudgetFor(ContextMetadata{
+		ContextWindow: 1,
+		Source:        ContextSourceProvider,
+		Verified:      true,
+	}, OutputAllowance{Tokens: 1})
+	if err == nil {
+		t.Fatalf("an impossible window was accepted: %#v", budget)
+	}
+	var allowance *ContextAllowanceError
+	if !errors.As(err, &allowance) {
+		t.Fatalf("the error is not an allowance error: %v", err)
+	}
+	if budget.Limit != 0 {
+		t.Errorf("a refused budget must not carry a limit: %#v", budget)
+	}
+}
+
+// A window that is not known at all leaves the provider's own limit in
+// force, and the budget says so with a zero limit.
+func TestAnUnknownWindowLeavesTheProvidersLimitInForce(t *testing.T) {
+	budget, err := BudgetFor(ContextMetadata{Source: ContextSourceProvisional},
+		OutputAllowance{Tokens: 4096})
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
+	if budget.Limit != 0 {
+		t.Fatalf("the limit = %d, want 0", budget.Limit)
+	}
+	if !strings.Contains(DescribeBudget(budget), "provider's own context window") {
+		t.Fatalf("the description does not say so: %q", DescribeBudget(budget))
 	}
 }
 

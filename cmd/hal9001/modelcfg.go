@@ -73,11 +73,31 @@ func credentialLabel(e config.EndpointRecord) string {
 	}
 }
 
+// endpointChanged reports whether the fields that decide what an
+// endpoint says about its models changed.
+//
+// The context metadata an endpoint reported belongs to its address, its
+// protocol and its credential: a window advertised by one address
+// describes that address, and it says nothing about another. A change
+// to any of these fields makes the recorded window stale, and a change
+// to the name or to the discovery flag does not.
+func endpointChanged(before, after config.EndpointRecord) bool {
+	return before.BaseURL != after.BaseURL ||
+		before.Protocol != after.Protocol ||
+		before.WireProtocol != after.WireProtocol ||
+		before.Credential != after.Credential ||
+		before.CredentialEnv != after.CredentialEnv
+}
+
 // saveEndpoint adds or updates one endpoint.
 //
 // An update only changes the fields the operator named: an endpoint that
 // is edited keeps everything it is not asked to change, including its
 // models.
+//
+// An endpoint that changed its address, its protocol or its credential
+// forgets what it reported about its models: the window it advertised
+// belonged to the configuration that is no longer in force.
 func (a *app) saveEndpoint(spec tui.EndpointSpec) error {
 	next := a.stored.Clone()
 	if _, found := next.EndpointByID(spec.ID); !found {
@@ -103,8 +123,10 @@ func (a *app) saveEndpoint(spec tui.EndpointSpec) error {
 		if err := next.AddEndpoint(rec); err != nil {
 			return err
 		}
+		a.invalidateContext(spec.ID)
 		return a.commitTarget(next)
 	}
+	before, _ := next.EndpointByID(spec.ID)
 	err := next.UpdateEndpoint(spec.ID, func(e *config.EndpointRecord) error {
 		if spec.Name != "" {
 			e.Name = spec.Name
@@ -131,6 +153,10 @@ func (a *app) saveEndpoint(spec tui.EndpointSpec) error {
 	})
 	if err != nil {
 		return err
+	}
+	after, _ := next.EndpointByID(spec.ID)
+	if endpointChanged(before, after) {
+		a.invalidateContext(spec.ID)
 	}
 	return a.commitTarget(next)
 }
@@ -176,6 +202,9 @@ func (a *app) deleteEndpoint(id, replacement string) error {
 	if err := next.RemoveEndpoint(id); err != nil {
 		return err
 	}
+	// The endpoint is gone: what it reported about its models goes with
+	// it.
+	a.invalidateContext(id)
 	return a.commitTarget(next)
 }
 

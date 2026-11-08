@@ -54,8 +54,9 @@ func TestTheModelCarriesTheLimitAndTheBudget(t *testing.T) {
 	if model.ContextWindow != 22585 {
 		t.Errorf("the model does not carry the operator's limit: %+v", model)
 	}
-	if model.Budget.Limit != 22585 {
-		t.Errorf("the budget does not carry the operator's limit: %+v", model.Budget)
+	// The window is a total: the room for the answer comes out of it.
+	if model.Budget.Limit != 22585-4096 {
+		t.Errorf("the budget does not carry the operator's window: %+v", model.Budget)
 	}
 	if model.Budget.Source != provider.ContextSourceOperator {
 		t.Errorf("the budget does not name its source: %+v", model.Budget)
@@ -83,7 +84,10 @@ func TestAConfiguredLimitReachesTheOutgoingRequest(t *testing.T) {
 		BaseURL: rec.URL + "/v1",
 		Models: []config.ModelRecord{{
 			ID: "alpha-model", ContextMode: config.ContextManual,
-			ContextWindow: 1500,
+			// The window is a total: 2200 tokens in all, of which
+			// 100 are reserved for the answer.
+			ContextWindow:   2200,
+			MaxOutputTokens: 100,
 		}},
 	}}
 	stored.SetActive("alpha", "alpha-model")
@@ -111,6 +115,9 @@ func TestAConfiguredLimitReachesTheOutgoingRequest(t *testing.T) {
 	messages, _ := requests[0].Body["messages"].([]any)
 	if len(messages) >= 41 {
 		t.Errorf("the whole conversation was transmitted: %d messages", len(messages))
+	}
+	if len(messages) == 0 {
+		t.Fatal("the request carries no message")
 	}
 	// The current message is never the thing that is dropped.
 	last, _ := messages[len(messages)-1].(map[string]any)
@@ -163,8 +170,8 @@ func TestTheLegacyRuntimeKeepsTheModelsLimits(t *testing.T) {
 	if model.ContextWindow != 22585 {
 		t.Errorf("the model does not carry the context window: %+v", model)
 	}
-	if model.Budget.Limit != 22585 {
-		t.Errorf("the budget does not carry the limit: %+v", model.Budget)
+	if model.Budget.Limit != 22585-4096 {
+		t.Errorf("the budget does not carry the window: %+v", model.Budget)
 	}
 }
 

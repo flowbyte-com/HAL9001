@@ -4,17 +4,29 @@
 The suite runs the real binary against a provider that records every
 request it receives. A conversation of forty-one messages is stored
 before the run, and the request that leaves the machine is compared
-with the limit the operator configured.
+with the budget that is enforced.
+
+The operator's window is a **total**: the room for the answer comes out
+of it, and the request may use what is left. The suite therefore
+configures both numbers and compares the transmitted request with the
+room that is really left, not with the whole window.
 
 What is checked:
 
-* with no limit the whole conversation is transmitted;
-* with a configured limit the request that is transmitted is smaller,
-  it fits the limit, and the interface says that older context was
-  dropped;
-* with a hundred-token limit nothing is transmitted at all: the
-  request cannot be reduced, so it is refused with an explanation
-  instead of being truncated.
+* with no operator limit the conversation is still bounded: the
+  provisional total applies, the request that leaves the machine fits
+  it, and the interface says that the budget is provisional rather than
+  a fact about the model;
+* with a configured window and a configured answer cap the request that
+  is transmitted is smaller, it fits the room that is left of the
+  window, it keeps the newest request, and the interface says that older
+  context was dropped;
+* with a hundred-token window nothing is transmitted at all: the request
+  cannot be reduced, so it is refused with an explanation instead of
+  being truncated;
+* with an answer cap that fills the whole window the two numbers
+  contradict each other, and the contradiction is reported instead of
+  being guessed at.
 
 Usage:
 
@@ -23,6 +35,7 @@ Usage:
 """
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -43,6 +56,15 @@ PORT = int(os.environ.get("HAL9001_RECORDER_PORT", "8265"))
 # request they make is far larger than any sensible budget.
 MESSAGES = 41
 MESSAGE_SIZE = 4000
+
+# The provisional budget: the provider package uses a 32768 total window
+# when nothing is known, and the OpenAI protocol's 15000 answer cap
+# comes out of it, so 17768 tokens are left for the request. The suite
+# has to compare the transmitted request with the number that is
+# enforced, so the numbers are written down here.
+PROVISIONAL_TOTAL = 32768
+PROVISIONAL_ANSWER = 15000
+PROVISIONAL_INPUT = PROVISIONAL_TOTAL - PROVISIONAL_ANSWER
 
 
 def check(name, ok, detail=""):
@@ -115,10 +137,12 @@ def main():
         [sys.executable, os.path.join(HERE, "recording_provider.py")],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
-    def write_config(limit=0):
+    def write_config(window=0, answer=0):
         record = {"id": "test-model"}
-        if limit:
-            record["context_window"] = limit
+        if window:
+            record["context_window"] = window
+        if answer:
+            record["max_output_tokens"] = answer
         with open(config, "w") as fh:
             json.dump({
                 "provider": "openai-compatible",
@@ -154,11 +178,12 @@ def main():
                     pass
         return out
 
-    def capture(session, cols=120, rows=40):
-        timeout = 12.0
-        raw = pty_drive.run([(2.0, b"hello there\r"), (3.0, b"")], cols=cols,
-                            rows=rows, timeout=timeout, fresh=False,
-                            session=session,
+    def capture(session, cols=120, rows=40, script=None):
+        if script is None:
+            script = [(2.0, b"hello there\r"), (3.0, b"")]
+        timeout = sum(delay for delay, _ in script) + 4.0
+        raw = pty_drive.run(script, cols=cols, rows=rows, timeout=timeout,
+                            fresh=False, session=session,
                             args=["--workspace", workspace])
         return raw, render(raw, cols, rows).text()
 
@@ -167,23 +192,36 @@ def main():
             print("the recording provider did not start")
             return 2
 
-        # 1. Without a limit the whole conversation is transmitted.
+        # 1. Without an operator limit the conversation is still bounded.
+        #    The provisional total applies, and the interface says that it
+        #    is provisional rather than a fact about the model.
         write_config()
         seed("budget-base")
         raw, screen = capture("budget-base")
+        text = raw.decode("utf-8", "replace")
         recorded = requests()
         check("the provider received a request", len(recorded) == 1, len(recorded))
         if not recorded:
             return 1
         baseline = recorded[0]
         baseline_messages = len(baseline.get("messages", []))
-        check("the whole conversation was transmitted",
-              baseline_messages >= MESSAGES + 1, baseline_messages)
         baseline_size = estimate(baseline)
+        check("the whole conversation was not transmitted",
+              baseline_messages < MESSAGES + 1, baseline_messages)
+        check("the request fits the provisional budget",
+              baseline_size <= PROVISIONAL_INPUT,
+              "%d > %d" % (baseline_size, PROVISIONAL_INPUT))
+        _, diag = capture("budget-base",
+                          script=[(1.8, b""), (0.1, b"/diag\r"), (1.2, b"")])
+        check("the interface says the budget is provisional",
+              "provisional" in diag, diag)
 
-        # 2. A configured limit bounds the request that is transmitted.
-        limit = max(1000, baseline_size // 2)
-        write_config(limit)
+        # 2. A configured window bounds the request that is transmitted.
+        #    The window is a total: the room for the answer comes out of
+        #    it, so the request may use what is left.
+        window = max(4000, baseline_size)
+        answer = window // 2
+        write_config(window, answer)
         seed("budget-limited")
         raw, screen = capture("budget-limited")
         text = raw.decode("utf-8", "replace")
@@ -197,9 +235,9 @@ def main():
         check("the transmitted request is smaller",
               bounded_messages < baseline_messages,
               "%d of %d messages" % (bounded_messages, baseline_messages))
-        check("the transmitted request fits the limit",
-              estimate(bounded) <= limit,
-              "%d > %d" % (estimate(bounded), limit))
+        check("the transmitted request fits the room that is left of the window",
+              estimate(bounded) <= window - answer,
+              "%d > %d" % (estimate(bounded), window - answer))
         check("the newest request was transmitted",
               any("hello there" in (m.get("content") or "")
                   for m in user_messages(bounded)),
@@ -207,7 +245,7 @@ def main():
         check("the interface says that older context was dropped",
               "dropped to fit" in text, screen)
 
-        # 3. A hundred-token limit cannot be met: nothing is sent.
+        # 3. A hundred-token window cannot be met: nothing is sent.
         write_config(100)
         seed("budget-tiny")
         raw, screen = capture("budget-tiny")
@@ -216,6 +254,23 @@ def main():
         check("nothing was transmitted", len(recorded) == 2, len(recorded))
         check("the refusal explains itself",
               "context budget" in text and "estimated" in text, screen)
+
+        # 4. An answer cap that fills the whole window contradicts the
+        #    window, and the contradiction is reported. The screen is
+        #    wide here: the notice is one line, cut to the width of the
+        #    terminal, and the message names both numbers.
+        write_config(8192, 8192)
+        seed("budget-contradiction")
+        raw, screen = capture("budget-contradiction", cols=200, rows=45)
+        text = raw.decode("utf-8", "replace")
+        recorded = requests()
+        check("a contradictory window and answer cap transmit nothing",
+              len(recorded) == 2, len(recorded))
+        check("the contradiction is reported with both numbers",
+              "the answer is allowed 8192 tokens" in text and
+              "context window is 8192 tokens" in text and
+              "does not fit inside the window" in text,
+              screen)
     finally:
         provider.terminate()
         try:

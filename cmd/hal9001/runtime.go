@@ -156,11 +156,22 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 	// target carries: the operator's own limit, the model identifier
 	// the endpoint may have reported a window for, and the room the
 	// answer may use.
-	target.Budget = a.contextBudget(target.ModelID, target.ContextWindow, a.reservedOutput(target))
+	//
+	// The window is a TOTAL, whatever its source: the room for the
+	// answer is reserved from it, and the request may use what is
+	// left. Two configured numbers that contradict each other — a
+	// window that cannot hold the answer it is asked for — are
+	// refused here, with the reason, rather than guessed at.
+	key := contextKey{endpoint: target.EndpointID, model: target.ModelID}
+	budget, err := a.contextBudget(key, target.ContextWindow, a.outputAllowance(target))
+	if err != nil {
+		return target, err
+	}
+	target.Budget = budget
 	return target, nil
 }
 
-// reservedOutput returns the room the answer may use.
+// outputAllowance returns the room the answer may use.
 //
 // The model's own cap wins; without one the configured cap is used;
 // without that the protocol's default, because the two protocols default
@@ -169,14 +180,20 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 // It is the same number the adapter asks the provider for, so the room
 // that is held back from the request is the room the answer really
 // takes.
-func (a *app) reservedOutput(target providerTarget) int {
+//
+// The allowance carries whether the operator configured that number. A
+// configured allowance that does not fit inside the window is a
+// contradiction between two numbers the operator wrote down, and it is
+// refused; a default is reduced conservatively, so that a window
+// always leaves room for the request.
+func (a *app) outputAllowance(target providerTarget) provider.OutputAllowance {
 	if target.MaxTokens > 0 {
-		return target.MaxTokens
+		return provider.OutputAllowance{Tokens: target.MaxTokens, Configured: true}
 	}
 	if a.cfg.MaxTokens > 0 {
-		return a.cfg.MaxTokens
+		return provider.OutputAllowance{Tokens: a.cfg.MaxTokens, Configured: true}
 	}
-	return provider.DefaultOutputTokens(target.Wire)
+	return provider.OutputAllowance{Tokens: provider.DefaultOutputTokens(target.Wire)}
 }
 
 // legacyModelRecord finds the record of a model in a pre-version-2

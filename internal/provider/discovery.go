@@ -224,12 +224,15 @@ type ContextMetadata struct {
 
 // Provisional context defaults.
 //
-// When nothing is known, HAL says so and keeps the provider's own
-// limit in force. The number below is the conservative guess HAL
-// reports next to that fact: it is not enforced, because a window
-// nobody reported is a number HAL made up, and trimming an operator's
-// conversation on the strength of a guess is worse than letting the
-// provider refuse a request that is genuinely too long.
+// When nothing is known, HAL says so and keeps a conservative default
+// in force. The number below is a TOTAL context, not a room for the
+// request: the answer's room is reserved from it like it is from any
+// other window, and what is left bounds the request.
+//
+// It is a guess, and it is labelled as one. It is never verified, and
+// the note says that the endpoint reported nothing. The operator's own
+// limit always wins over it, and the endpoint's own advertisement
+// replaces it as soon as one arrives.
 //
 // The number was raised from 8192 to 32768 when the budget interface
 // was written. A normal HAL request carries the persona, the
@@ -238,8 +241,8 @@ type ContextMetadata struct {
 // would be smaller than an ordinary request, which makes it a
 // meaningless figure rather than a conservative one.
 const (
-	// ProvisionalContextWindow is the context budget reported when no
-	// authoritative number is known. It is not enforced.
+	// ProvisionalContextWindow is the provisional TOTAL context used
+	// when no authoritative number is known.
 	ProvisionalContextWindow = 32768
 	// ProvisionalMaxOutputTokens is the output cap used with it.
 	ProvisionalMaxOutputTokens = 4096
@@ -254,8 +257,8 @@ func ProvisionalContext() ContextMetadata {
 		Source:          ContextSourceProvisional,
 		Mode:            ContextModeProvisional,
 		Verified:        false,
-		Note: "the endpoint did not report a context window; the provider's own limit " +
-			"applies until the operator sets one",
+		Note: "the endpoint reported no context window; a conservative default applies " +
+			"until the operator sets one or the endpoint reports the window",
 	}
 }
 

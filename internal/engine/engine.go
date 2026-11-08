@@ -54,7 +54,7 @@ type Engine struct {
 	skills *skills.Selector
 	// budgetResolver answers where the context budget of a request comes
 	// from. Nil means the budget on the model is the budget in force.
-	budgetResolver func() provider.ContextBudget
+	budgetResolver func() (provider.ContextBudget, error)
 	// permission is the read-only view of the operator's permission
 	// gate. Nil means the conversation is permanently 444.
 	permission permission.Gate
@@ -127,9 +127,13 @@ func (e *Engine) WithSkills(s *skills.Selector) *Engine {
 // instead of once at build time, without the interface waiting for a
 // lookup.
 //
+// The resolver may refuse: a budget that cannot be resolved — two
+// configured numbers that contradict each other — is reported to the
+// operator instead of being guessed at.
+//
 // Without a resolver the engine uses the budget on the model it was
 // built with, which is the same number the application resolved.
-func (e *Engine) WithBudgetResolver(f func() provider.ContextBudget) *Engine {
+func (e *Engine) WithBudgetResolver(f func() (provider.ContextBudget, error)) *Engine {
 	e.budgetResolver = f
 	return e
 }
@@ -932,8 +936,14 @@ func (e *Engine) applyContextBudget(messages []provider.Message, tools []provide
 	if e.budgetResolver != nil {
 		// The application resolves the budget per request: an endpoint
 		// may report a model's context window after the engine was
-		// built, and the operator's own limit never changes.
-		budget = e.budgetResolver()
+		// built, and the operator's own limit never changes. A
+		// budget that cannot be resolved is refused: the turn stops
+		// with the reason, and nothing is guessed.
+		resolved, err := e.budgetResolver()
+		if err != nil {
+			return nil, err
+		}
+		budget = resolved
 	}
 	if budget.Limit <= 0 {
 		return messages, nil

@@ -262,12 +262,12 @@ func TestTheEnforcementPointReportsWhatItDropped(t *testing.T) {
 // then uses the fresh number, not the one the model was built with.
 func TestTheBudgetIsResolvedPerRequest(t *testing.T) {
 	eng, rec := budgetedEngine(t, 21, provider.ContextBudget{})
-	eng.WithBudgetResolver(func() provider.ContextBudget {
+	eng.WithBudgetResolver(func() (provider.ContextBudget, error) {
 		return provider.ContextBudget{
 			Limit:          600,
 			ReservedOutput: 20,
 			Source:         provider.ContextSourceProvider,
-		}
+		}, nil
 	})
 	if _, err := eng.Respond(context.Background(), "and now?"); err != nil {
 		t.Fatalf("the request should fit: %v", err)

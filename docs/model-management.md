@@ -94,8 +94,8 @@ an error.
 | `label` | Optional display name. |
 | `effort` | Optional reasoning level (`low`, `medium`, `high`, `xhigh`, `max`). |
 | `context_mode` | `auto` uses the discovered context window; `manual` uses `context_window`. |
-| `context_window` | Explicit context-window token limit. |
-| `max_output_tokens` | Explicit output-token limit. |
+| `context_window` | Explicit **total** context window, in tokens. The answer is reserved from it. |
+| `max_output_tokens` | Explicit output-token limit: the room the answer may use. |
 | `source` | Provenance of the record: `manual`, `migrated` or `discovered`. |
 | `fetched_at` | When the provider's catalogue confirmed the identifier. |
 | `review` | A note for the operator. A non-empty value means the record needs review. |
@@ -210,6 +210,33 @@ enforced. The limit is the input to the resolution, never a second,
 competing budget. A record with a window and no mode was written by
 hand, so the number is honoured as the operator's own limit.
 
+**A window is a total.** Every window — the operator's own, the
+provider's advertisement, a local runtime's allocation, a record verified
+earlier — is the whole context the model accepts. The room for the answer
+is reserved from it first, and what is left is the room the request may
+use. A `context_window` of 8192 with a 4096-token answer leaves 4096
+tokens for the request.
+
+Two configured numbers that contradict each other are refused with a
+message that names both of them: an output limit that fills the whole
+window leaves no room for the request, and a model record that says so is
+not accepted. A *default* output allowance that does not fit is reduced
+conservatively instead, so that a window always leaves room for the
+request.
+
+When nothing is known about a model's window, HAL uses a **provisional**
+total: a conservative 32k, never labelled verified, with a note that says
+the endpoint reported nothing. It bounds the conversation instead of
+letting it grow without limit; it is not a claim about the model's true
+capacity, and the operator's own limit always wins over it.
+
+**The context metadata belongs to one endpoint.** The same model
+identifier may exist under two endpoints with very different windows, so
+what an endpoint reported is stored under the endpoint *and* the model. A
+model on one endpoint inherits nothing from another. Editing an endpoint's
+address, protocol or credential forgets what it reported, and a lookup
+that finishes after the endpoint changed does not store its answer at all.
+
 **The manual limit is enforced.** It is not a number in a panel: it is
 applied to the request that is actually sent, which is the system
 instruction, the conversation and the offered functions together. The
@@ -270,6 +297,12 @@ never turned into an automatic mode and never becomes a zero.
 Adding a model never changes the active model. Removing the active model, or
 an endpoint that holds the active model, is refused unless the operator names
 an explicit replacement with `--use <endpoint>/<model>`.
+
+`/model context <endpoint> <id> manual <tokens>` sets the **total**
+context window of a model: the room the answer is reserved from plus the
+room the request may use. `/model context <endpoint> <id> auto` hands the
+decision back to the endpoint, and the operator's own number is kept for
+the record.
 
 The replacement may not live inside the endpoint that is being removed: that
 would leave a selection that points at nothing, and the removed endpoint

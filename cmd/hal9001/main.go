@@ -265,13 +265,24 @@ type app struct {
 	// authority: every call is checked at its execution boundary.
 	mcp *mcp.Registry
 	// contexts holds the context metadata an endpoint reported for a
-	// model, keyed by the model identifier. It is the input to the
+	// model, keyed by the endpoint and the model. It is the input to the
 	// context-budget resolution, and it keeps the provenance of every
 	// number it holds.
 	//
+	// The endpoint is part of the identity: two endpoints may serve the
+	// same model identifier with very different windows, and one
+	// endpoint's advertisement must never become the other's.
+	//
 	// The background lookup writes it and the resolution reads it, so
 	// it is guarded by contextMu.
-	contexts map[string]provider.ContextMetadata
+	contexts map[contextKey]provider.ContextMetadata
+	// contextEpoch counts how often an endpoint's configuration
+	// changed. A lookup that finishes after a change does not store
+	// its answer: the answer belongs to a configuration that is no
+	// longer in force.
+	//
+	// It is guarded by contextMu.
+	contextEpoch map[string]int
 	// contextMu guards the recorded context metadata.
 	contextMu sync.Mutex
 }
@@ -583,12 +594,13 @@ func (a *app) rebuildEngine() {
 	// The budget is resolved again for every request: an endpoint may
 	// report a model's context window after the engine was built, and
 	// the operator's own limit never changes. The model identifier, the
-	// operator's limit and the room the answer may use are read here,
-	// on the interface's own thread. The request path only reads the
-	// guarded metadata the background lookup recorded.
-	budgetID := target.ModelID
+	// endpoint it belongs to, the operator's limit and the room the
+	// answer may use are read here, on the interface's own thread. The
+	// request path only reads the guarded metadata the background
+	// lookup recorded.
+	budgetKey := contextKey{endpoint: target.EndpointID, model: target.ModelID}
 	budgetLimit := target.ContextWindow
-	budgetOutput := a.reservedOutput(target)
+	budgetAllowance := a.outputAllowance(target)
 	a.eng = engine.New(a.store, p, modelFromTarget(target)).
 		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir)).
 		WithWorkspace(a.workspace).
@@ -600,9 +612,10 @@ func (a *app) rebuildEngine() {
 		WithAttachments(a.attachments).
 		// The budget is resolved per request: the endpoint may report a
 		// model's context window after the engine was built, and the
-		// operator's own limit never changes.
-		WithBudgetResolver(func() provider.ContextBudget {
-			return a.currentBudget(budgetID, budgetLimit, budgetOutput)
+		// operator's own limit never changes. A budget that cannot be
+		// resolved is refused, and the turn stops with the reason.
+		WithBudgetResolver(func() (provider.ContextBudget, error) {
+			return a.currentBudget(budgetKey, budgetLimit, budgetAllowance)
 		})
 	// The MCP registry is wired in on its own, and only when there is
 	// one. Folding it into the chain above would pass a typed nil
@@ -651,17 +664,28 @@ func (a *app) saveOnboard(d tui.OnboardData) (tui.Engine, error) {
 		if err := next.AddEndpoint(rec); err != nil {
 			return nil, err
 		}
-	} else if err := next.UpdateEndpoint(endpointID, func(e *config.EndpointRecord) error {
-		if a.cfg.Endpoint == "" {
-			e.BaseURL = d.Endpoint
+		a.invalidateContext(endpointID)
+	} else {
+		before, _ := next.EndpointByID(endpointID)
+		if err := next.UpdateEndpoint(endpointID, func(e *config.EndpointRecord) error {
+			if a.cfg.Endpoint == "" {
+				e.BaseURL = d.Endpoint
+			}
+			if a.cfg.APIKey == "" {
+				e.Credential = d.Key
+				e.CredentialEnv = ""
+			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
-		if a.cfg.APIKey == "" {
-			e.Credential = d.Key
-			e.CredentialEnv = ""
+		after, _ := next.EndpointByID(endpointID)
+		if endpointChanged(before, after) {
+			// The endpoint moved or changed its key: what it
+			// reported about its models belonged to the
+			// configuration that is no longer in force.
+			a.invalidateContext(endpointID)
 		}
-		return nil
-	}); err != nil {
-		return nil, err
 	}
 	if _, ok := next.ModelFor(endpointID, d.Model); !ok {
 		if err := next.AddModelTo(endpointID, config.ModelRecord{

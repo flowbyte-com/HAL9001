@@ -162,6 +162,41 @@ func TestUpdateModelRejectsAnInvalidChange(t *testing.T) {
 	}
 }
 
+// The context window is a total: the room for the answer comes out of
+// it. An output limit that fills the whole window leaves no room for
+// the request, so the two numbers contradict each other and the record
+// is refused with both of them named.
+func TestAModelRefusesAnOutputLimitThatFillsItsWindow(t *testing.T) {
+	fc := testConfig()
+	err := fc.UpdateModel("minimax", "MiniMax-M3.1-Flash", func(m *ModelRecord) error {
+		m.ContextWindow = 4096
+		m.MaxOutputTokens = 4096
+		return nil
+	})
+	if err == nil {
+		t.Fatal("a model whose answer fills its whole window was accepted")
+	}
+	if !strings.Contains(err.Error(), "does not fit inside the window") {
+		t.Errorf("the refusal does not explain itself: %v", err)
+	}
+	if !strings.Contains(err.Error(), "4096") {
+		t.Errorf("the refusal does not name the numbers: %v", err)
+	}
+	model, _ := fc.ModelFor("minimax", "MiniMax-M3.1-Flash")
+	if model.ContextWindow != 0 || model.MaxOutputTokens != 0 {
+		t.Errorf("the refused change was applied anyway: %+v", model)
+	}
+
+	// An output limit that leaves room is accepted.
+	if err := fc.UpdateModel("minimax", "MiniMax-M3.1-Flash", func(m *ModelRecord) error {
+		m.ContextWindow = 8192
+		m.MaxOutputTokens = 4096
+		return nil
+	}); err != nil {
+		t.Fatalf("a model whose answer fits inside its window was refused: %v", err)
+	}
+}
+
 func TestActiveSelectionIsScoped(t *testing.T) {
 	fc := testConfig()
 	if fc.ActiveEndpointID() != "minimax" || fc.ActiveModelID() != "MiniMax-M3.1-Flash" {

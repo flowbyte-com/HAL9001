@@ -105,14 +105,38 @@ A context record always says where its number came from.
 
 `ContextMetadata` keeps two numbers apart:
 
-- `ContextWindow` — the budget in force;
+- `ContextWindow` — the window in force;
 - `MaxContextWindow` — the largest context the model advertises.
 
 They are different numbers and are never merged. A local runtime may
 allocate far less than the model could accept, and the advertised
 maximum must never silently become the budget.
 
-`ResolveContext` decides the budget:
+**A window is a total.** Whichever source it comes from — the operator's
+own limit, the provider's advertisement, a local runtime's allocation or a
+record verified earlier — the number is the whole context the model
+accepts. It is never an allowance for the request alone: the room for the
+answer is reserved from it first, and what is left is the room the request
+may use. A window of 8192 with 4096 tokens reserved for the answer leaves
+4096 tokens for the request.
+
+The reservation is the **output allowance**: the room HAL asks the
+provider for. It is the model's own cap when it has one, the configured
+cap otherwise, and the protocol's default otherwise. Two rules apply to
+it:
+
+- a **configured** allowance that does not fit inside the window is a
+  contradiction between two numbers the operator wrote down, and it is
+  refused with a `ContextAllowanceError` that names both of them;
+- a **default** that does not fit is reduced conservatively, so that a
+  window always leaves room for the request.
+
+A window that is known never produces a zero or a negative budget: a zero
+budget would be read as "no budget at all", which is the opposite of what
+a known window says. A window that is not known at all leaves the
+provider's own limit in force, and the budget says so.
+
+`ResolveContext` decides the window in force:
 
 1. the operator's own limit always wins;
 2. a local runtime's allocation is the budget for a local endpoint,
@@ -121,12 +145,35 @@ maximum must never silently become the budget.
    local allocation;
 4. a cached, previously verified record is used next;
 5. otherwise the **provisional** record is used: a conservative 32k
-   context and a 4k output cap, `Verified: false`, with a note that
+   total context and a 4k output cap, `Verified: false`, with a note that
    says the endpoint reported nothing.
 
 A guessed number is never labelled verified. HAL never probes a context
 length by generating enormous requests, and a context-limit error never
 causes an uncontrolled retry or a claim about the exact maximum.
+
+### The context metadata belongs to one endpoint
+
+A model identifier is scoped to its endpoint: the same identifier may
+exist under two endpoints with very different windows. The metadata an
+endpoint reported is therefore stored under the **endpoint and the
+model**, and one endpoint's advertisement never becomes another's. A
+model on endpoint B inherits nothing from endpoint A.
+
+Three things keep the stored metadata honest:
+
+- editing an endpoint's address, protocol or credential forgets what it
+  reported: the window it advertised belonged to a configuration that is
+  no longer in force;
+- a lookup that finishes after the endpoint changed does not store its
+  answer: it describes an address that is no longer in force, and it
+  would be worse than no answer at all;
+- the operator's own limit stays authoritative over anything an endpoint
+  advertised.
+
+The provenance and the verified status of every number survive all of
+this: the resolution decides which number applies, and the source
+travels with it into the budget that is enforced.
 
 ### Where the operator's limit comes from
 
@@ -182,14 +229,19 @@ The token count is always an estimate — four characters per token plus
 a small overhead — and every message that quotes one calls it an
 estimate.
 
-The operator's `context_window` bounds the **conversation**: the room
-the request may use. An advertised or allocated window is the whole
-context the model accepts, so the answer is reserved from it.
+The operator's `context_window` is the **total context** the model
+accepts, exactly like an advertised or an allocated window: the room for
+the answer is reserved from it, and the request may use what is left. A
+`context_window` of 8192 with a 4096-token answer leaves 4096 tokens for
+the request.
 
-A **provisional** budget is reported but never enforced. HAL enforces
-what it knows; trimming an operator's conversation on the strength of a
-window nobody reported would discard context on the strength of a
-number HAL made up.
+A **provisional** window is a conservative total, and it is enforced like
+any other: an endpoint that reports nothing bounds the conversation
+instead of letting it grow without limit. It is not a claim about the
+model's true capacity — it is labelled `provisional`, it is never
+verified, and the note says the endpoint reported nothing. The operator's
+own limit always wins over it, and the endpoint's own advertisement
+replaces it as soon as one arrives.
 
 ### Discovery metadata is untrusted
 

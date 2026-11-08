@@ -153,17 +153,29 @@ def main():
     base = os.environ.get("HAL9001_PTY_TMPDIR", "/tmp/opencode")
     os.makedirs(base, exist_ok=True)
     root = tempfile.mkdtemp(prefix="hal-att-", dir=base)
-    home = os.path.join(root, "config")
+    # The operator's home directory is the fixture root, so the interface
+    # renders the upload directory the way it renders it for a real
+    # operator: ~/HAL/uploads.
+    #
+    # The listing check must not depend on how long the fixture root
+    # happens to be. The notice is one line, cut to the width of the
+    # terminal, and an absolute path under a long root is cut in the
+    # middle of the directory name — so the check would be about the
+    # length of a temporary directory rather than about the interface.
+    # The short rendering is the production one, and it holds whatever
+    # the fixture root is.
+    home = root
     store = os.path.join(root, "sessions")
     WORKSPACE = os.path.join(root, "HAL")
     sources = os.path.join(root, "src")
-    os.makedirs(home)
     os.makedirs(store)
     os.makedirs(WORKSPACE)
     os.makedirs(sources)
     STORE = store
     CONFIG = os.path.join(home, "config.json")
     write_config(CONFIG)
+    previous_home = os.environ.get("HOME")
+    os.environ["HOME"] = home
 
     # The file the operator attaches. Its name has a space, so the
     # command has to take the path whole.
@@ -312,6 +324,10 @@ def main():
         except subprocess.TimeoutExpired:
             provider.kill()
             provider.wait()
+        if previous_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = previous_home
         shutil.rmtree(root, ignore_errors=True)
 
     print()

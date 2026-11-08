@@ -13,25 +13,38 @@ import (
 // The application resolves the budget; the engine enforces it. These
 // tests hold the resolution to the rules: the operator's own limit wins,
 // a local runtime's allocation beats an advertised maximum, an
-// advertised maximum never becomes a guess, and a guess is never
-// labelled verified.
+// advertised maximum never becomes a guess, a guess is never labelled
+// verified, and the window is a total in every case.
 
 func budgetApp(cfg config.Config, stored config.FileConfig) *app {
 	return &app{cfg: cfg, stored: stored}
+}
+
+// budgetKey is the identity of a model of the unnamed endpoint, for a
+// configuration that has no endpoint records.
+func budgetKey(model string) contextKey {
+	return contextKey{model: model}
+}
+
+// allowance is the room the answer may use, for a test that does not
+// care where the number came from.
+func allowance(tokens int) provider.OutputAllowance {
+	return provider.OutputAllowance{Tokens: tokens}
 }
 
 func TestTheOperatorLimitBecomesTheBudget(t *testing.T) {
 	a := budgetApp(config.Config{
 		Provider: "openai-compatible",
 		Model:    "m",
-		Models:   []config.ModelRecord{{ID: "m", ContextWindow: 100}},
+		Models:   []config.ModelRecord{{ID: "m", ContextWindow: 8192, ContextMode: config.ContextManual}},
 	}, config.FileConfig{})
 	model := a.modelFor()
-	if model.ContextWindow != 100 {
+	if model.ContextWindow != 8192 {
 		t.Fatalf("the operator's limit was lost: %#v", model)
 	}
-	if model.Budget.Limit != 100 {
-		t.Fatalf("the budget does not carry the operator's limit: %#v", model.Budget)
+	// The window is a total: the room for the answer comes out of it.
+	if model.Budget.Limit != 8192-model.Budget.ReservedOutput {
+		t.Fatalf("the budget does not carry the operator's window: %#v", model.Budget)
 	}
 	if model.Budget.Source != provider.ContextSourceOperator {
 		t.Fatalf("the provenance was lost: %#v", model.Budget)
@@ -43,29 +56,39 @@ func TestTheOperatorLimitBecomesTheBudget(t *testing.T) {
 
 func TestWithoutAKnownWindowTheBudgetIsProvisional(t *testing.T) {
 	a := budgetApp(config.Config{Provider: "openai-compatible", Model: "m"}, config.FileConfig{})
-	budget := a.contextBudget("m", a.operatorContextLimit("m"), a.outputTokens())
+	budget, err := a.contextBudget(budgetKey("m"), a.operatorContextLimit("m"), allowance(4096))
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
 	if budget.Source != provider.ContextSourceProvisional {
 		t.Fatalf("the source is wrong: %#v", budget)
 	}
 	if budget.Verified {
 		t.Fatalf("a provisional budget is never verified: %#v", budget)
 	}
-	// A guess is reported, never enforced: the provider's own window
-	// governs until the operator sets a limit.
-	if budget.Limit != 0 {
-		t.Fatalf("a guess must not be enforced: %#v", budget)
+	// A provisional window is a conservative total: the conversation is
+	// bounded even when nobody reported anything, and the number is
+	// never presented as a fact about the model.
+	if budget.Limit <= 0 {
+		t.Fatalf("a provisional budget must still bound the request: %#v", budget)
+	}
+	if budget.Limit != provider.ProvisionalContextWindow-budget.ReservedOutput {
+		t.Fatalf("the provisional total was not measured: %#v", budget)
 	}
 }
 
 func TestTheAdvertisedWindowBecomesTheBudget(t *testing.T) {
 	a := budgetApp(config.Config{Provider: "openai-compatible", Model: "m", MaxTokens: 1000}, config.FileConfig{})
-	a.recordContext("m", provider.ContextMetadata{
+	a.recordContext(budgetKey("m"), 0, provider.ContextMetadata{
 		ContextWindow: 200000,
 		Source:        provider.ContextSourceProvider,
 		Mode:          provider.ContextModeMax,
 		Verified:      true,
 	})
-	budget := a.contextBudget("m", a.operatorContextLimit("m"), a.outputTokens())
+	budget, err := a.contextBudget(budgetKey("m"), a.operatorContextLimit("m"), allowance(1000))
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
 	if budget.Source != provider.ContextSourceProvider {
 		t.Fatalf("the source is wrong: %#v", budget)
 	}
@@ -79,13 +102,16 @@ func TestTheAdvertisedWindowBecomesTheBudget(t *testing.T) {
 
 func TestALocalAllocationBeatsTheAdvertisedMaximum(t *testing.T) {
 	a := budgetApp(config.Config{Provider: "openai-compatible", Model: "m", MaxTokens: 1000}, config.FileConfig{})
-	a.recordContext("m", provider.ContextMetadata{
+	a.recordContext(budgetKey("m"), 0, provider.ContextMetadata{
 		ContextWindow: 8192,
 		Source:        provider.ContextSourceLocal,
 		Mode:          provider.ContextModeLocal,
 		Verified:      true,
 	})
-	budget := a.contextBudget("m", a.operatorContextLimit("m"), a.outputTokens())
+	budget, err := a.contextBudget(budgetKey("m"), a.operatorContextLimit("m"), allowance(1000))
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
 	if budget.Source != provider.ContextSourceLocal {
 		t.Fatalf("the source is wrong: %#v", budget)
 	}
@@ -99,19 +125,22 @@ func TestTheOperatorLimitBeatsEverything(t *testing.T) {
 		Provider:  "openai-compatible",
 		Model:     "m",
 		MaxTokens: 1000,
-		Models:    []config.ModelRecord{{ID: "m", ContextWindow: 4096}},
+		Models:    []config.ModelRecord{{ID: "m", ContextWindow: 4096, ContextMode: config.ContextManual}},
 	}, config.FileConfig{})
-	a.recordContext("m", provider.ContextMetadata{
+	a.recordContext(budgetKey("m"), 0, provider.ContextMetadata{
 		ContextWindow: 200000,
 		Source:        provider.ContextSourceProvider,
 		Verified:      true,
 	})
-	budget := a.contextBudget("m", a.operatorContextLimit("m"), a.outputTokens())
+	budget, err := a.contextBudget(budgetKey("m"), a.operatorContextLimit("m"), allowance(1000))
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
 	if budget.Source != provider.ContextSourceOperator {
 		t.Fatalf("the source is wrong: %#v", budget)
 	}
-	if budget.Limit != 4096 {
-		t.Fatalf("the operator's limit was not the budget: %#v", budget)
+	if budget.Limit != 4096-1000 {
+		t.Fatalf("the operator's window was not the budget: %#v", budget)
 	}
 }
 
@@ -123,7 +152,7 @@ func TestTheRecordedMetadataIsSafeToWriteAndReadAtOnce(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 200; i++ {
-			a.recordContext("m", provider.ContextMetadata{
+			a.recordContext(budgetKey("m"), 0, provider.ContextMetadata{
 				ContextWindow: 8192,
 				Source:        provider.ContextSourceProvider,
 				Mode:          provider.ContextModeMax,
@@ -132,10 +161,13 @@ func TestTheRecordedMetadataIsSafeToWriteAndReadAtOnce(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 200; i++ {
-		_ = a.contextBudget("m", a.operatorContextLimit("m"), a.outputTokens())
+		_, _ = a.contextBudget(budgetKey("m"), a.operatorContextLimit("m"), allowance(1000))
 	}
 	<-done
-	budget := a.contextBudget("m", a.operatorContextLimit("m"), a.outputTokens())
+	budget, err := a.contextBudget(budgetKey("m"), a.operatorContextLimit("m"), allowance(1000))
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
 	if budget.Source != provider.ContextSourceProvider {
 		t.Fatalf("the recorded metadata was lost: %#v", budget)
 	}
@@ -143,15 +175,20 @@ func TestTheRecordedMetadataIsSafeToWriteAndReadAtOnce(t *testing.T) {
 
 func TestTheBudgetDescriptionNamesTheSource(t *testing.T) {
 	a := budgetApp(config.Config{
-		Provider: "openai-compatible",
-		Model:    "m",
-		Models:   []config.ModelRecord{{ID: "m", ContextWindow: 4096}},
+		Provider:  "openai-compatible",
+		Model:     "m",
+		MaxTokens: 1024,
+		Models:    []config.ModelRecord{{ID: "m", ContextWindow: 4096, ContextMode: config.ContextManual}},
 	}, config.FileConfig{})
 	text := a.contextBudgetDescription()
 	if text == "" {
 		t.Fatal("the description is empty")
 	}
-	if !strings.Contains(text, "4096") || !strings.Contains(text, "operator") {
-		t.Fatalf("the description does not name the budget: %q", text)
+	// The window is a total: 4096 in all, 1024 of it reserved for the
+	// answer, 3072 left for the request.
+	for _, want := range []string{"3072", "1024", "operator"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the description does not name %q: %q", want, text)
+		}
 	}
 }

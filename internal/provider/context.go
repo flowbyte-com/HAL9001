@@ -31,8 +31,13 @@ import (
 // answer's room is held back from it and reported separately, so the
 // operator can see how much of the window the answer may take.
 type ContextBudget struct {
-	// Limit is the room the request may use, in tokens. Zero means the
-	// provider's own window governs and HAL does not trim.
+	// Limit is the room the request may use, in tokens. Zero means no
+	// window is known at all: the provider's own limit governs and HAL
+	// does not trim.
+	//
+	// A window that IS known never produces a zero budget. A zero
+	// budget would be read as "no budget at all", which is the
+	// opposite of what a known window says.
 	Limit int `json:"limit,omitempty"`
 	// ReservedOutput is the room held back for the answer, in tokens.
 	ReservedOutput int `json:"reserved_output,omitempty"`
@@ -56,67 +61,109 @@ func (b ContextBudget) Usable() bool {
 	return b.Limit > 0
 }
 
+// OutputAllowance is the room reserved for the answer.
+//
+// The window a model accepts is a TOTAL: the room for the answer comes
+// out of it, and what is left is the room the request may use. The same
+// interpretation applies to every source of the window — the
+// operator's own limit, the provider's advertisement, a local runtime's
+// allocation and a record verified earlier — so the allowance is
+// measured against the same number in every case.
+//
+// Configured reports whether the operator configured that number. A
+// configured allowance that does not fit inside the window is a
+// contradiction between two numbers the operator wrote down, and it is
+// refused with a clear error. A default is reduced conservatively
+// instead, so that a window always leaves room for the request.
+type OutputAllowance struct {
+	// Tokens is the room the answer may use.
+	Tokens int
+	// Configured reports whether the operator configured the number.
+	Configured bool
+}
+
+// ContextAllowanceError reports that the room reserved for the answer
+// does not fit inside the context window.
+//
+// It is a contradiction between two configured numbers, not a provider
+// failure: the operator asked for an answer the window cannot hold.
+// The numbers are named, so the operator can see what to change.
+type ContextAllowanceError struct {
+	// Total is the context window the model accepts, in tokens.
+	Total int
+	// Reserved is the room the answer was given, in tokens.
+	Reserved int
+}
+
+// Error implements the error interface.
+func (e *ContextAllowanceError) Error() string {
+	return fmt.Sprintf(
+		"the answer is allowed %d tokens but the model's context window is %d tokens: "+
+			"the answer does not fit inside the window", e.Reserved, e.Total)
+}
+
 // BudgetFor turns a resolved context record into the budget the
 // application applies before a request.
 //
-// outputTokens is the answer HAL asks for: the model's own cap when it
-// has one, otherwise the protocol's default.
+// The record's ContextWindow is the TOTAL context the model accepts. It
+// is never an input allowance: the room for the answer is reserved from
+// it first, and what is left is the room the request may use. The same
+// interpretation applies to every source, so an operator-configured
+// limit, a provider's advertisement, a local runtime's allocation and a
+// record verified earlier are all measured the same way.
 //
-// The kinds of number mean different things and are translated here:
+// allowance is the room the answer may use:
 //
-//   - the OPERATOR's limit is the room the conversation may use. It is
-//     what a manual context limit has always meant, and the answer is
-//     reserved on top of it: an operator who sets a limit is bounding
-//     the conversation, not the answer.
-//   - an ADVERTISED or ALLOCATED window is the whole context the model
-//     accepts, so the answer comes out of it.
+//   - a configured allowance that does not fit inside the window is a
+//     contradiction and is refused with a clear error;
+//   - a default is reduced conservatively, so that a window always
+//     leaves room for the request.
 //
-// HAL never holds back more than half of an advertised window for the
-// answer: a window that leaves no room for the request would refuse
-// every turn, and the operator's number is meant to bound the
-// conversation rather than to switch it off.
-//
-// A PROVISIONAL record is not enforced. HAL enforces what it knows;
-// a guess about a window nobody reported would discard the operator's
-// context on the strength of a number HAL made up. The guess is
-// reported, and the provider's own limit applies until the operator
-// sets one or the endpoint reports the window.
-func BudgetFor(resolved ContextMetadata, outputTokens int) ContextBudget {
+// A window that is known never yields a zero or a negative budget: a
+// zero budget would be read as "no budget at all", and a negative one
+// would be a number nobody meant. A window that is not known at all
+// leaves the provider's own limit in force, and the budget says so.
+func BudgetFor(resolved ContextMetadata, allowance OutputAllowance) (ContextBudget, error) {
 	budget := ContextBudget{
 		Source:   resolved.Source,
 		Mode:     resolved.Mode,
 		Verified: resolved.Verified,
 		Note:     resolved.Note,
 	}
-	reserved := outputTokens
+	reserved := allowance.Tokens
 	if reserved <= 0 {
 		reserved = DefaultMaxTokens
 	}
-	switch resolved.Source {
-	case ContextSourceOperator:
-		budget.Limit = resolved.ContextWindow
-		budget.ReservedOutput = reserved
-		if reserved > budget.Limit {
-			budget.Note = strings.TrimSpace(budget.Note + " the answer may use up to " +
-				fmt.Sprintf("%d tokens", reserved) +
-				" on top of the limit the operator set")
-		}
-	case ContextSourceProvisional:
-		// A guess is reported, never enforced.
+	total := resolved.ContextWindow
+	if total <= 0 {
+		// Nothing is known about the window: the provider's own limit
+		// governs and nothing is trimmed.
 		budget.Limit = 0
 		budget.ReservedOutput = reserved
-	default:
-		total := resolved.ContextWindow
-		if total > 0 && reserved > total/2 {
-			reserved = total / 2
+		return budget, nil
+	}
+	if reserved >= total {
+		if allowance.Configured {
+			// Two numbers the operator wrote down contradict each
+			// other. The operator is told; nothing is guessed.
+			return budget, &ContextAllowanceError{Total: total, Reserved: reserved}
 		}
-		budget.Limit = total - reserved
-		budget.ReservedOutput = reserved
+		// A default that does not fit is reduced conservatively: a
+		// window that leaves no room for the request would refuse
+		// every turn.
+		reserved = total / 2
+		if reserved <= 0 {
+			reserved = 1
+		}
 	}
-	if budget.Limit < 0 {
-		budget.Limit = 0
+	budget.Limit = total - reserved
+	budget.ReservedOutput = reserved
+	if budget.Limit <= 0 {
+		// A budget of zero would read as "no budget at all", and that
+		// is the opposite of what a known window says.
+		return budget, &ContextAllowanceError{Total: total, Reserved: reserved}
 	}
-	return budget
+	return budget, nil
 }
 
 // DefaultOutputTokens returns the answer cap an adapter uses when the
@@ -340,7 +387,8 @@ func DescribeBudget(budget ContextBudget) string {
 	case ContextSourceCached:
 		parts = append(parts, "verified earlier")
 	case ContextSourceProvisional:
-		parts = append(parts, "provisional: the endpoint reported no context window, so nothing is trimmed")
+		parts = append(parts, "provisional: the endpoint reported no context window, "+
+			"so a conservative default applies")
 	default:
 		parts = append(parts, "unknown source")
 	}

@@ -274,6 +274,16 @@ func (m ModelRecord) Validate() error {
 	if m.MaxOutputTokens < 0 {
 		return fmt.Errorf("model %q has a negative output limit", m.ID)
 	}
+	// The context window is a TOTAL: the room for the answer comes out
+	// of it. An output limit that fills the whole window leaves no
+	// room for the request at all, so the two numbers contradict each
+	// other and the record is refused with both of them named.
+	if m.ContextWindow > 0 && m.MaxOutputTokens >= m.ContextWindow {
+		return fmt.Errorf(
+			"model %q allows an answer of %d tokens but its context window is only %d tokens: "+
+				"the answer does not fit inside the window",
+			m.ID, m.MaxOutputTokens, m.ContextWindow)
+	}
 	if m.Effort != "" && !validEffort(m.Effort) {
 		return fmt.Errorf("model %q has an unknown effort level %q", m.ID, m.Effort)
 	}

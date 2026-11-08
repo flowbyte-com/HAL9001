@@ -98,17 +98,18 @@ func (a *app) wireProtocol() string {
 	return wire
 }
 
-// targetSettings returns the endpoint, the credential and the wire
-// protocol of the active target.
+// targetSettings returns the identity, the address, the credential and
+// the wire protocol of the active target.
 //
 // The credential is returned for the caller's own use and never appears
 // in a message, a notice or a log.
-func (a *app) targetSettings() (endpoint, key, wire string) {
+func (a *app) targetSettings() (identity contextKey, endpoint, key, wire string) {
 	target, err := a.resolveTarget(a.stored)
 	if err != nil {
-		return "", "", ""
+		return contextKey{}, "", "", ""
 	}
-	return target.BaseURL, target.Credential, target.Wire
+	return contextKey{endpoint: target.EndpointID, model: target.ModelID},
+		target.BaseURL, target.Credential, target.Wire
 }
 
 // refreshContextInBackground asks the endpoint what it knows about a
@@ -125,15 +126,22 @@ func (a *app) targetSettings() (endpoint, key, wire string) {
 // taken from the resolved target, because the stored configuration is
 // written on the interface's own thread and reading it from the lookup
 // would be a race.
+//
+// The answer belongs to one endpoint and one model, and to the
+// configuration that endpoint had when the lookup started. An endpoint
+// that changed while the lookup was running does not get the answer:
+// it describes an address that is no longer in force.
 func (a *app) refreshContextInBackground(modelID string) {
-	endpoint, key, wire := a.targetSettings()
+	identity, endpoint, key, wire := a.targetSettings()
 	if endpoint == "" || wire == "" {
 		return
 	}
 	if !a.discoveryAllowed() {
 		return
 	}
-	go a.refreshContext(context.Background(), modelID, endpoint, key, wire)
+	identity.model = strings.TrimSpace(modelID)
+	generation := a.contextGeneration(identity.endpoint)
+	go a.refreshContext(context.Background(), identity, generation, endpoint, key, wire)
 }
 
 // discoveryAllowed reports whether the active endpoint's catalogue may
@@ -152,6 +160,19 @@ func (a *app) discoveryAllowed() bool {
 	return endpoint.Discovery.Enabled
 }
 
+// contextKey identifies a model's context metadata.
+//
+// The endpoint is part of the identity, and it has to be: two endpoints
+// may serve the same model identifier with very different windows, and
+// one endpoint's advertisement must never become the other's. A model on
+// endpoint B inherits nothing from endpoint A.
+type contextKey struct {
+	// endpoint is the endpoint the metadata belongs to.
+	endpoint string
+	// model is the model identifier inside that endpoint.
+	model string
+}
+
 // recordContext stores the context metadata an endpoint reported for a
 // model.
 //
@@ -159,35 +180,80 @@ func (a *app) discoveryAllowed() bool {
 // from: the resolution decides which number applies, and the provenance
 // survives into the budget that is enforced.
 //
+// generation is the endpoint's configuration generation when the lookup
+// started. A lookup that finishes after the endpoint changed does not
+// store its answer: the answer describes a configuration that is no
+// longer in force, and it would be worse than no answer at all.
+//
 // The map is written by the background lookup and read by the
 // resolution, so it is guarded.
-func (a *app) recordContext(modelID string, meta provider.ContextMetadata) {
-	modelID = strings.TrimSpace(modelID)
-	if modelID == "" {
+func (a *app) recordContext(key contextKey, generation int, meta provider.ContextMetadata) {
+	key.model = strings.TrimSpace(key.model)
+	if key.model == "" {
 		return
 	}
 	a.contextMu.Lock()
 	defer a.contextMu.Unlock()
-	if a.contexts == nil {
-		a.contexts = map[string]provider.ContextMetadata{}
+	if a.contextEpoch[key.endpoint] != generation {
+		// The endpoint changed while the lookup was running.
+		return
 	}
-	a.contexts[modelID] = meta
+	if a.contexts == nil {
+		a.contexts = map[contextKey]provider.ContextMetadata{}
+	}
+	a.contexts[key] = meta
 }
 
-// contextBudget resolves the effective context budget for a model.
+// invalidateContext forgets what an endpoint reported.
+//
+// The endpoint's configuration changed — its address, its protocol, its
+// credential — so what it said about its models belongs to a
+// configuration that is no longer in force. The generation is raised
+// as well, so a lookup that is still running does not store its
+// answer either.
+func (a *app) invalidateContext(endpointID string) {
+	a.contextMu.Lock()
+	defer a.contextMu.Unlock()
+	if a.contextEpoch == nil {
+		a.contextEpoch = map[string]int{}
+	}
+	a.contextEpoch[endpointID]++
+	for key := range a.contexts {
+		if key.endpoint == endpointID {
+			delete(a.contexts, key)
+		}
+	}
+}
+
+// contextGeneration reports the current configuration generation of an
+// endpoint.
+//
+// A lookup captures it before it starts and the answer is only stored
+// when the generation is still the same.
+func (a *app) contextGeneration(endpointID string) int {
+	a.contextMu.Lock()
+	defer a.contextMu.Unlock()
+	return a.contextEpoch[endpointID]
+}
+
+// contextBudget resolves the effective context budget for a model of an
+// endpoint.
 //
 // The order is the one the provider package documents: the operator's
 // own limit first, then what a local runtime allocated, then what the
 // endpoint advertised, then a record verified earlier, and finally the
 // provisional record.
 //
-// The provisional record is reported but not enforced: nothing is known
-// about the window, and a guess must not discard the operator's
-// context.
-//
 // The advertised maximum and the budget in force stay apart: the
 // resolution keeps them in separate fields, and only the budget in
 // force is enforced.
+//
+// The window is a TOTAL in every case: the room for the answer is
+// reserved from it, and the request may use what is left. The
+// provisional record is a conservative total too, so an endpoint that
+// says nothing bounds the conversation instead of letting it grow
+// without limit; it is never labelled verified, and the operator's own
+// limit always wins over it.
 //
 // operatorLimit is passed in rather than looked up here. The request
 // path runs off the interface's own thread, and the stored
@@ -195,9 +261,11 @@ func (a *app) recordContext(modelID string, meta provider.ContextMetadata) {
 // setup: the limit is read there, once, and the number travels with
 // the request.
 //
-// outputTokens is the room the answer may use: the model's own cap when
-// it has one, the protocol's default otherwise.
-func (a *app) contextBudget(id string, operatorLimit, outputTokens int) provider.ContextBudget {
+// allowance is the room the answer may use. It carries whether the
+// operator configured that number: two configured numbers that
+// contradict each other are refused, and a default is reduced
+// conservatively.
+func (a *app) contextBudget(key contextKey, operatorLimit int, allowance provider.OutputAllowance) (provider.ContextBudget, error) {
 	var inputs provider.ContextInputs
 	if operatorLimit > 0 {
 		inputs.Operator = &provider.ContextMetadata{
@@ -208,7 +276,7 @@ func (a *app) contextBudget(id string, operatorLimit, outputTokens int) provider
 			Note:          "the limit the operator set for this model",
 		}
 	}
-	if meta, ok := a.knownContext(id); ok {
+	if meta, ok := a.knownContext(key); ok {
 		record := meta
 		switch record.Source {
 		case provider.ContextSourceLocal:
@@ -218,15 +286,18 @@ func (a *app) contextBudget(id string, operatorLimit, outputTokens int) provider
 		}
 	}
 	resolved := provider.ResolveContext(inputs)
-	return provider.BudgetFor(resolved, outputTokens)
+	return provider.BudgetFor(resolved, allowance)
 }
 
 // knownContext returns the context metadata an endpoint reported for a
 // model, if it reported any.
-func (a *app) knownContext(id string) (provider.ContextMetadata, bool) {
+//
+// The metadata belongs to one endpoint and one model. A model on
+// another endpoint is a different model, and it inherits nothing.
+func (a *app) knownContext(key contextKey) (provider.ContextMetadata, bool) {
 	a.contextMu.Lock()
 	defer a.contextMu.Unlock()
-	meta, ok := a.contexts[id]
+	meta, ok := a.contexts[key]
 	if !ok || meta.ContextWindow <= 0 {
 		return provider.ContextMetadata{}, false
 	}
@@ -236,25 +307,29 @@ func (a *app) knownContext(id string) (provider.ContextMetadata, bool) {
 // budgetForActiveModel resolves the budget of the active model on the
 // interface's own thread.
 //
-// It is the budget the diagnostics panel reports.
-func (a *app) budgetForActiveModel() provider.ContextBudget {
+// It is the budget the diagnostics panel reports. A budget that cannot
+// be resolved is reported as the reason it could not be resolved: the
+// panel never shows a number that was guessed.
+func (a *app) budgetForActiveModel() (provider.ContextBudget, error) {
 	target, err := a.resolveTarget(a.stored)
 	if err != nil {
 		id := a.activeModelID()
-		return a.contextBudget(id, a.operatorContextLimit(id), a.outputTokens())
+		key := contextKey{model: id}
+		return a.contextBudget(key, a.operatorContextLimit(id), a.outputAllowance(providerTarget{}))
 	}
-	return target.Budget
+	return target.Budget, nil
 }
 
 // currentBudget resolves the budget of a model on the request path.
 //
 // It is called once per request, so it stays cheap: the operator's own
 // limit, which never changes, the recorded metadata, and nothing else.
-// The model identifier and the operator's limit are captured when the
-// engine is built, on the interface's own thread: the request path
-// runs off it, and the stored configuration is written on it.
-func (a *app) currentBudget(id string, operatorLimit, outputTokens int) provider.ContextBudget {
-	return a.contextBudget(id, operatorLimit, outputTokens)
+// The model identifier, the endpoint it belongs to and the operator's
+// limit are captured when the engine is built, on the interface's own
+// thread: the request path runs off it, and the stored configuration is
+// written on it.
+func (a *app) currentBudget(key contextKey, operatorLimit int, allowance provider.OutputAllowance) (provider.ContextBudget, error) {
+	return a.contextBudget(key, operatorLimit, allowance)
 }
 
 // contextBudgetDescription describes the budget that is enforced for the
@@ -263,8 +338,15 @@ func (a *app) currentBudget(id string, operatorLimit, outputTokens int) provider
 // It is content-free: the size of the budget, where it came from and
 // how much of it is held back for the answer. It never names a model,
 // a prompt or a reply.
+//
+// A budget that cannot be resolved is described by its reason, so the
+// operator sees the contradiction instead of a number.
 func (a *app) contextBudgetDescription() string {
-	return provider.DescribeBudget(a.budgetForActiveModel())
+	budget, err := a.budgetForActiveModel()
+	if err != nil {
+		return err.Error()
+	}
+	return provider.DescribeBudget(budget)
 }
 
 // refreshContext asks the endpoint what it knows about a model's
@@ -281,9 +363,9 @@ func (a *app) contextBudgetDescription() string {
 // passed in because the stored configuration is written on the
 // interface's own thread, and reading it from the lookup would be a
 // race.
-func (a *app) refreshContext(ctx context.Context, modelID, endpoint, key, wire string) {
-	modelID = strings.TrimSpace(modelID)
-	if modelID == "" {
+func (a *app) refreshContext(ctx context.Context, identity contextKey, generation int, endpoint, key, wire string) {
+	identity.model = strings.TrimSpace(identity.model)
+	if identity.model == "" {
 		return
 	}
 	if endpoint == "" {
@@ -304,11 +386,14 @@ func (a *app) refreshContext(ctx context.Context, modelID, endpoint, key, wire s
 	if err != nil {
 		return
 	}
-	meta, err := discoverer.ContextFor(ctx, modelID)
+	meta, err := discoverer.ContextFor(ctx, identity.model)
 	if err != nil || meta.ContextWindow <= 0 {
 		return
 	}
-	a.recordContext(modelID, meta)
+	// The answer belongs to the endpoint and the model it was asked
+	// about, and to the configuration that endpoint had when the
+	// lookup started. A newer configuration does not get it.
+	a.recordContext(identity, generation, meta)
 }
 
 // endpointCategory returns the category the operator declared for the
