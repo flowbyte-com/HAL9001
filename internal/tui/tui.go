@@ -1218,6 +1218,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// A turn runs while the operator reads a panel. The events of that
+	// turn belong to the conversation, not to the panel: they are
+	// handled here, before the panel is asked. A panel that swallowed
+	// them would lose the answer, keep the interface sending and leave
+	// the operator with a conversation that never finished.
+	//
+	// Each event keeps its own handling: the conversation's handler
+	// decides what it means. Only the routing changes.
+	if conversationEvent(msg) {
+		return m.updateChat(msg)
+	}
 	switch m.view {
 	case viewOnboard:
 		return m.updateOnboard(msg)
@@ -1251,6 +1262,27 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.updateChat(msg)
 }
 
+// conversationEvent reports whether a message is an event of the
+// running conversation rather than something the panel on screen owns.
+//
+// The answer, the deltas, the tool activity, the statistics, the end of
+// the turn and the end of a cancelled turn are the conversation's: they
+// are handled the same way whatever the operator is reading.
+//
+// A panel that needs one of them keeps it: the MCP panel's own
+// notification is not a conversation event and stays with the panel.
+func conversationEvent(msg tea.Msg) bool {
+	switch msg.(type) {
+	case streamThinkingMsg, streamToolStartMsg, streamToolMsg,
+		streamDeltaMsg, streamStatsMsg, animationTickMsg,
+		responseMsg, skillDecisionMsg, writeResultMsg, copyResultMsg,
+		errorMsg:
+		return true
+	}
+	return false
+}
+
+// updateChat handles the conversation and the composer.
 func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case mcpActionMsg:

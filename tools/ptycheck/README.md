@@ -129,6 +129,26 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/stop_resume_checks.py
 ```
 
+The panel-completion checks start their own holding provider on port 8270
+(and one more per panel, 8271 upwards) and own their config, home,
+workspace and session store. The provider holds the request that carries
+the operator's question until the check releases it, so the answer can be
+made to arrive while a panel is open. The suite proves that a turn that
+completes behind `/help`, `/diag`, `/model`, `/theme`, `/sessions`,
+`/usage` or `/effort` is not lost: the completion is processed while the
+panel is open, the answer is in the conversation once the panel is
+closed, it is there exactly once, the turn is over, and the next question
+reaches the provider. It also covers a provider failure behind a panel, a
+turn that is stopped behind a panel, an answer that arrives in pieces and
+a tool call whose activity arrives behind a panel. The queue panel of the
+steering branch is covered as well, when the binary has one:
+
+```sh
+go build -o /tmp/opencode/hal9001 ./cmd/hal9001
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/panel_completion_checks.py
+```
+
 The tool-icon checks use a fixture session with historical tool evidence.
 They check the default emoji rows, the classic opt-out, switching back,
 the failure priority, the `✏️` variation selector, the icon gutter and all
@@ -430,4 +450,6 @@ by hand in a real terminal.
 | `recording_provider.py` | a local provider that records every request it receives |
 | `holding_provider.py` | a local provider that holds a request and records every request it receives |
 | `stop_resume_checks.py` | isolated lifecycle checks: `/stop` abandons the turn, `/resume` continues it, and a side effect is never repeated |
+| `pty_session.py` | the shared pseudo-terminal driver: one HAL process, driven step by step |
+| `panel_completion_checks.py` | isolated panel checks: a turn that completes behind a panel keeps its answer |
 | `budget_checks.py` | isolated context-budget checks: the transmitted request honours the operator's limit, or nothing is sent |
