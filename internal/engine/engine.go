@@ -55,6 +55,9 @@ type Engine struct {
 	// budgetResolver answers where the context budget of a request comes
 	// from. Nil means the budget on the model is the budget in force.
 	budgetResolver func() (provider.ContextBudget, error)
+	// steer supplies change-of-direction messages to a running turn. Nil
+	// means a turn is never steered.
+	steer SteerSource
 	// permission is the read-only view of the operator's permission
 	// gate. Nil means the conversation is permanently 444.
 	permission permission.Gate
@@ -94,6 +97,21 @@ type MCPRegistry interface {
 // maxToolSteps bounds a single provider conversation. It is a safety limit,
 // not a target: ordinary turns use zero or one step.
 const maxToolSteps = 8
+
+// A SteerSource supplies change-of-direction messages to a running turn.
+//
+// The turn asks for a message at every boundary where the next request
+// has not been sent yet. A message that arrives after the last request
+// was sent is not seen by that turn: the caller keeps it and decides
+// what to do with it.
+//
+// A request that was already sent is never rewritten. The steer joins
+// the next request the turn builds, so the operator's direction applies
+// to the work that has not been sent yet and leaves the work that has.
+type SteerSource interface {
+	// Steer returns the next steering message, if one is waiting.
+	Steer() (text string, ok bool)
+}
 
 // New binds a session store to a provider and model.
 func New(sessions *session.Store, p provider.Provider, model provider.Model) *Engine {
@@ -135,6 +153,19 @@ func (e *Engine) WithSkills(s *skills.Selector) *Engine {
 // built with, which is the same number the application resolved.
 func (e *Engine) WithBudgetResolver(f func() (provider.ContextBudget, error)) *Engine {
 	e.budgetResolver = f
+	return e
+}
+
+// WithSteerSource attaches the source of steering messages.
+//
+// The turn asks the source at every boundary where the next request has
+// not been sent yet, and carries the message it gets into that
+// request. A source that has nothing waiting leaves the turn alone.
+//
+// Without a source a turn is never steered: the operator's message
+// waits for the turn to end and is sent as a turn of its own.
+func (e *Engine) WithSteerSource(s SteerSource) *Engine {
+	e.steer = s
 	return e
 }
 
@@ -459,6 +490,14 @@ type Event struct {
 	// the model's context budget. It is presentation-only and carries
 	// no conversation text.
 	Context *provider.TrimNote
+	// Steer carries a steering message the running turn has taken up.
+	// It is the operator's own words and it is presentation-only: the
+	// message itself is already on its way to the model.
+	Steer string
+	// SteerStored reports whether the steering message was written to
+	// the session. It is false only when the record could not be
+	// written; the message still reached the model.
+	SteerStored bool
 }
 
 // ToolActivity is one tool call as the interface and diagnostics see it.
@@ -614,6 +653,12 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 		halted   bool
 	)
 	for step := 0; step < maxToolSteps; step++ {
+		// A steering message is taken up here, before the request is
+		// built. This is the boundary where the turn has not sent a
+		// request yet: the operator's direction applies to the work that
+		// has not been sent, and the request that was already sent
+		// stands as it was.
+		e.takeSteer(&current, turnID, emit)
 		resp, err := e.chat(ctx, current, tools, emit)
 		if err != nil && len(tools) > 0 && !isBudgetRefusal(err) && isToolRejection(err) {
 			// A provider that cannot take function definitions must not
@@ -695,6 +740,37 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 		parts = append(parts, fmt.Sprintf("Stopped after %d tool steps; ask me to continue if you want the remaining work done.", maxToolSteps))
 	}
 	return last, strings.Join(parts, "\n\n"), proposal, evidence, nil
+}
+
+// takeSteer takes a steering message into the request the turn is about
+// to build.
+//
+// The message becomes a user turn in the transcript of the running
+// turn, and it is written to the session as well: the operator's own
+// words belong in the record of the conversation, and a message that
+// was only ever seen by the provider would be lost.
+//
+// A session that cannot be written does not stop the turn. The steer
+// still reaches the model; it is only the record of it that is
+// missing, and the operator is told.
+func (e *Engine) takeSteer(current *[]provider.Message, turnID string, emit func(Event)) {
+	if e.steer == nil {
+		return
+	}
+	text, ok := e.steer.Steer()
+	if !ok || strings.TrimSpace(text) == "" {
+		return
+	}
+	*current = append(*current, provider.Message{Role: "user", Content: text})
+	if _, err := e.sessions.AppendTurn(session.RoleUser, text, session.Turn{ID: turnID}); err != nil {
+		if emit != nil {
+			emit(Event{Steer: text, SteerStored: false})
+		}
+		return
+	}
+	if emit != nil {
+		emit(Event{Steer: text, SteerStored: true})
+	}
 }
 
 // executeTool resolves one provider call. The permission gate is consulted

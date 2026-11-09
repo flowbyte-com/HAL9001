@@ -199,6 +199,23 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/budget_checks.py
 ```
 
+The steering checks start their own provider on port 8131 and own their
+config, home, workspace and session store. The provider can hold a turn
+open, so the operator has time to write while HAL is working, and it records
+every request it receives, so the request that actually left the machine can
+be inspected. The suite asserts that a message written while HAL is working
+waits in the queue and says so, that the request which was already sent is
+never rewritten — neither the queued message nor the steering instruction is
+in it — that the waiting messages are sent when the turn ends in the order
+they were written, that a steering instruction leads the next turn, that
+`/queue` shows the states, and that `/queue clear` removes what is waiting
+without sending it:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/steering_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -302,6 +319,13 @@ python3 tools/ptycheck/budget_checks.py
   is transmitted and the refusal explains itself; and with an answer cap
   that fills the whole window the contradiction is reported with both
   numbers.
+- The steering suite runs the real binary against a provider that holds a
+  turn open and records every request: a message written while HAL is
+  working waits in the queue and is shown as waiting, the request that was
+  already sent is never rewritten, the waiting messages are sent when the
+  turn ends in the order they were written, a steering instruction leads
+  the next turn, `/queue` shows the states, and `/queue clear` removes
+  what is waiting without sending it.
 - The composer PTY suite covers two, three and five-line pastes, a
   six-line paste whose caret window is the last five rows, a long wrapped
   Markdown link followed by a newline, and the footer remaining visible
@@ -397,3 +421,5 @@ by hand in a real terminal.
 | `discovery_checks.py` | isolated discovery-hygiene checks: no injected escape sequence, no forged row, exact identifiers survive |
 | `recording_provider.py` | a local provider that records every request it receives |
 | `budget_checks.py` | isolated context-budget checks: the transmitted request honours the operator's limit, or nothing is sent |
+| `steering_provider.py` | a local provider that holds a turn open and records every request it receives |
+| `steering_checks.py` | isolated steering and queue checks: the request already sent is not rewritten, the waiting messages keep their order |

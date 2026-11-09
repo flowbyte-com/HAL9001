@@ -30,6 +30,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/persona"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/queue"
 	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/skills"
 	"github.com/flowbyte-com/HAL9001/internal/tui"
@@ -92,6 +93,8 @@ func run(args []string) error {
 		stored:    stored,
 		model:     cfg.Model,
 		migration: migration,
+		// The queue is shared by the interface and the running turn.
+		queue: queue.New(),
 	}
 	// Token accounting is best effort: a failure must never stop the
 	// conversation from starting.
@@ -256,6 +259,11 @@ type app struct {
 	permission *permission.Controller
 	// tools performs the 666 read/write/edit/bash set.
 	tools *agenttools.Executor
+	// queue holds the operator's messages that have not been acted on
+	// yet. It is shared by the engine, which asks it for a steering
+	// message while a turn is running, and by the interface, which
+	// fills it and shows it.
+	queue *queue.Queue
 	// knowledge exposes MPM's own typed knowledge tools in both modes.
 	knowledge *knowledge.Registry
 	// web exposes Firecrawl's read-only research tools in 444 and 666.
@@ -439,8 +447,13 @@ func (a *app) run() error {
 		SessionID:      func() string { return a.session },
 		WebResearch:    a.webStatus,
 		ContextBudget:  a.contextBudgetDescription,
+		QueueStore:     a.queueStore,
 	}
 	m := tui.NewWithHooks(a.eng, hooks)
+	// The interface and the engine share the queue: the interface fills
+	// it and shows it, and the running turn asks it for a steering
+	// message.
+	m.SetQueue(a.queue)
 	m.SetModelName(a.activeModelID())
 	m.SetEffort(a.currentEffort())
 	m.SetUsage(a.currentUsage())
@@ -625,7 +638,11 @@ func (a *app) rebuildEngine() {
 		// resolved is refused, and the turn stops with the reason.
 		WithBudgetResolver(func() (provider.ContextBudget, error) {
 			return a.currentBudget(budgetKey, budgetLimit, budgetAllowance)
-		})
+		}).
+		// A steering message is taken up by the running turn at its
+		// next request boundary. The queue is the source: the operator
+		// fills it, and the turn asks it.
+		WithSteerSource(steerSource{queue: a.queue})
 	// The MCP registry is wired in on its own, and only when there is
 	// one. Folding it into the chain above would pass a typed nil
 	// interface into the engine, and the engine would then call through
