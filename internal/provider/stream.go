@@ -135,11 +135,12 @@ func (o *OpenAICompatible) maxTokens() int {
 }
 
 // effectiveMaxTokens is the cap actually sent for this model.
+//
+// The budget's reservation wins: it is the room the answer was given,
+// measured against the window the request was trimmed for. The model's
+// own cap is next, and the protocol's default last.
 func (o *OpenAICompatible) effectiveMaxTokens(model Model) int {
-	if model.MaxTokens > 0 {
-		return model.MaxTokens
-	}
-	return o.maxTokens()
+	return OutputCap(model, o.maxTokens())
 }
 
 func (o *OpenAICompatible) idleTimeout() time.Duration {

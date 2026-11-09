@@ -247,8 +247,14 @@ func TestBudgetForKeepsTheProvenance(t *testing.T) {
 	}
 	// A provisional window is a conservative total, not an unlimited
 	// history: the request is bounded even when nobody reported
-	// anything.
-	if provisional.Limit != ProvisionalContextWindow-15000 {
+	// anything, and the answer's room is the provisional one.
+	if provisional.Total != ProvisionalContextWindow {
+		t.Fatalf("the provisional total was lost: %#v", provisional)
+	}
+	if provisional.ReservedOutput != ProvisionalMaxOutputTokens {
+		t.Fatalf("the provisional output cap was lost: %#v", provisional)
+	}
+	if provisional.Limit != ProvisionalContextWindow-ProvisionalMaxOutputTokens {
 		t.Fatalf("the provisional total was not measured: %#v", provisional)
 	}
 	if provisional.Limit <= 0 {
@@ -256,6 +262,55 @@ func TestBudgetForKeepsTheProvenance(t *testing.T) {
 	}
 	if !strings.Contains(DescribeBudget(provisional), "provisional") {
 		t.Fatalf("the description does not name the source: %q", DescribeBudget(provisional))
+	}
+}
+
+// The provisional record's own output cap is operational: it is the
+// number the answer gets, and it reaches the wire.
+//
+// An allowance the operator configured is never replaced by it: their
+// number is the one that counts.
+func TestTheProvisionalOutputCapIsOperational(t *testing.T) {
+	budget, err := BudgetFor(ProvisionalContext(), OutputAllowance{Tokens: 15000})
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
+	if budget.ReservedOutput != ProvisionalMaxOutputTokens {
+		t.Fatalf("the provisional output cap was not applied: %#v", budget)
+	}
+	if cap := OutputCap(Model{Budget: budget}, 15000); cap != ProvisionalMaxOutputTokens {
+		t.Fatalf("the wire cap = %d, want %d", cap, ProvisionalMaxOutputTokens)
+	}
+
+	configured, err := BudgetFor(ProvisionalContext(),
+		OutputAllowance{Tokens: 2048, Configured: true})
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
+	if configured.ReservedOutput != 2048 {
+		t.Fatalf("the operator's own cap was replaced: %#v", configured)
+	}
+	if cap := OutputCap(Model{Budget: configured}, 15000); cap != 2048 {
+		t.Fatalf("the wire cap = %d, want 2048", cap)
+	}
+}
+
+// The protocol's floor is the smallest cap the provider accepts, and it
+// is never lowered.
+func TestTheProtocolFloorIsNeverLowered(t *testing.T) {
+	budget, err := BudgetFor(ContextMetadata{
+		ContextWindow: 8192,
+		Source:        ContextSourceProvider,
+		Verified:      true,
+	}, OutputAllowance{Tokens: 512, Minimum: 5120})
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
+	if budget.ReservedOutput != 5120 {
+		t.Fatalf("the floor was lowered: %#v", budget)
+	}
+	if budget.Limit != 8192-5120 {
+		t.Fatalf("the limit is not what is left of the window: %#v", budget)
 	}
 }
 
@@ -420,5 +475,48 @@ func TestDroppedExchangesNoteCountsExchanges(t *testing.T) {
 	}
 	if DroppedExchangesNote(TrimReport{}, budget) != "" {
 		t.Fatal("a trim that dropped nothing must not produce a note")
+	}
+}
+
+// The wire cap is the budget's reservation.
+//
+// What the budget says the answer may use is what the provider is asked
+// for, so the two can never disagree.
+func TestTheWireCapIsTheBudgetsReservation(t *testing.T) {
+	model := Model{Budget: ContextBudget{Limit: 4096, ReservedOutput: 1024}}
+	if got := OutputCap(model, 15000); got != 1024 {
+		t.Fatalf("the wire cap = %d, want the reservation 1024", got)
+	}
+	// Without a budget in force the model's own cap is used.
+	if got := OutputCap(Model{MaxTokens: 77}, 15000); got != 77 {
+		t.Fatalf("the wire cap = %d, want 77", got)
+	}
+	// And without one either, the protocol's default.
+	if got := OutputCap(Model{}, 15000); got != 15000 {
+		t.Fatalf("the wire cap = %d, want 15000", got)
+	}
+}
+
+// The estimate carries a bounded safety margin.
+//
+// A normal HAL request measured about 5086 real tokens against 4115
+// estimated, and dense code and non-English text undercount by more.
+// The margin makes the number conservative. It is bounded: it is a
+// documented factor and not a tokenizer.
+func TestTheEstimateCarriesASafetyMargin(t *testing.T) {
+	messages := []Message{{Role: "user", Content: strings.Repeat("word ", 100)}}
+	raw := rawEstimateTokens(messages, nil)
+	estimate := EstimateTokens(messages, nil)
+	if estimate <= raw {
+		t.Fatalf("the estimate = %d, the raw count = %d", estimate, raw)
+	}
+	if estimate != (raw*150+99)/100 {
+		t.Fatalf("the estimate = %d, want the raw count times the margin", estimate)
+	}
+	if estimate > raw*2 {
+		t.Fatalf("the margin is not bounded: %d against %d", estimate, raw)
+	}
+	if EstimateTokens(nil, nil) != 0 {
+		t.Fatal("an empty request is not empty")
 	}
 }

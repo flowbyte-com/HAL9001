@@ -313,9 +313,28 @@ func (a *app) knownContext(key contextKey) (provider.ContextMetadata, bool) {
 func (a *app) budgetForActiveModel() (provider.ContextBudget, error) {
 	target, err := a.resolveTarget(a.stored)
 	if err != nil {
+		// The target cannot be resolved. The budget of the active
+		// model is still reported, with the endpoint's own protocol,
+		// so the operator sees what the numbers would be.
 		id := a.activeModelID()
 		key := contextKey{model: id}
-		return a.contextBudget(key, a.operatorContextLimit(id), a.outputAllowance(providerTarget{}))
+		wire := provider.WireOpenAI
+		limit := 0
+		effort := ""
+		if endpoint, ok := a.stored.ActiveEndpoint(); ok {
+			if resolved, wireErr := endpoint.EffectiveWireProtocol(); wireErr == nil {
+				wire = string(resolved)
+			}
+			if record, ok := endpoint.Model(id); ok {
+				limit = operatorLimitFor(record)
+				effort = record.Effort
+			}
+		}
+		allowance, allowanceErr := a.outputAllowance(0, wire, id, effort)
+		if allowanceErr != nil {
+			return provider.ContextBudget{}, allowanceErr
+		}
+		return a.contextBudget(key, limit, allowance)
 	}
 	return target.Budget, nil
 }

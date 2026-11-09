@@ -184,14 +184,15 @@ their config, home, workspace and session store. The provider writes every
 request it receives to a log, so the request that actually leaves the
 machine can be inspected. A conversation of forty-one messages is stored
 before the run: without an operator limit the conversation is still bounded
-by the provisional total and the interface says that the budget is
-provisional, with a configured window and answer cap the transmitted
-request is smaller and fits the room that is left of the window while
-keeping the newest request, with a hundred-token window nothing is
-transmitted at all — the request cannot be reduced, so it is refused with an
-explanation instead of being truncated, and with an answer cap that fills
-the whole window the two numbers contradict each other, so the
-contradiction is reported instead of being guessed at:
+by the provisional total, the wire carries the provisional output cap and
+the interface says that the budget is provisional; with a configured window
+and answer cap the transmitted request fits the room that is left of the
+window, the wire carries the configured cap and the newest request is kept;
+with a hundred-token window nothing is transmitted at all — the request
+cannot be reduced, so it is refused with an explanation instead of being
+truncated; and with an answer cap that fills the whole window the two
+numbers contradict each other, so the contradiction is reported instead of
+being guessed at:
 
 ```sh
 HAL9001_BINARY=/tmp/opencode/hal9001 \
@@ -289,12 +290,13 @@ python3 tools/ptycheck/budget_checks.py
   the conversation still works afterwards.
 - The budget suite runs the real binary against a provider that records
   every request: without an operator limit the stored conversation is
-  still bounded by the provisional total and the interface says that the
-  budget is provisional, with a configured window and answer cap the
-  transmitted request is smaller, fits the room that is left of the
-  window and keeps the newest request, the interface says that older
-  context was dropped to fit, with a hundred-token window nothing
-  is transmitted and the refusal explains itself, and with an answer cap
+  still bounded by the provisional total, the wire carries the
+  provisional output cap and the interface says that the budget is
+  provisional; with a configured window and answer cap the transmitted
+  request fits the room that is left of the window, the wire carries the
+  configured cap and the newest request is kept, the interface says that
+  older context was dropped to fit; with a hundred-token window nothing
+  is transmitted and the refusal explains itself; and with an answer cap
   that fills the whole window the contradiction is reported with both
   numbers.
 - The composer PTY suite covers two, three and five-line pastes, a

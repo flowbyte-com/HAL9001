@@ -192,3 +192,34 @@ func TestTheBudgetDescriptionNamesTheSource(t *testing.T) {
 		}
 	}
 }
+
+// The operator can see the whole budget.
+//
+// The total the window holds, the room held back for the answer, the
+// room the request may use and the provenance of the numbers are all
+// inspectable, and a provisional budget is recognisable as one.
+func TestTheOperatorCanInspectTheBudget(t *testing.T) {
+	a := budgetApp(config.Config{
+		Provider: "openai-compatible", Model: "m",
+	}, config.FileConfig{})
+	budget, err := a.contextBudget(budgetKey("m"), 0, allowance(1024))
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
+	if budget.Total != provider.ProvisionalContextWindow {
+		t.Fatalf("the total = %d, want %d", budget.Total, provider.ProvisionalContextWindow)
+	}
+	if budget.ReservedOutput != provider.ProvisionalMaxOutputTokens {
+		t.Fatalf("the reservation = %d, want %d",
+			budget.ReservedOutput, provider.ProvisionalMaxOutputTokens)
+	}
+	if budget.Limit != provider.ProvisionalContextWindow-provider.ProvisionalMaxOutputTokens {
+		t.Fatalf("the effective budget = %d", budget.Limit)
+	}
+	text := provider.DescribeBudget(budget)
+	for _, want := range []string{"8192", "1024", "7168", "provisional"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the description does not name %q: %q", want, text)
+		}
+	}
+}

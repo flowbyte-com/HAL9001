@@ -234,18 +234,21 @@ type ContextMetadata struct {
 // limit always wins over it, and the endpoint's own advertisement
 // replaces it as soon as one arrives.
 //
-// The number was raised from 8192 to 32768 when the budget interface
-// was written. A normal HAL request carries the persona, the
-// permission block, the MCP guidance and about a dozen tool
-// definitions: roughly three thousand tokens. A guess below that size
-// would be smaller than an ordinary request, which makes it a
-// meaningless figure rather than a conservative one.
+// The numbers are deliberately small. An unknown model must still be
+// able to hold an ordinary conversation with HAL's own instructions and
+// tool definitions, which cost about three thousand tokens before the
+// safety margin and about five thousand after it, and the answer needs
+// room of its own: a 32768-token guess left the request more room than
+// any ordinary conversation needs and made the guess look like a
+// measurement. Eight thousand leave room for the instructions, the
+// tools, a working exchange or two and an answer, and they cannot be
+// mistaken for a claim about the model.
 const (
 	// ProvisionalContextWindow is the provisional TOTAL context used
 	// when no authoritative number is known.
-	ProvisionalContextWindow = 32768
+	ProvisionalContextWindow = 8192
 	// ProvisionalMaxOutputTokens is the output cap used with it.
-	ProvisionalMaxOutputTokens = 4096
+	ProvisionalMaxOutputTokens = 1024
 )
 
 // ProvisionalContext returns the conservative record used when nothing

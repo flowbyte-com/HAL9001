@@ -57,14 +57,19 @@ PORT = int(os.environ.get("HAL9001_RECORDER_PORT", "8265"))
 MESSAGES = 41
 MESSAGE_SIZE = 4000
 
-# The provisional budget: the provider package uses a 32768 total window
-# when nothing is known, and the OpenAI protocol's 15000 answer cap
-# comes out of it, so 17768 tokens are left for the request. The suite
-# has to compare the transmitted request with the number that is
-# enforced, so the numbers are written down here.
-PROVISIONAL_TOTAL = 32768
-PROVISIONAL_ANSWER = 15000
+# The provisional budget: the provider package uses an 8192 total window
+# when nothing is known, and a 1024 answer cap comes out of it, so 7168
+# tokens are left for the request. The suite has to compare the
+# transmitted request with the number that is enforced, so the numbers
+# are written down here.
+PROVISIONAL_TOTAL = 8192
+PROVISIONAL_ANSWER = 1024
 PROVISIONAL_INPUT = PROVISIONAL_TOTAL - PROVISIONAL_ANSWER
+
+# The safety margin HAL applies to its own estimate. The suite counts the
+# request the same way the engine does, so the two numbers can be
+# compared.
+MARGIN = 1.5
 
 
 def check(name, ok, detail=""):
@@ -88,8 +93,9 @@ def estimate(request):
     """The size of a request in the same rough tokens HAL estimates.
 
     It is the same rule the engine uses: four characters per token plus
-    a small overhead per message and per tool. It is an estimate, and
-    the check treats it as one.
+    a small overhead per message and per tool, multiplied by the safety
+    margin HAL applies. It is an estimate, and the check treats it as
+    one.
     """
     total = 0
     for message in request.get("messages", []):
@@ -102,7 +108,12 @@ def estimate(request):
         if not isinstance(parameters, str):
             parameters = json.dumps(parameters)
         total += len(parameters) // 4 + 8
-    return total
+    return (total * int(MARGIN * 100) + 99) // 100
+
+
+def wire_cap(request):
+    """The output cap the request carries."""
+    return request.get("max_tokens")
 
 
 def user_messages(request):
@@ -211,6 +222,9 @@ def main():
         check("the request fits the provisional budget",
               baseline_size <= PROVISIONAL_INPUT,
               "%d > %d" % (baseline_size, PROVISIONAL_INPUT))
+        check("the wire carries the provisional output cap",
+              wire_cap(baseline) == PROVISIONAL_ANSWER,
+              wire_cap(baseline))
         _, diag = capture("budget-base",
                           script=[(1.8, b""), (0.1, b"/diag\r"), (1.2, b"")])
         check("the interface says the budget is provisional",
@@ -219,8 +233,8 @@ def main():
         # 2. A configured window bounds the request that is transmitted.
         #    The window is a total: the room for the answer comes out of
         #    it, so the request may use what is left.
-        window = max(4000, baseline_size)
-        answer = window // 2
+        window = 16384
+        answer = 4096
         write_config(window, answer)
         seed("budget-limited")
         raw, screen = capture("budget-limited")
@@ -232,12 +246,13 @@ def main():
             return 1
         bounded = recorded[1]
         bounded_messages = len(bounded.get("messages", []))
-        check("the transmitted request is smaller",
-              bounded_messages < baseline_messages,
-              "%d of %d messages" % (bounded_messages, baseline_messages))
+        check("the whole conversation was not transmitted",
+              bounded_messages < MESSAGES + 1, bounded_messages)
         check("the transmitted request fits the room that is left of the window",
               estimate(bounded) <= window - answer,
               "%d > %d" % (estimate(bounded), window - answer))
+        check("the wire carries the configured output cap",
+              wire_cap(bounded) == answer, wire_cap(bounded))
         check("the newest request was transmitted",
               any("hello there" in (m.get("content") or "")
                   for m in user_messages(bounded)),

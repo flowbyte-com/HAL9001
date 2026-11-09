@@ -892,10 +892,16 @@ func evidenceSummary(a ToolActivity, status session.ToolStatus) string {
 // assembled messages and tools, and a request that cannot be reduced
 // to the budget is refused with an explanation rather than sent.
 func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []provider.Tool, emit func(Event)) (provider.Response, error) {
-	messages, err := e.applyContextBudget(messages, tools, emit)
+	messages, budget, err := e.applyContextBudget(messages, tools, emit)
 	if err != nil {
 		return provider.Response{}, err
 	}
+	// The model that goes on the wire carries the budget the request
+	// was fitted to. The output cap the provider is asked for is the
+	// room the answer was given, so the budget and the request that
+	// leaves the machine can never disagree.
+	model := e.model
+	model.Budget = budget
 	deltaFn := func(d provider.Delta) error {
 		ev := Event{Text: d.Text, Reasoning: d.Reasoning != ""}
 		if ev.Text == "" && !ev.Reasoning {
@@ -908,13 +914,13 @@ func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []
 	}
 	if len(tools) > 0 {
 		if streamer, ok := e.provider.(provider.ToolStreamer); ok {
-			return streamer.ChatStreamTools(ctx, messages, e.model, tools, deltaFn)
+			return streamer.ChatStreamTools(ctx, messages, model, tools, deltaFn)
 		}
 	}
 	if streamer, ok := e.provider.(provider.Streamer); ok && emit != nil {
-		return streamer.ChatStream(ctx, messages, e.model, deltaFn)
+		return streamer.ChatStream(ctx, messages, model, deltaFn)
 	}
-	return e.provider.Chat(ctx, messages, e.model)
+	return e.provider.Chat(ctx, messages, model)
 }
 
 // applyContextBudget fits the assembled request into the model's
@@ -931,7 +937,12 @@ func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []
 // A request that does not fit even after every droppable exchange is
 // gone is refused with a clear explanation. It is never truncated
 // silently, and no retry is attempted.
-func (e *Engine) applyContextBudget(messages []provider.Message, tools []provider.Tool, emit func(Event)) ([]provider.Message, error) {
+//
+// The resolved budget is returned with the trimmed messages: it is the
+// budget the request was fitted to, and it travels with the request to
+// the provider, so the output cap on the wire is the room this budget
+// reserved for the answer.
+func (e *Engine) applyContextBudget(messages []provider.Message, tools []provider.Tool, emit func(Event)) ([]provider.Message, provider.ContextBudget, error) {
 	budget := e.model.Budget
 	if e.budgetResolver != nil {
 		// The application resolves the budget per request: an endpoint
@@ -941,22 +952,22 @@ func (e *Engine) applyContextBudget(messages []provider.Message, tools []provide
 		// with the reason, and nothing is guessed.
 		resolved, err := e.budgetResolver()
 		if err != nil {
-			return nil, err
+			return nil, budget, err
 		}
 		budget = resolved
 	}
 	if budget.Limit <= 0 {
-		return messages, nil
+		return messages, budget, nil
 	}
 	trimmed, report, err := provider.TrimToBudget(messages, tools, budget)
 	if err != nil {
-		return nil, err
+		return nil, budget, err
 	}
 	if report.DroppedExchanges > 0 && emit != nil {
 		notice := report.Note(budget)
 		emit(Event{Context: &notice})
 	}
-	return trimmed, nil
+	return trimmed, budget, nil
 }
 
 // userTurns counts the user messages in the history: the turn number the

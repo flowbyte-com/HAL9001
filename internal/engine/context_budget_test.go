@@ -185,7 +185,18 @@ func TestTheContextLimitNeverOrphansAToolExchange(t *testing.T) {
 		{Role: "tool", ToolCallID: "call-2", Name: "read", Content: "the second result"},
 		{Role: "user", Content: "third question"},
 	}
-	for _, limit := range []int{12, 15, 20, 25, 30, 35, 40, 45, 50} {
+	// The limits are expressed in HAL's own estimate, so the case does
+	// not depend on the size of the safety margin: the smallest one
+	// leaves room for the instructions and the current exchange, and
+	// the largest one leaves room for everything.
+	minimum := provider.EstimateTokens(
+		[]provider.Message{messages[0], messages[len(messages)-1]}, nil)
+	whole := provider.EstimateTokens(messages, nil)
+	limits := []int{minimum, minimum + 3, minimum + 6, minimum + 9, minimum + 12}
+	if whole > limits[len(limits)-1] {
+		limits = append(limits, whole)
+	}
+	for _, limit := range limits {
 		kept, _, err := provider.TrimToBudget(messages, nil, operatorBudget(limit))
 		if err != nil {
 			t.Fatalf("limit %d: %v", limit, err)
@@ -216,13 +227,13 @@ func TestTheContextLimitNeverOrphansAToolExchange(t *testing.T) {
 		}
 		// The oldest exchange goes first, and no exchange is cut in
 		// half.
-		if limit < 50 && len(kept) == len(messages) {
+		if limit < whole && len(kept) == len(messages) {
 			t.Errorf("limit %d: nothing was dropped", limit)
 		}
 	}
 	// A limit that even the current exchange does not fit is refused
 	// with an explicit error, never a broken request.
-	if _, _, err := provider.TrimToBudget(messages, nil, operatorBudget(10)); err == nil {
+	if _, _, err := provider.TrimToBudget(messages, nil, operatorBudget(minimum-1)); err == nil {
 		t.Error("a request that cannot fit was trimmed anyway")
 	}
 }

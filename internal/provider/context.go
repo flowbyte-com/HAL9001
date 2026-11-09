@@ -39,7 +39,19 @@ type ContextBudget struct {
 	// budget would be read as "no budget at all", which is the
 	// opposite of what a known window says.
 	Limit int `json:"limit,omitempty"`
+	// Total is the context window the budget was measured against, in
+	// tokens. It is the whole context the model accepts: the answer's
+	// room comes out of it, and what is left is the room the request
+	// may use.
+	//
+	// Zero means no window is known at all.
+	Total int `json:"total,omitempty"`
 	// ReservedOutput is the room held back for the answer, in tokens.
+	//
+	// It is the EFFECTIVE reservation: the room the answer really
+	// gets after the window was taken into account. It is the number
+	// that goes on the wire, so the budget and the request can never
+	// disagree.
 	ReservedOutput int `json:"reserved_output,omitempty"`
 	// Source says where the limit came from.
 	Source ContextSource `json:"source,omitempty"`
@@ -75,11 +87,19 @@ func (b ContextBudget) Usable() bool {
 // contradiction between two numbers the operator wrote down, and it is
 // refused with a clear error. A default is reduced conservatively
 // instead, so that a window always leaves room for the request.
+//
+// Minimum is the smallest cap the protocol accepts for this request. A
+// reasoning model needs room for its thinking budget, and the Messages
+// API refuses a smaller cap. It is never lowered, whatever the window
+// says: a cap the API rejects would fail the turn in a way the
+// operator cannot act on.
 type OutputAllowance struct {
 	// Tokens is the room the answer may use.
 	Tokens int
 	// Configured reports whether the operator configured the number.
 	Configured bool
+	// Minimum is the smallest cap the protocol accepts.
+	Minimum int
 }
 
 // ContextAllowanceError reports that the room reserved for the answer
@@ -119,6 +139,10 @@ func (e *ContextAllowanceError) Error() string {
 //   - a default is reduced conservatively, so that a window always
 //     leaves room for the request.
 //
+// The reservation that comes out of this is the EFFECTIVE one: it is
+// the number that goes on the wire, so the budget and the request that
+// leaves the machine can never disagree.
+//
 // A window that is known never yields a zero or a negative budget: a
 // zero budget would be read as "no budget at all", and a negative one
 // would be a number nobody meant. A window that is not known at all
@@ -133,6 +157,24 @@ func BudgetFor(resolved ContextMetadata, allowance OutputAllowance) (ContextBudg
 	reserved := allowance.Tokens
 	if reserved <= 0 {
 		reserved = DefaultMaxTokens
+	}
+	if resolved.Source == ContextSourceProvisional && !allowance.Configured {
+		// The provisional record carries its own output cap. It is
+		// the only number about this model that HAL has, and it is
+		// small on purpose: the provisional window is small too, and
+		// an answer that takes half of it leaves nothing for the
+		// request.
+		//
+		// An allowance the operator configured is never replaced
+		// here: their number is the one that counts.
+		if provisional := resolved.MaxOutputTokens; provisional > 0 && provisional < reserved {
+			reserved = provisional
+		}
+	}
+	if allowance.Minimum > reserved {
+		// The protocol refuses a smaller cap. The room for the answer
+		// grows to fit it.
+		reserved = allowance.Minimum
 	}
 	total := resolved.ContextWindow
 	if total <= 0 {
@@ -157,6 +199,7 @@ func BudgetFor(resolved ContextMetadata, allowance OutputAllowance) (ContextBudg
 		}
 	}
 	budget.Limit = total - reserved
+	budget.Total = total
 	budget.ReservedOutput = reserved
 	if budget.Limit <= 0 {
 		// A budget of zero would read as "no budget at all", and that
@@ -207,13 +250,45 @@ func (e *ContextBudgetError) Error() string {
 		e.Estimated, e.Limit, e.Reason)
 }
 
+// EstimateSafetyMargin is the factor the raw character-based estimate
+// is multiplied by.
+//
+// The raw estimate is four characters per token plus a small overhead,
+// and it undercounts. A normal HAL request measured about 5086 real
+// tokens against 4115 estimated — a factor of 1.24 — and dense code
+// and non-English text undercount by more.
+//
+// The margin makes the estimate conservative, so a request HAL believes
+// fits has room for a tokenizer that counts differently. It is a
+// bounded, documented guess and not a tokenizer: HAL still does not
+// claim that a request fits every provider's tokenizer, and every
+// message that quotes a token count calls it an estimate.
+const EstimateSafetyMargin = 1.5
+
 // EstimateTokens approximates the size of a request in tokens.
 //
 // The estimate is four characters per token plus a small overhead per
-// message, per tool call and per tool definition. It is a rough number
-// on purpose: HAL never claims to know the provider's tokenizer, so
-// every message that quotes a token count calls it an estimate.
+// message, per tool call and per tool definition, multiplied by
+// EstimateSafetyMargin. It is a rough number on purpose: HAL never
+// claims to know the provider's tokenizer, so every message that quotes
+// a token count calls it an estimate.
+//
+// The margin is what makes the number safe to budget with. Without it
+// the estimate is smaller than the request that leaves the machine, and
+// a budget fitted to it would be fitted to a number that is too small.
 func EstimateTokens(messages []Message, tools []Tool) int {
+	raw := rawEstimateTokens(messages, tools)
+	if raw <= 0 {
+		return 0
+	}
+	// The margin is rounded up: a budget fitted to a rounded-down
+	// estimate would be fitted to a number that is too small.
+	return (raw*int(EstimateSafetyMargin*100) + 99) / 100
+}
+
+// rawEstimateTokens is the character-based estimate before the safety
+// margin is applied.
+func rawEstimateTokens(messages []Message, tools []Tool) int {
 	total := 0
 	for _, m := range messages {
 		total += len(m.Content)/4 + 4
@@ -225,6 +300,25 @@ func EstimateTokens(messages []Message, tools []Tool) int {
 		total += len(t.Name)/4 + len(t.Description)/4 + len(t.Parameters)/4 + 8
 	}
 	return total
+}
+
+// OutputCap returns the cap that goes on the wire for a model.
+//
+// The budget's reservation is the effective cap: it is the room the
+// answer was given, measured against the window the request was
+// trimmed for. What the budget says the answer may use is what the
+// provider is asked for, so the two can never disagree.
+//
+// Without a budget in force the model's own cap is used, and without
+// that the protocol's default.
+func OutputCap(model Model, fallback int) int {
+	if model.Budget.Limit > 0 && model.Budget.ReservedOutput > 0 {
+		return model.Budget.ReservedOutput
+	}
+	if model.MaxTokens > 0 {
+		return model.MaxTokens
+	}
+	return fallback
 }
 
 // TrimToBudget drops the oldest exchanges until the request fits the
@@ -370,8 +464,15 @@ func pluralExchanges(n int) string {
 //
 // It never claims an exact token count: the numbers it quotes are the
 // budget and its provenance, not a measurement of the request.
+//
+// The operator sees the whole picture: the total the window holds, the
+// room held back for the answer, the room the request may use and where
+// the numbers came from.
 func DescribeBudget(budget ContextBudget) string {
 	parts := []string{}
+	if budget.Total > 0 {
+		parts = append(parts, fmt.Sprintf("%d tokens in all", budget.Total))
+	}
 	if budget.Limit > 0 {
 		parts = append(parts, fmt.Sprintf("%d tokens for the request", budget.Limit))
 	} else {

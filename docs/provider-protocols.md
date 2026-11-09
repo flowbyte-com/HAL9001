@@ -131,6 +131,12 @@ it:
 - a **default** that does not fit is reduced conservatively, so that a
   window always leaves room for the request.
 
+The reservation that comes out of this is the **effective** one, and it
+is the number that goes on the wire: the provider is asked for exactly
+the room the budget held back for the answer. A provisional record
+carries its own output cap, and it is used when the operator configured
+none — but never against an operator's own number.
+
 A window that is known never produces a zero or a negative budget: a zero
 budget would be read as "no budget at all", which is the opposite of what
 a known window says. A window that is not known at all leaves the
@@ -144,8 +150,8 @@ provider's own limit in force, and the budget says so.
 3. the provider's advertised maximum is the budget when there is no
    local allocation;
 4. a cached, previously verified record is used next;
-5. otherwise the **provisional** record is used: a conservative 32k
-   total context and a 4k output cap, `Verified: false`, with a note that
+5. otherwise the **provisional** record is used: a conservative 8k
+   total context and a 1k output cap, `Verified: false`, with a note that
    says the endpoint reported nothing.
 
 A guessed number is never labelled verified. HAL never probes a context
@@ -226,8 +232,32 @@ The rules of the trim:
   dropped, not compacted.
 
 The token count is always an estimate — four characters per token plus
-a small overhead — and every message that quotes one calls it an
-estimate.
+a small overhead, multiplied by a bounded safety margin — and every
+message that quotes one calls it an estimate.
+
+**The estimate is not a guarantee.** The safety margin makes the number
+conservative: a normal HAL request measured about 5086 real tokens
+against 4115 estimated, and dense code and non-English text undercount
+by more, so the margin is 1.5. HAL does **not** claim that a request
+that fits HAL's estimate fits every provider's tokenizer. The margin is
+a bounded guess, not a tokenizer: a request that is too large for the
+model can still be too large after the estimate says it fits, and the
+provider's own refusal is then the honest report.
+
+### The output cap on the wire
+
+The room the budget reserves for the answer is the number the provider
+is asked for. The budget and the outgoing request cannot disagree: the
+effective reservation travels with the request, and both wire protocols
+carry it as their output cap (`max_tokens`).
+
+- a configured allowance that does not fit inside the window is refused
+  before the request is transmitted, with both numbers named;
+- a default that does not fit is reduced conservatively, so that a
+  window always leaves room for the request;
+- a reasoning model keeps the room its thinking budget needs: the
+  Messages API refuses a smaller cap, so a configured cap below that
+  floor is refused with the reason instead of being silently replaced.
 
 The operator's `context_window` is the **total context** the model
 accepts, exactly like an advertised or an allocated window: the room for
@@ -242,6 +272,20 @@ model's true capacity — it is labelled `provisional`, it is never
 verified, and the note says the endpoint reported nothing. The operator's
 own limit always wins over it, and the endpoint's own advertisement
 replaces it as soon as one arrives.
+
+The provisional numbers are small on purpose:
+
+| Number | Value | Meaning |
+|---|---|---|
+| provisional total | 8192 | the whole context HAL assumes for a model nobody described |
+| provisional output cap | 1024 | the room the answer gets inside it |
+| effective input budget | 7168 | what is left for the request |
+
+The 8192 leaves room for HAL's own instructions and tool definitions and
+for an ordinary exchange, and it cannot be mistaken for a measurement of
+the model. A model that advertises a window is not restricted by any of
+it: the advertisement replaces the provisional total, and the operator's
+own limit replaces both.
 
 ### Discovery metadata is untrusted
 

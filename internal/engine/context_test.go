@@ -197,7 +197,7 @@ func TestTheEnforcementPointDropsAToolExchangeWhole(t *testing.T) {
 	// A budget that leaves room for the instructions and the newest
 	// exchange only.
 	eng, _ := budgetedEngine(t, 0, provider.ContextBudget{Limit: 40, Source: provider.ContextSourceOperator})
-	trimmed, err := eng.applyContextBudget(messages, nil, nil)
+	trimmed, _, err := eng.applyContextBudget(messages, nil, nil)
 	if err != nil {
 		t.Fatalf("the request should fit: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestTheEnforcementPointReportsWhatItDropped(t *testing.T) {
 		)
 	}
 	messages = append(messages, provider.Message{Role: "user", Content: "and now?"})
-	if _, err := eng.applyContextBudget(messages, nil, emit); err != nil {
+	if _, _, err := eng.applyContextBudget(messages, nil, emit); err != nil {
 		t.Fatalf("the request should fit: %v", err)
 	}
 	if len(notes) != 1 {

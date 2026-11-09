@@ -224,11 +224,25 @@ not accepted. A *default* output allowance that does not fit is reduced
 conservatively instead, so that a window always leaves room for the
 request.
 
+**The answer's room is what the provider is asked for.** The effective
+reservation is the output cap on the wire, in both wire protocols, so
+the budget and the outgoing request cannot disagree. A reasoning model
+keeps the room its thinking budget needs, and a configured cap below
+that floor is refused with the reason instead of being silently
+replaced.
+
 When nothing is known about a model's window, HAL uses a **provisional**
-total: a conservative 32k, never labelled verified, with a note that says
-the endpoint reported nothing. It bounds the conversation instead of
-letting it grow without limit; it is not a claim about the model's true
-capacity, and the operator's own limit always wins over it.
+total: a conservative 8192 with a provisional output cap of 1024, never
+labelled verified, with a note that says the endpoint reported nothing.
+It bounds the conversation instead of letting it grow without limit; it
+is not a claim about the model's true capacity, and the operator's own
+limit always wins over it. An endpoint that advertises a window is not
+restricted by any of it.
+
+The operator can see all of it: `/model show` names the whole window,
+the room held back for the answer, the room the request may use and
+where the numbers came from, and the diagnostics panel carries the same
+line for the active model.
 
 **The context metadata belongs to one endpoint.** The same model
 identifier may exist under two endpoints with very different windows, so
@@ -251,8 +265,16 @@ rules are:
   compaction in this milestone;
 * a request that does not fit even after every old exchange is dropped is
   refused with an explicit error. The provider is never sent a request
-  that does not fit, and the operator's message is never silently
-  discarded.
+  that does not fit HAL's own estimate, and the operator's message is
+  never silently discarded.
+
+The size of the request is HAL's **estimate**, not a measurement: four
+characters per token plus a small overhead, multiplied by a bounded
+safety margin of 1.5. The margin makes the number conservative — a
+normal request measured about 5086 real tokens against 4115 estimated —
+but it is not a tokenizer. HAL does not claim that a request that fits
+its estimate fits every provider's tokenizer, and a provider that
+refuses a request HAL believed would fit reports it in its own terms.
 
 The enforcement lives in the provider layer and in one place:
 `internal/provider.TrimToBudget` decides what may be dropped, and

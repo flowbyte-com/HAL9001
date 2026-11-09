@@ -110,9 +110,14 @@ type Model struct {
 	// and the provisional record, in that order, and it carries the
 	// provenance of the number it holds.
 	//
-	// A provisional budget is reported, not enforced: its Limit is zero,
-	// which means the provider's own window governs and HAL trims
-	// nothing.
+	// A provisional budget is enforced like any other, and it is
+	// labelled: it is a conservative total that HAL made up, never a
+	// claim about the model's real capacity, and the operator's own
+	// limit always wins over it.
+	//
+	// Its ReservedOutput is the effective reservation, and it is the
+	// number that goes on the wire: the answer's room is what the
+	// provider is asked for.
 	Budget ContextBudget `json:"budget,omitempty"`
 }
 

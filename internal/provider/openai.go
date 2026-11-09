@@ -179,10 +179,7 @@ func (o *OpenAICompatible) requestBodyTools(messages []Message, model Model, str
 		}
 		out.Messages = append(out.Messages, wire)
 	}
-	maxTokens := model.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = o.maxTokens()
-	}
+	maxTokens := OutputCap(model, o.maxTokens())
 	if maxTokens > 0 {
 		out.MaxTokens = &maxTokens
 	}

@@ -600,7 +600,16 @@ func (a *app) rebuildEngine() {
 	// lookup recorded.
 	budgetKey := contextKey{endpoint: target.EndpointID, model: target.ModelID}
 	budgetLimit := target.ContextWindow
-	budgetAllowance := a.outputAllowance(target)
+	budgetAllowance, allowanceErr := a.outputAllowance(
+		target.MaxTokens, target.Wire, target.ModelID, target.Effort)
+	if allowanceErr != nil {
+		// The output cap the target asks for is one the protocol
+		// refuses. resolveTarget has already refused the target and
+		// the reason is reported with the endpoint's own error; the
+		// allowance here is a placeholder for a runtime that cannot
+		// be used anyway.
+		budgetAllowance = provider.OutputAllowance{}
+	}
 	a.eng = engine.New(a.store, p, modelFromTarget(target)).
 		WithSystemPrompt(persona.Identity("native-foundation", a.cfg.StoreDir)).
 		WithWorkspace(a.workspace).

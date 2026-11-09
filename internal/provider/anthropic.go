@@ -102,11 +102,13 @@ func (a *AnthropicCompatible) maxTokens() int {
 	return DefaultAnthropicMaxTokens
 }
 
+// effectiveMaxTokens returns the cap the Messages API is asked for.
+//
+// The budget's reservation wins: it is the room the answer was given,
+// measured against the window the request was trimmed for. The model's
+// own cap is next, and the protocol's default last.
 func (a *AnthropicCompatible) effectiveMaxTokens(model Model) int {
-	if model.MaxTokens > 0 {
-		return model.MaxTokens
-	}
-	return a.maxTokens()
+	return OutputCap(model, a.maxTokens())
 }
 
 func (a *AnthropicCompatible) idleTimeout() time.Duration {
@@ -370,6 +372,27 @@ func anthropicThinkingFor(model Model) *anthropicThinking {
 	return &anthropicThinking{Type: "enabled", BudgetTokens: budget}
 }
 
+// AnthropicThinkingFloor returns the smallest output cap an Anthropic
+// request may carry for this model.
+//
+// The Messages API refuses a max_tokens that does not exceed the
+// thinking budget, and the thinking tokens are counted against it. The
+// room for the answer therefore has to hold the thinking budget plus a
+// margin for the visible answer.
+//
+// Zero means the model takes no thinking block and no floor applies.
+func AnthropicThinkingFloor(modelID, effort string) int {
+	thinking := anthropicThinkingFor(Model{ID: modelID, Effort: effort})
+	if thinking == nil {
+		return 0
+	}
+	return thinking.BudgetTokens + anthropicThinkingMargin
+}
+
+// anthropicThinkingMargin is the room left for the visible answer when
+// the thinking budget is the floor of the output cap.
+const anthropicThinkingMargin = 1024
+
 // requestBody builds one request, optionally offering functions.
 func (a *AnthropicCompatible) requestBody(messages []Message, model Model, stream bool, tools []Tool) ([]byte, error) {
 	system, conversation := anthropicMessages(messages)
@@ -383,7 +406,7 @@ func (a *AnthropicCompatible) requestBody(messages []Message, model Model, strea
 	if thinking := anthropicThinkingFor(model); thinking != nil {
 		// The API requires max_tokens to exceed the thinking budget.
 		if out.MaxTokens <= thinking.BudgetTokens {
-			out.MaxTokens = thinking.BudgetTokens + 1024
+			out.MaxTokens = thinking.BudgetTokens + anthropicThinkingMargin
 		}
 		out.Thinking = thinking
 	}

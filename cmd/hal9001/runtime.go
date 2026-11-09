@@ -163,7 +163,11 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 	// window that cannot hold the answer it is asked for — are
 	// refused here, with the reason, rather than guessed at.
 	key := contextKey{endpoint: target.EndpointID, model: target.ModelID}
-	budget, err := a.contextBudget(key, target.ContextWindow, a.outputAllowance(target))
+	allowance, err := a.outputAllowance(target.MaxTokens, target.Wire, target.ModelID, target.Effort)
+	if err != nil {
+		return target, err
+	}
+	budget, err := a.contextBudget(key, target.ContextWindow, allowance)
 	if err != nil {
 		return target, err
 	}
@@ -171,7 +175,7 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 	return target, nil
 }
 
-// outputAllowance returns the room the answer may use.
+// outputAllowance returns the room the answer may use for one model.
 //
 // The model's own cap wins; without one the configured cap is used;
 // without that the protocol's default, because the two protocols default
@@ -186,14 +190,33 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 // contradiction between two numbers the operator wrote down, and it is
 // refused; a default is reduced conservatively, so that a window
 // always leaves room for the request.
-func (a *app) outputAllowance(target providerTarget) provider.OutputAllowance {
-	if target.MaxTokens > 0 {
-		return provider.OutputAllowance{Tokens: target.MaxTokens, Configured: true}
+//
+// The protocol's own floor is honoured as well. A reasoning model needs
+// room for its thinking budget, and the Messages API refuses a smaller
+// cap. A configured cap below that floor cannot be honoured at all, so
+// it is refused with the reason instead of being silently replaced.
+func (a *app) outputAllowance(maxTokens int, wire, modelID, effort string) (provider.OutputAllowance, error) {
+	allowance := provider.OutputAllowance{}
+	switch {
+	case maxTokens > 0:
+		allowance = provider.OutputAllowance{Tokens: maxTokens, Configured: true}
+	case a.cfg.MaxTokens > 0:
+		allowance = provider.OutputAllowance{Tokens: a.cfg.MaxTokens, Configured: true}
+	default:
+		allowance = provider.OutputAllowance{Tokens: provider.DefaultOutputTokens(wire)}
 	}
-	if a.cfg.MaxTokens > 0 {
-		return provider.OutputAllowance{Tokens: a.cfg.MaxTokens, Configured: true}
+	floor := provider.AnthropicThinkingFloor(modelID, effort)
+	if floor > allowance.Tokens {
+		if allowance.Configured {
+			return provider.OutputAllowance{}, fmt.Errorf(
+				"the answer is allowed %d tokens but %s needs at least %d tokens for its reasoning budget: "+
+					"raise the output limit or turn the reasoning level off",
+				allowance.Tokens, modelID, floor)
+		}
+		allowance.Tokens = floor
 	}
-	return provider.OutputAllowance{Tokens: provider.DefaultOutputTokens(target.Wire)}
+	allowance.Minimum = floor
+	return allowance, nil
 }
 
 // legacyModelRecord finds the record of a model in a pre-version-2

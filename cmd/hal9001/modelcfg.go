@@ -342,6 +342,12 @@ func (a *app) modelDetails(endpointID, modelID string) ([]string, error) {
 		fmt.Sprintf("  output limit    %s", output),
 		fmt.Sprintf("  source          %s", orDefault(model.Source, config.SourceManual)),
 	}
+	// The effective budget: the whole window, the room held back for the
+	// answer, the room the request may use and where the numbers came
+	// from. It is what the request is held to, so the operator sees it.
+	if budget, err := a.budgetForModel(endpoint, model); err == nil {
+		lines = append(lines, fmt.Sprintf("  context budget  %s", provider.DescribeBudget(budget)))
+	}
 	if model.FetchedAt != "" {
 		lines = append(lines, fmt.Sprintf("  confirmed at    %s", model.FetchedAt))
 	}
@@ -349,6 +355,23 @@ func (a *app) modelDetails(endpointID, modelID string) ([]string, error) {
 		lines = append(lines, fmt.Sprintf("  needs review    %s", model.Review))
 	}
 	return lines, nil
+}
+
+// budgetForModel resolves the effective budget of one model of one
+// endpoint.
+//
+// The numbers are the ones the request is held to: the whole window the
+// model accepts, the room held back for the answer and the room the
+// request may use. The provenance travels with them, so a provisional
+// budget is recognisable as one.
+func (a *app) budgetForModel(endpoint config.EndpointRecord, model config.ModelRecord) (provider.ContextBudget, error) {
+	allowance, err := a.outputAllowance(
+		model.MaxOutputTokens, wireOf(endpoint), model.ID, model.Effort)
+	if err != nil {
+		return provider.ContextBudget{}, err
+	}
+	key := contextKey{endpoint: endpoint.ID, model: model.ID}
+	return a.contextBudget(key, operatorLimitFor(model), allowance)
 }
 
 // discover probes the provider's catalogue of one endpoint.
