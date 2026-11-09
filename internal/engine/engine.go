@@ -569,6 +569,10 @@ func (e *Engine) respondTurn(ctx context.Context, op lifecycle.Operation, input 
 		return "", err
 	}
 	if e.provider == nil {
+		// The operator's message is stored and unanswered, so the
+		// exchange is not finished: it can be continued once there is
+		// a provider to answer it.
+		e.rememberCheckpoint(seq, turnID, input, atts, nil, nil, "there is no provider")
 		return "", ErrNoProvider
 	}
 	history, err := e.sessions.History()
@@ -593,12 +597,11 @@ func (e *Engine) respondTurn(ctx context.Context, op lifecycle.Operation, input 
 	// exchange: they are what the operator sees in the status.
 	e.lifecycle.Steps(op.ID, len(ran))
 	if err != nil {
-		// An interrupted turn leaves a checkpoint behind: the exchange
-		// can be continued from it, and the operations that already
-		// ran inside it are never run again.
-		if errors.Is(err, context.Canceled) {
-			e.rememberCheckpoint(seq, turnID, input, atts, evidence, ran)
-		}
+		// An exchange that did not finish leaves a checkpoint behind:
+		// the operator can continue it, and the operations that
+		// already ran inside it are never run again. A turn that was
+		// stopped and a turn that failed are continued the same way.
+		e.rememberCheckpoint(seq, turnID, input, atts, evidence, ran, checkpointReason(err))
 		// A failed turn still reports its content-free diagnostics: the
 		// elapsed time and the event counts are how a stall is explained.
 		if emit != nil && !resp.Stats.StartedAt.IsZero() {
@@ -620,6 +623,10 @@ func (e *Engine) respondTurn(ctx context.Context, op lifecycle.Operation, input 
 		// honestly and store nothing: an explanation is not an assistant
 		// message, and silently retrying or raising the cap would hide
 		// the cost instead of explaining it.
+		//
+		// The operator's message is still unanswered, so the exchange
+		// can be continued.
+		e.rememberCheckpoint(seq, turnID, input, atts, evidence, ran, "the model produced no visible answer")
 		finish := resp.FinishReason
 		if finish == "" {
 			finish = "unknown"

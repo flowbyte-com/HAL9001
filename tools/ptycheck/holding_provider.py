@@ -11,11 +11,16 @@ Two modes:
     plain  the first request is held, every later request is answered;
     guard  the first request proposes a command, the second is held,
            the third proposes the same command again, and the fourth is
-           answered.
+           answered;
+    fail   the first request fails with a server error, every later
+           request is answered.
 
 The guard mode is what proves that a continuation never replays an
 external side effect: the same command is proposed twice, and the
 checks see that it ran only once.
+
+The fail mode is what proves that a failed exchange can be continued:
+the operator's message stays unanswered, and /resume answers it.
 
 Usage:
 
@@ -88,8 +93,23 @@ class Handler(BaseHTTPRequestHandler):
         if MODE == "guard":
             self.guard(count)
             return
+        if MODE == "fail":
+            self.fail(count)
+            return
         if count == 1 and HOLD_FIRST:
             self.hold()
+            return
+        self.answer()
+
+    def fail(self, count):
+        """Fail the first request with a server error."""
+        if count == 1:
+            body = b"the provider is unwell"
+            self.send_response(503)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         self.answer()
 

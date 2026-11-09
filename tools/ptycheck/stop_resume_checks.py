@@ -26,6 +26,8 @@ What is checked:
   done, and the ledger of the exchange keeps one record of it;
 * a finished exchange is never replayed: /resume says there is nothing
   to continue, and the provider is asked nothing;
+* a failed exchange is continued, not abandoned: the operator's message
+  stays unanswered, and /resume answers it;
 * /stop with nothing running says so;
 * the diagnostics name the state of the exchange.
 
@@ -58,6 +60,7 @@ FAILURES = []
 BINARY = os.environ.get("HAL9001_BINARY", "/tmp/opencode/hal9001")
 PORT = int(os.environ.get("HAL9001_HOLDING_PORT", "8266"))
 GUARD_PORT = int(os.environ.get("HAL9001_GUARD_PORT", "8267"))
+FAIL_PORT = int(os.environ.get("HAL9001_FAILURE_PORT", "8268"))
 
 # The question the operator asks. The provider holds the request that
 # carries it, so the turn can be stopped while it is in flight.
@@ -253,7 +256,8 @@ class Session:
 class Harness:
     """One isolated environment: config, home, store, workspace, provider."""
 
-    def __init__(self, root, name, port, mode="plain", command=None):
+    def __init__(self, root, name, port, mode="plain", command=None,
+                 session="stopresume"):
         self.root = os.path.join(root, name)
         self.home = os.path.join(self.root, "home")
         self.store = os.path.join(self.home, "sessions")
@@ -263,7 +267,10 @@ class Harness:
         self.port = port
         self.mode = mode
         self.command = command
-        self.session = name
+        # The session is named so that the word "lifecycle" on the
+        # screen can only come from the diagnostics line and not from
+        # the session name.
+        self.session = session
         self.provider = None
 
     def start(self):
@@ -413,7 +420,9 @@ def scenario_lifecycle(harness):
         delta = plain(session.since(mark))
         check("stopping nothing says so", "nothing is running" in delta, delta)
 
-        # 8. The diagnostics name the state of the exchange.
+        # 8. The diagnostics name the state of the exchange. The word
+        #    "lifecycle" can only come from the diagnostics line: the
+        #    session is not named after it.
         session.send(b"/diag\r")
         session.wait(1.5)
         screen = session.screen()
@@ -482,6 +491,41 @@ def scenario_guard(harness, side_effect):
         session.close()
 
 
+def scenario_failure(harness):
+    """A failed exchange is continued, not abandoned.
+
+    The provider fails the first request. The operator's message stays
+    unanswered, and /resume answers it.
+    """
+    session = Session(BINARY, harness.config, harness.home, harness.store,
+                      harness.session, harness.workspace)
+    session.start()
+    try:
+        session.wait_for("Enter send", 20.0)
+
+        session.send(QUESTION.encode() + b"\r")
+        session.until(lambda: len(harness.requests()) == 1, 15.0)
+        session.wait_for("error", 15.0)
+        roles = roles_of(harness.conversation())
+        check("the failed exchange stored the question and no answer",
+              roles.count("user") == 1 and "assistant" not in roles, roles)
+
+        # The exchange can be continued: the provider is asked again and
+        # the answer arrives.
+        mark = session.mark()
+        session.send(b"/resume\r")
+        session.wait_for(ANSWER, 20.0, mark)
+        check("the failed exchange was continued", len(harness.requests()) == 2,
+              len(harness.requests()))
+        check("the answer to the failed exchange is on screen",
+              ANSWER in session.screen(), session.screen())
+        roles = roles_of(harness.conversation())
+        check("the continued exchange holds the question and the answer",
+              roles.count("user") == 1 and roles.count("assistant") == 1, roles)
+    finally:
+        session.close()
+
+
 def lines_of(path):
     """The lines of a file, or none at all when it does not exist."""
     if not os.path.exists(path):
@@ -515,6 +559,15 @@ def main():
             scenario_guard(guard_harness, side_effect)
         finally:
             guard_harness.close()
+
+        print("== a failed exchange is continued ==")
+        fail_harness = Harness(root, "failure", FAIL_PORT, mode="fail",
+                                session="failedresume")
+        fail_harness.start()
+        try:
+            scenario_failure(fail_harness)
+        finally:
+            fail_harness.close()
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

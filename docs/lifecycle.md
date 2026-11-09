@@ -135,16 +135,21 @@ unless there is a checkpoint:
 | `stopped` | the exchange continues |
 | `failed` | the exchange continues |
 
+An exchange that did not finish leaves a checkpoint: one that was
+stopped, one that failed, and one that produced no visible answer all
+leave the operator's message unanswered, and all three can be
+continued. A turn that finished leaves none.
+
 The checkpoint holds the identity of the exchange, the operator's
 message and **the operations that already ran inside it**. The resume
-never replays an external side effect: an operation that already
-completed in the interrupted exchange is not executed again. The
-recorded result is handed to the model instead, so the model knows the
-work is done.
+never replays an external side effect: an operation that already ran in
+the interrupted exchange is not executed again. The recorded result is
+handed to the model instead, so the model knows the work is done.
 
-The checkpoint lives in the running process. A restart discards it, and
-`/resume` then refuses: there is no safe point to continue from, and
-the operator's message stays unanswered in the session.
+The record is honest about the outcome. `ok` reflects what happened: an
+operation that failed is not reported as a success, and an operation
+that was cancelled or timed out says that its side effect is unknown.
+The model is never told that work succeeded when it did not.
 
 An operation is recognised by the tool's name and a fingerprint of its
 arguments. The arguments are hashed, never kept: the fingerprint says
@@ -153,7 +158,9 @@ arguments is a different operation, and it runs again.
 
 The ledger of the continued exchange carries what the interrupted attempt
 did as well: the record of what really ran is never lost, and it holds one
-entry per execution, not one per attempt.
+entry per execution, not one per attempt. A continuation that is
+interrupted as well keeps what it did, so a second continuation does not
+run it again.
 
 ## Where it is proved
 
@@ -173,6 +180,8 @@ processes would resume nothing at all.
 
 - the notice line names the state: `running`, `completed`, `stopped`,
   `failed`;
+- a stopped or failed turn says that the exchange can be continued with
+  `/resume`, so the operator knows that the question was not lost;
 - `/diag` carries the same state, with the number of operations that
   ran and whether the exchange can be continued;
 - `/stop` and `/resume` say what they did, or why they did nothing.

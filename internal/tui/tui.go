@@ -1562,7 +1562,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "the turn hit its time limit — the request was closed"
 			m.appendNote("assistant", "(the turn exceeded its time limit; the request was closed)")
 		default:
-			m.notice = "error: " + msg.err.Error()
+			m.notice = m.failedNotice(msg.err)
 			m.appendNote("assistant", "(I couldn't answer that: "+msg.err.Error()+")")
 		}
 		// The turn is over, however it ended: a prompt that was

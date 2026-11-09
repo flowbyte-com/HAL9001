@@ -10,6 +10,8 @@ import (
 
 	"github.com/flowbyte-com/HAL9001/internal/engine"
 	"github.com/flowbyte-com/HAL9001/internal/lifecycle"
+	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/session"
 )
 
 // The lifecycle at the interface.
@@ -223,6 +225,75 @@ func TestTheLifecycleCommandsAreRegistered(t *testing.T) {
 	}
 	if !names["/resume"] {
 		t.Error("/resume is not in the command table")
+	}
+}
+
+// The ordinary turn — the one without attachments — reaches the engine
+// that owns the lifecycle.
+//
+// The interface never guesses: after a turn the engine knows what
+// happened, and the interface can ask it about the exchange.
+func TestTheOrdinaryTurnReachesTheLifecycle(t *testing.T) {
+	store, err := session.Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := engine.New(store, &provider.MockProvider{
+		Replies: []provider.Response{{Content: "the answer"}},
+	}, provider.Model{ID: "m"})
+	m := New(eng)
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	m = typeText(m, "hello there")
+	m = sendCurrent(m)
+	op := eng.Lifecycle()
+	if op.State != lifecycle.StateCompleted {
+		t.Fatalf("state = %q, want completed: the ordinary turn must reach the lifecycle", op.State)
+	}
+	if op.Resumable {
+		t.Error("a finished exchange is not continuable")
+	}
+	// The interface asks the engine about the exchange.
+	if m.lifecycleStatus() != "completed" {
+		t.Errorf("status = %q, want completed", m.lifecycleStatus())
+	}
+}
+
+// A failed exchange is continued, and the notice says so.
+func TestAFailedExchangeIsContinued(t *testing.T) {
+	m, double := lifecycleModel(lifecycle.Operation{
+		ID: "turn-1", Kind: "turn", State: lifecycle.StateFailed, Resumable: true,
+	})
+	m = runSlash(m, "/resume")
+	if double.resumed != 1 {
+		t.Fatalf("the exchange was continued %d time(s), want once", double.resumed)
+	}
+	joined := strings.Join(m.Lines(), "\n")
+	if !strings.Contains(joined, "the continued answer") {
+		t.Errorf("the answer is not on screen: %v", m.Lines())
+	}
+}
+
+// The failure notice says that the exchange can be continued: the
+// operator has to know that the question was not lost.
+func TestTheFailureNoticeNamesTheContinuation(t *testing.T) {
+	m, _ := lifecycleModel(lifecycle.Operation{
+		ID: "turn-1", Kind: "turn", State: lifecycle.StateFailed, Resumable: true,
+	})
+	notice := m.failedNotice(errors.New("provider: 503 service unavailable"))
+	if !strings.Contains(notice, "error:") {
+		t.Errorf("notice = %q, want it to name the error", notice)
+	}
+	if !strings.Contains(notice, "/resume") {
+		t.Errorf("notice = %q, want it to name the continuation", notice)
+	}
+	m, _ = lifecycleModel(lifecycle.Operation{
+		ID: "turn-1", Kind: "turn", State: lifecycle.StateFailed,
+	})
+	notice = m.failedNotice(errors.New("provider: 503 service unavailable"))
+	if strings.Contains(notice, "/resume") {
+		t.Errorf("notice = %q, want no continuation to promise", notice)
 	}
 }
 

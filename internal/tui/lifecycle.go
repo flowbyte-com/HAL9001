@@ -223,6 +223,20 @@ func (m *Model) cancelledNotice() string {
 	return "cancelled — stored nothing from the assistant"
 }
 
+// failedNotice explains how a failed turn ended.
+//
+// A turn that failed usually can be continued as well: the operator's
+// message is still unanswered and the exchange left a checkpoint. The
+// notice says so, because the operator has to know that the question
+// was not lost.
+func (m *Model) failedNotice(err error) string {
+	notice := "error: " + err.Error()
+	if m.lifecycleOperation().Resumable {
+		return notice + " — the exchange can be continued with /resume"
+	}
+	return notice
+}
+
 // lifecycleDiag renders the state of the exchange for the diagnostics
 // panel.
 //

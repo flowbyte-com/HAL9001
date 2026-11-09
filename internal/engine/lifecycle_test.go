@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -501,6 +502,102 @@ func TestAnInterruptedContinuationKeepsWhatItDid(t *testing.T) {
 	}
 	if ran != 0 {
 		t.Fatalf("the second read ran %d more time(s); it must not run again", ran)
+	}
+}
+
+// unwellProvider answers with an error, as a provider that is unwell.
+type unwellProvider struct {
+	calls int
+	// fail is how many calls fail before the provider answers.
+	fail int
+}
+
+func (p *unwellProvider) Name() string { return "unwell" }
+
+func (p *unwellProvider) Chat(ctx context.Context, _ []provider.Message, _ provider.Model) (provider.Response, error) {
+	p.calls++
+	if p.calls <= p.fail {
+		return provider.Response{}, errors.New("provider: 503 service unavailable")
+	}
+	return provider.Response{Content: "the answer at last"}, nil
+}
+
+// A failed turn is continued: the operator's message stays unanswered,
+// and the exchange can be answered after the failure.
+func TestAFailedTurnIsResumable(t *testing.T) {
+	st, err := session.Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &unwellProvider{fail: 1}
+	eng := New(st, p, provider.Model{ID: "m"})
+	if _, err := eng.Respond(context.Background(), "what is the state of the build?"); err == nil {
+		t.Fatal("the turn should have failed")
+	}
+	op := eng.Lifecycle()
+	if op.State != lifecycle.StateFailed {
+		t.Fatalf("state = %q, want failed", op.State)
+	}
+	if !op.Resumable {
+		t.Error("a failed exchange must be continuable: the operator's message is unanswered")
+	}
+	reply, err := eng.Resume(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if reply != "the answer at last" {
+		t.Errorf("reply = %q", reply)
+	}
+	history, err := st.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history = %d messages, want the question and the answer", len(history))
+	}
+	if history[0].Content != "what is the state of the build?" {
+		t.Errorf("the operator's message = %#v", history[0])
+	}
+}
+
+// The recorded result of an operation that already ran is honest: an
+// operation that failed or never finished is not reported as a
+// success, and an unknown side effect is named as unknown.
+func TestTheRecordedResultIsHonest(t *testing.T) {
+	cases := []struct {
+		status   string
+		ok       bool
+		unknown  bool
+		wantNote string
+	}{
+		{status: "ok", ok: true},
+		{status: "failed", ok: false},
+		{status: "cancelled", ok: false, unknown: true},
+		{status: "timeout", ok: false, unknown: true},
+	}
+	for _, tc := range cases {
+		op := executedOperation{Status: tc.status, Summary: "the operation ran"}
+		body, activity := op.result(provider.ToolCall{Name: "read"}, permission.Guarded)
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(body), &payload); err != nil {
+			t.Fatalf("%s: the record is not JSON: %v", tc.status, err)
+		}
+		if payload["ok"] != tc.ok {
+			t.Errorf("%s: ok = %v, want %v", tc.status, payload["ok"], tc.ok)
+		}
+		if payload["already_done"] != true {
+			t.Errorf("%s: the record must say the operation was not run again", tc.status)
+		}
+		if payload["status"] != tc.status {
+			t.Errorf("%s: status = %v", tc.status, payload["status"])
+		}
+		unknown, _ := payload["side_effect_unknown"].(bool)
+		if unknown != tc.unknown {
+			t.Errorf("%s: side_effect_unknown = %v, want %v", tc.status, unknown, tc.unknown)
+		}
+		if activity.Status != alreadyLabel(tc.status) {
+			t.Errorf("%s: the activity says %q", tc.status, activity.Status)
+		}
 	}
 }
 

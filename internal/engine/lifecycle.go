@@ -114,25 +114,64 @@ func fingerprint(call provider.ToolCall) string {
 // It is what the model receives instead of a second execution. The
 // record says the work is done, and it never carries the content of
 // the original result: the model is told the outcome, not the output.
+//
+// The record is honest about the outcome: an operation that failed or
+// was cancelled did not succeed, and `ok` says so. An operation whose
+// side effect is unknown says that too, so the model does not report a
+// result that may never have happened.
 func (op executedOperation) result(call provider.ToolCall, mode permission.Mode) (string, ToolActivity) {
 	summary := op.Summary
 	if summary == "" {
 		summary = op.Status
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"ok":           true,
+	payload := map[string]any{
 		"tool":         call.Name,
 		"already_done": true,
 		"status":       op.Status,
 		"summary":      summary,
-		"note": "this operation already ran in the interrupted attempt of this exchange; " +
-			"it was not run again",
-	})
+	}
+	switch op.Status {
+	case "ok":
+		payload["ok"] = true
+		payload["note"] = "this operation already ran in the interrupted attempt of this exchange; " +
+			"it was not run again"
+	case "failed":
+		payload["ok"] = false
+		payload["note"] = "this operation already ran in the interrupted attempt of this exchange and " +
+			"failed; it was not run again"
+	default:
+		// A cancelled or timed-out operation may or may not have had
+		// its effect. Saying "ok" would be a lie, and saying nothing
+		// about the effect would be one too.
+		payload["ok"] = false
+		payload["side_effect_unknown"] = true
+		payload["note"] = "this operation was started in the interrupted attempt of this exchange and " +
+			"did not finish; whether it had an effect is unknown, and it was not run again"
+	}
+	body, _ := json.Marshal(payload)
 	activity := ToolActivity{
 		CallID: call.ID, Name: call.Name, Action: op.Action, Target: op.Target,
-		Mode: mode, Status: "already done", Summary: summary,
+		Mode: mode, Status: alreadyLabel(op.Status), Summary: summary,
 	}
-	return string(payload), activity
+	return string(body), activity
+}
+
+// alreadyLabel names an operation that is not run again.
+//
+// The label says what happened the first time: the work was done, it
+// failed, or it never finished.
+func alreadyLabel(status string) string {
+	switch status {
+	case "ok":
+		return "already done"
+	case "failed":
+		return "already failed"
+	case "cancelled":
+		return "already cancelled"
+	case "timeout":
+		return "already timed out"
+	}
+	return "already " + status
 }
 
 // Lifecycle reports the state of the exchange the engine is running, or
@@ -197,15 +236,18 @@ func (e *Engine) beginExchange() int {
 // started. A checkpoint for an exchange that is no longer the current
 // one is dropped: it could only continue a question the operator has
 // already moved past.
+//
+// The reason says why the exchange did not finish, in the operator's
+// terms: the operator stopped it, or it failed.
 func (e *Engine) rememberCheckpoint(seq int, turnID, input string, atts []attachments.Meta,
-	evidence []session.ToolExecution, ran []executedOperation) {
+	evidence []session.ToolExecution, ran []executedOperation, reason string) {
 	cp := &checkpoint{
 		turnID:   turnID,
 		input:    input,
 		atts:     atts,
 		evidence: evidence,
 		ran:      ran,
-		reason:   "the operator stopped it",
+		reason:   reason,
 	}
 	e.checkpointMu.Lock()
 	defer e.checkpointMu.Unlock()
@@ -213,6 +255,17 @@ func (e *Engine) rememberCheckpoint(seq int, turnID, input string, atts []attach
 		return
 	}
 	e.checkpoint = cp
+}
+
+// checkpointReason says why an exchange did not finish.
+//
+// A cancellation and a failure are different: the operator asked for
+// the first one, and the second one went wrong on its own.
+func checkpointReason(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "the operator stopped it"
+	}
+	return "the turn failed"
 }
 
 // forgetCheckpoint drops the safe point of an interrupted exchange.
