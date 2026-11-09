@@ -199,6 +199,25 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/budget_checks.py
 ```
 
+The stop/resume checks start their own holding provider on port 8266 (and a
+second one on 8267 for the side-effect scenario) and own their config, home,
+workspace and session store. The provider holds a request and records every
+request it receives, so the request that actually left the machine can be
+inspected. The whole scenario runs inside **one** HAL process: the safe point
+that `/resume` continues from lives in the running process, so a scenario
+spread over two processes would resume nothing at all. The suite proves that
+`/stop` abandons the request and leaves the conversation whole, that
+`/resume` continues the exchange without asking the operator's message
+again, that an operation which already ran is not run a second time, that a
+finished exchange is never replayed, that `/stop` with nothing running says
+so, and that `/diag` names the state:
+
+```sh
+go build -o /tmp/opencode/hal9001 ./cmd/hal9001
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/stop_resume_checks.py
+```
+
 ## What it covers
 
 - The interface starts in the alternate screen and leaves it on exit,
@@ -302,6 +321,18 @@ python3 tools/ptycheck/budget_checks.py
   is transmitted and the refusal explains itself; and with an answer cap
   that fills the whole window the contradiction is reported with both
   numbers.
+- The stop/resume suite drives one real HAL process through the whole
+  lifecycle. `/stop` abandons the held request, says so, and leaves the
+  composer usable at once; the operator's message is stored exactly once
+  and the stopped turn stores no answer. `/resume` sends a second request
+  that carries the operator's message exactly once, the answer arrives,
+  and the conversation holds the question and the answer. A command that
+  already ran inside the interrupted exchange is not run again: the side
+  effect happens exactly once, the interface says the work is already
+  done, and the ledger of the exchange keeps one record of it. A
+  finished exchange is never replayed — `/resume` says there is nothing
+  to continue and the provider is asked nothing — and `/stop` with
+  nothing running says so. `/diag` names the state of the exchange.
 - The composer PTY suite covers two, three and five-line pastes, a
   six-line paste whose caret window is the last five rows, a long wrapped
   Markdown link followed by a newline, and the footer remaining visible
@@ -397,3 +428,5 @@ by hand in a real terminal.
 | `discovery_checks.py` | isolated discovery-hygiene checks: no injected escape sequence, no forged row, exact identifiers survive |
 | `recording_provider.py` | a local provider that records every request it receives |
 | `budget_checks.py` | isolated context-budget checks: the transmitted request honours the operator's limit, or nothing is sent |
+| `holding_provider.py` | a local provider that holds a request and records every request it receives |
+| `stop_resume_checks.py` | isolated lifecycle checks: `/stop` abandons the turn, `/resume` continues it, and a side effect is never repeated |

@@ -789,6 +789,12 @@ func (m Model) diagRows() []string {
 			composer("context", budget)
 		}
 	}
+	// The state of the exchange: running, completed, stopped or failed.
+	// The four are never conflated, because they call for different
+	// actions.
+	if status := m.lifecycleDiag(); status != "" {
+		composer("lifecycle", status)
+	}
 	if len(m.lastTools) > 0 {
 		rows = append(rows, "  "+padTo(st.active.Render("last tools"), 16))
 		for _, a := range m.lastTools {
