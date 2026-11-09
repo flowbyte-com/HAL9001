@@ -238,7 +238,7 @@ message that quotes one calls it an estimate.
 **The estimate is not a guarantee.** The safety margin makes the number
 conservative: a normal HAL request measured about 5086 real tokens
 against 4115 estimated, and dense code and non-English text undercount
-by more, so the margin is 1.5. HAL does **not** claim that a request
+by more, so the margin is 1.3. HAL does **not** claim that a request
 that fits HAL's estimate fits every provider's tokenizer. The margin is
 a bounded guess, not a tokenizer: a request that is too large for the
 model can still be too large after the estimate says it fits, and the

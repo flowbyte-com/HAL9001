@@ -281,6 +281,15 @@ func (a *app) contextBudget(key contextKey, operatorLimit int, allowance provide
 		switch record.Source {
 		case provider.ContextSourceLocal:
 			inputs.Local = &record
+		case provider.ContextSourceProvisional:
+			// A provisional record is HAL's own conservative guess,
+			// not something the endpoint reported. It must not take
+			// the provider's slot: in that slot it would be read as
+			// an advertisement — a verified fact about the model —
+			// and the provisional policy would be lost with it.
+			//
+			// The resolution falls back to the provisional record on
+			// its own, output cap and provenance included.
 		default:
 			inputs.Provider = &record
 		}

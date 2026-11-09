@@ -237,7 +237,7 @@ type ContextMetadata struct {
 // The numbers are deliberately small. An unknown model must still be
 // able to hold an ordinary conversation with HAL's own instructions and
 // tool definitions, which cost about three thousand tokens before the
-// safety margin and about five thousand after it, and the answer needs
+// safety margin and about four thousand after it, and the answer needs
 // room of its own: a 32768-token guess left the request more room than
 // any ordinary conversation needs and made the guess look like a
 // measurement. Eight thousand leave room for the instructions, the

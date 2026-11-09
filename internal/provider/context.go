@@ -263,7 +263,14 @@ func (e *ContextBudgetError) Error() string {
 // bounded, documented guess and not a tokenizer: HAL still does not
 // claim that a request fits every provider's tokenizer, and every
 // message that quotes a token count calls it an estimate.
-const EstimateSafetyMargin = 1.5
+//
+// The number is a compromise, and both sides of it are real. It has to
+// be large enough to cover the measured undercount, and it has to be
+// small enough that a request HAL believes fits still fits the
+// provisional window of an unknown model: HAL's own instructions and
+// tool definitions cost about three thousand tokens before the margin
+// and about four thousand after it.
+const EstimateSafetyMargin = 1.3
 
 // EstimateTokens approximates the size of a request in tokens.
 //

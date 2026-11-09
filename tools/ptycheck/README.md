@@ -266,8 +266,11 @@ python3 tools/ptycheck/budget_checks.py
   fallback, all-provider failure, missing keys, provider attribution,
   scrape metadata and truncation, invalid scrape URLs, prompt injection,
   compact activity lines, `/diag`, `/help`, the 444 footer, the audit trail
-  and session resume. Every check uses local fake servers; no live credits
-  are spent.
+  and session resume. Its model declares a context window of its own: the
+  suite scrapes a page that is larger than any 8k window holds, and the
+  point of the check is that the page is truncated and its size reported,
+  not that the request fits a window nobody declared. Every check uses
+  local fake servers; no live credits are spent.
 - The attachment suite covers the operator path end to end: `/attach`
   copies the chosen file into `~/HAL/uploads/` in a directory of its own,
   the original file is unchanged, the pending row names the file and its

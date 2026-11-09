@@ -270,7 +270,7 @@ rules are:
 
 The size of the request is HAL's **estimate**, not a measurement: four
 characters per token plus a small overhead, multiplied by a bounded
-safety margin of 1.5. The margin makes the number conservative — a
+safety margin of 1.3. The margin makes the number conservative — a
 normal request measured about 5086 real tokens against 4115 estimated —
 but it is not a tokenizer. HAL does not claim that a request that fits
 its estimate fits every provider's tokenizer, and a provider that

@@ -242,12 +242,17 @@ def main():
         os.makedirs(workspace, exist_ok=True)
         os.makedirs(store, exist_ok=True)
         config = os.path.join(config_dir, "config.json")
+        # The model declares its own context window. The suite scrapes a
+        # page that is larger than any 8k window holds, and the point of
+        # the check is that the page is truncated and the size is
+        # reported — not that the request fits a window nobody declared.
         with open(config, "w") as fh:
             json.dump({
                 "provider": "openai-compatible",
                 "endpoint": "http://127.0.0.1:%d/v1" % PROVIDER_PORT,
                 "api_key": "test-key",
-                "models": [{"id": "MiniMax-M3.1-Flash"}],
+                "models": [{"id": "MiniMax-M3.1-Flash",
+                            "context_window": 65536}],
                 "active_model": "MiniMax-M3.1-Flash",
                 "theme": "HAL Classic",
             }, fh)

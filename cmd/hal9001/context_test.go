@@ -100,6 +100,37 @@ func TestTheAdvertisedWindowBecomesTheBudget(t *testing.T) {
 	}
 }
 
+// A provisional record that was stored stays provisional.
+//
+// The endpoint reported no window, so the lookup stored the provisional
+// record. It must not take the provider's slot when the budget is
+// resolved: in that slot it would be read as an advertisement — a
+// verified fact about the model — and the provisional policy would be
+// lost with it.
+func TestAStoredProvisionalRecordStaysProvisional(t *testing.T) {
+	a := budgetApp(config.Config{Provider: "openai-compatible", Model: "m"}, config.FileConfig{})
+	a.recordContext(budgetKey("m"), 0, provider.ProvisionalContext())
+	budget, err := a.contextBudget(budgetKey("m"), a.operatorContextLimit("m"),
+		allowance(provider.DefaultMaxTokens))
+	if err != nil {
+		t.Fatalf("budget: %v", err)
+	}
+	if budget.Source != provider.ContextSourceProvisional {
+		t.Fatalf("the source = %q, want the provisional one: %#v", budget.Source, budget)
+	}
+	if budget.Verified {
+		t.Fatal("a provisional budget is never verified")
+	}
+	if budget.ReservedOutput != provider.ProvisionalMaxOutputTokens {
+		t.Fatalf("the reservation = %d, want %d",
+			budget.ReservedOutput, provider.ProvisionalMaxOutputTokens)
+	}
+	if budget.Limit != provider.ProvisionalContextWindow-provider.ProvisionalMaxOutputTokens {
+		t.Fatalf("the effective budget = %d, want %d", budget.Limit,
+			provider.ProvisionalContextWindow-provider.ProvisionalMaxOutputTokens)
+	}
+}
+
 func TestALocalAllocationBeatsTheAdvertisedMaximum(t *testing.T) {
 	a := budgetApp(config.Config{Provider: "openai-compatible", Model: "m", MaxTokens: 1000}, config.FileConfig{})
 	a.recordContext(budgetKey("m"), 0, provider.ContextMetadata{

@@ -69,7 +69,7 @@ PROVISIONAL_INPUT = PROVISIONAL_TOTAL - PROVISIONAL_ANSWER
 # The safety margin HAL applies to its own estimate. The suite counts the
 # request the same way the engine does, so the two numbers can be
 # compared.
-MARGIN = 1.5
+MARGIN = 1.3
 
 
 def check(name, ok, detail=""):

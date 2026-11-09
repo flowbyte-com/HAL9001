@@ -510,7 +510,7 @@ func TestTheEstimateCarriesASafetyMargin(t *testing.T) {
 	if estimate <= raw {
 		t.Fatalf("the estimate = %d, the raw count = %d", estimate, raw)
 	}
-	if estimate != (raw*150+99)/100 {
+	if estimate != (raw*130+99)/100 {
 		t.Fatalf("the estimate = %d, want the raw count times the margin", estimate)
 	}
 	if estimate > raw*2 {
