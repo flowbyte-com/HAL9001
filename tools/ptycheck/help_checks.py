@@ -28,6 +28,7 @@ import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from pty_session import Session  # noqa: E402
 from termsim import render  # noqa: E402
 
 FAILURES = []
@@ -181,6 +182,58 @@ def title_visible(text):
     return "Help" in text and "Esc close" in text
 
 
+def read_help_section(title, cols, rows, **common):
+    """Scroll the help reference to a section and read that section.
+
+    The reference grows as commands are added, so a section is located
+    by scrolling to it rather than by counting scrolls. How many scrolls
+    put a section in view depends on how much help there is, so a fixed
+    count silently stops working the moment the content grows, and the
+    check then fails for a reason that has nothing to do with the
+    controls it is about.
+
+    Every viewport from the section onwards is collected, so a control
+    that lies below the section's first viewport is still read. The
+    panel is read at the size the operator has, so the check still
+    proves that every control of the section can be reached on a narrow
+    terminal.
+
+    Returns (found, text). The text is empty when the section was never
+    reached.
+    """
+    workspace = os.path.join(common["home"], "workspace")
+    os.makedirs(workspace, exist_ok=True)
+    session = Session(BINARY, common["config"], common["home"],
+                      common["store"], "help-section", workspace,
+                      cols=cols, rows=rows)
+    session.start()
+    try:
+        # The interface has to be up before a key is sent, or the keys
+        # are read before the terminal is in the mode that delivers
+        # them.
+        session.wait_for("Enter send", 20.0)
+        session.send(b"/help\r")
+        session.wait(1.2)
+        found = False
+        pages = []
+        previous = None
+        for _ in range(80):
+            screen = session.screen()
+            if title in screen:
+                found = True
+            if found:
+                pages.append(screen)
+            if previous is not None and screen == previous:
+                # The panel stopped moving: the end of the document.
+                break
+            previous = screen
+            session.send(b"\x1b[B" * 4)
+            session.wait(0.3)
+        return found, "\n".join(pages)
+    finally:
+        session.close()
+
+
 def main():
     if not os.path.isfile(BINARY):
         print("missing HAL9001 binary: %s" % BINARY)
@@ -239,18 +292,27 @@ def main():
         s = capture([(2.0, b"/help\r"), (0.5, b"\x1b[B" * 100), (0.5, b"")],
                     60, 24, **common)
         text = s.text()
-        check("narrow help scrolls to the 666 reference",
-              "666" in text, text)
-        check("narrow help explains the session-scoped 666 control",
-              "666" in text and "only you" in text
-              and "disable 666" in text, text)
-        check("narrow help shows the permission controls",
-              "Ctrl+P" in text and "Ctrl+Y" in text and "Ctrl+N" in text, text)
-        check("narrow help keeps the one-off write distinct",
-              "one-off write" in text, text)
         check("the title and exit instruction survive scrolling",
               title_visible(text), text)
         check("scrolling help does not overflow", no_overflow(s, 60), text)
+
+        # The permission controls live in the Permissions section. The
+        # section is located by scrolling to it, and the controls are
+        # read there, so the check does not depend on how much help
+        # there is above it.
+        found, section = read_help_section("Permissions and file writes",
+                                           60, 24, **common)
+        check("narrow help reaches the permissions section", found, section)
+        check("narrow help scrolls to the 666 reference",
+              "666" in section, section)
+        check("narrow help explains the session-scoped 666 control",
+              "666" in section and "only you" in section
+              and "disable 666" in section, section)
+        check("narrow help shows the permission controls",
+              "Ctrl+P" in section and "Ctrl+Y" in section
+              and "Ctrl+N" in section, section)
+        check("narrow help keeps the one-off write distinct",
+              "one-off write" in section, section)
 
         # The suggestion panel is capped, aligned and says that more
         # results exist. Scrolling reaches the MPM commands at the end.
