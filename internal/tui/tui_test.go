@@ -1812,8 +1812,17 @@ func TestSlashCommandDuringStream(t *testing.T) {
 	m2.sending = true
 	m2 = paste(m2, "another message")
 	m2 = enterCurrent(m2)
-	if got := m2.Composer().Value(); got != "another message" {
-		t.Errorf("a message must not be sent while streaming: %q", got)
+	// A plain message is not sent while HAL is working. It waits in the
+	// queue instead of being dropped on the floor, and the operator can
+	// see it there.
+	if got := m2.Composer().Value(); got != "" {
+		t.Errorf("the composer still holds the queued message: %q", got)
+	}
+	if m2.QueuePending() != 1 {
+		t.Errorf("the message was not queued: %d pending", m2.QueuePending())
+	}
+	if m2.Sending() != true {
+		t.Error("the turn must keep running")
 	}
 }
 

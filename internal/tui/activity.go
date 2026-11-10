@@ -142,6 +142,10 @@ func (m Model) activityNotice() string {
 	if m.sending {
 		line += " · Esc cancels"
 	}
+	// The messages that are waiting are part of what the operator needs
+	// to see while HAL works: they are still theirs, and they are still
+	// going to be sent.
+	line += m.queueCountNote()
 	if m.width > 0 {
 		line = truncateCells(line, m.width)
 	}

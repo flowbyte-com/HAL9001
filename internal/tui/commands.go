@@ -55,8 +55,7 @@ var commandTable = []*command{
 	},
 	{
 		name:        "/clear",
-		description: "Start a fresh conversation",
-		run: func(m *Model, args []string) tea.Cmd {
+		description: "Start a fresh conversation", run: func(m *Model, args []string) tea.Cmd {
 			if len(args) > 0 {
 				m.notice = "Usage: /clear"
 				return nil
@@ -252,6 +251,29 @@ var commandTable = []*command{
 			m.setAllUserExpanded(true)
 			m.notice = "Long messages expanded."
 			return nil
+		},
+	},
+	// The steering and queue commands sit with the other conversation
+	// controls. The suggestion panel shows the first commands and the
+	// last ones, and a new arrival must not push the exit commands or
+	// the MPM commands out of reach.
+	{
+		name:        "/steer",
+		usage:       "/steer <instruction>",
+		description: "Change the direction of the running turn",
+		takesArgs:   true,
+		rawArgs:     true,
+		run: func(m *Model, args []string) tea.Cmd {
+			return m.steerCommand(args)
+		},
+	},
+	{
+		name:        "/queue",
+		usage:       "/queue [clear|send]",
+		description: "Show the messages waiting to be sent (/queue clear, /queue send)",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			return m.queueCommand(args)
 		},
 	},
 	{

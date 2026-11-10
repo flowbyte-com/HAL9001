@@ -820,6 +820,33 @@ reason and token count, shows it through `/diag`, and stores no assistant
 message. Nothing is retried automatically and the output cap is never
 raised without the operator asking.
 
+**Steering and the message queue.** HAL works one turn at a time, and the
+operator is not idle in the meantime. A message written while HAL is
+working waits in the queue instead of being dropped: it is sent as a turn
+of its own when the turn ends, in the order it was written, and it is
+marked in the conversation as waiting, sent or done. `/queue` lists every
+message with its state, and `/queue clear` removes what is still waiting —
+the operator is in control of the work they have not sent.
+
+`/steer <instruction>` is a change of direction rather than an addition
+to the conversation. It takes effect at the next request boundary of the
+running turn — the first moment the turn is about to send a request it
+has not sent yet. A request that was already dispatched is never
+rewritten, and the instruction applies to the work that has not been sent
+yet. If the running turn has no request left, the steering message waits
+and leads the next turn. A turn that failed or was cancelled leaves the
+waiting messages alone: what the operator wrote keeps waiting until they
+send it or clear it.
+
+The waiting messages survive a restart: they are kept in
+`<store>/<session>.queue.json` beside the session's own file. A message
+that comes from a previous run waits for the operator — it is shown in
+`/queue`, it is not sent on its own, and `/queue send` sends it in the
+order it was written.
+
+The rules, the states and the engine seam are in
+[`docs/steering-and-queue.md`](docs/steering-and-queue.md).
+
 See [`docs/terminal-support.md`](docs/terminal-support.md) for the
 tested and unsupported terminal behaviour. The pseudo-terminal checks
 that produced it live in [`tools/ptycheck/`](tools/ptycheck/).
@@ -835,6 +862,7 @@ internal/knowledge/   typed MPM knowledge tools (both modes)
 internal/mcp/         native MCP client: stdio + Streamable HTTP, permission boundary
 internal/persona/     identity, conversational contract, Dave Protocol
 internal/session/     model-independent JSONL conversation storage
+internal/queue/       the operator's outbox: queued messages and steering
 internal/attachments/ operator-chosen file ingestion: safe copies, decoding
 internal/provider/    OpenAI-compatible streaming client + contracts + mock
 internal/memory/      durable record tiers, admission rules, store interface

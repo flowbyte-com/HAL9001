@@ -580,7 +580,17 @@ func (m Model) updateSessions(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			item := m.sessionItems[m.sessionCursor]
-			eng, lines, err := m.hooks.SwitchSession(item.ID)
+			// The queue belongs to the conversation it was written in:
+			// the waiting messages stay with the session they were
+			// written for.
+			var (
+				eng   Engine
+				lines []SessionLine
+				err   error
+			)
+			m.moveQueue(func() {
+				eng, lines, err = m.hooks.SwitchSession(item.ID)
+			})
 			if err != nil {
 				m.sessionNotice = "Switch failed: " + err.Error()
 				return m, nil
@@ -1083,7 +1093,13 @@ func (m *Model) startFreshConversation(notice string) {
 		m.notice = "New sessions are not wired up."
 		return
 	}
-	eng, err := m.hooks.NewSession()
+	// The queue belongs to the conversation it was written in: the
+	// waiting messages stay with the session they were written for.
+	var eng Engine
+	var err error
+	m.moveQueue(func() {
+		eng, err = m.hooks.NewSession()
+	})
 	if err != nil {
 		m.notice = "New session failed: " + err.Error()
 		return

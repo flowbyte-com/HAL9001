@@ -27,6 +27,7 @@ import (
 	"github.com/flowbyte-com/HAL9001/internal/mcp"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
+	"github.com/flowbyte-com/HAL9001/internal/queue"
 	"github.com/flowbyte-com/HAL9001/internal/session"
 	"github.com/flowbyte-com/HAL9001/internal/skills"
 	"github.com/flowbyte-com/HAL9001/internal/usage"
@@ -307,6 +308,13 @@ type Hooks struct {
 	// the active model: its size, where it came from and how much of it
 	// is held back for the answer. It carries no conversation text.
 	ContextBudget func() string
+	// QueueStore persists the messages that are waiting to be sent.
+	//
+	// It is optional: without it the queue lives only as long as the
+	// process does, and the messages that were waiting are lost when
+	// HAL leaves. The store belongs to the session: a session change
+	// moves the queue with it.
+	QueueStore func() queue.Store
 }
 
 // Engine runs the conversation behind the interface. It matches
@@ -351,6 +359,7 @@ const (
 	viewPermission
 	viewMCP
 	viewModels
+	viewQueue
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -455,7 +464,18 @@ type entry struct {
 	// They are references, shown beneath the message; the contents are
 	// never part of the text.
 	files []attachments.Meta
-	rows  []string
+	// queueID names the queued message this row shows, when the message
+	// was written while HAL was working. queueKind says whether it is
+	// an ordinary message or a steer, and queueState says whether it is
+	// waiting, has been sent or is done. queueRestored says that the
+	// message came from a previous run and waits for the operator.
+	// They are presentation metadata about the message: they never
+	// reach the model.
+	queueID       string
+	queueKind     string
+	queueState    string
+	queueRestored bool
+	rows          []string
 	// deco marks the rows that are interface decoration rather than
 	// message text: the collapse hint and the answer's metadata line.
 	// They stay on screen, but a selection never copies them.
@@ -491,8 +511,21 @@ type Model struct {
 	// replaced is ignored.
 	notice    string
 	noticeSeq int
-	color     bool
-	theme     Theme
+	// queue holds the operator's messages that HAL has not acted on yet.
+	// It is a pointer because it is shared: the engine asks it for a
+	// steering message while a turn is running.
+	queue *queue.Queue
+	// queueEntries maps a queued message to the row of the conversation
+	// that shows it, so the row can say whether the message is waiting,
+	// has been sent or is done.
+	queueEntries map[string]int
+	// sendingRestored says that the operator is sending the messages
+	// that came from a previous run. Those wait for the operator by
+	// themselves, and this is the flag that says the drain is carrying
+	// them now.
+	sendingRestored bool
+	color           bool
+	theme           Theme
 	// toolIcons is the display-only presentation of tool activity lines.
 	// New models start with emoji icons; the operator may switch to
 	// classic for this session. It is not part of the session record.
@@ -727,8 +760,13 @@ func NewWithHooks(engine Engine, hooks Hooks) Model {
 		now:             time.Now,
 		desiredComposer: minComposerRows,
 		permission:      permission.New(),
+		queue:           queue.New(),
+		queueEntries:    map[string]int{},
 	}
 	m.setTheme(ThemeHALClassic)
+	// The messages that were waiting when this session was last open
+	// are waiting again.
+	m.loadQueue()
 	return m
 }
 
@@ -948,6 +986,17 @@ type streamDeltaMsg struct {
 	text string
 }
 type streamThinkingMsg struct{ id int }
+
+// steerMsg reports that the running turn took a steering message.
+//
+// It is the operator's own words, and it carries nothing else: the
+// message itself is already on its way to the model.
+type steerMsg struct {
+	id     int
+	text   string
+	stored bool
+}
+
 type streamStatsMsg struct {
 	id    int
 	stats provider.TurnStats
@@ -999,6 +1048,12 @@ type responseMsg struct {
 	// context reports that older context was dropped to fit the model's
 	// context budget. It carries no conversation text.
 	context string
+	// steer is a steering message the turn took up. It is the
+	// operator's own words.
+	steer string
+	// steerStored reports whether the steering message was written to
+	// the session.
+	steerStored bool
 }
 type errorMsg struct {
 	id  int
@@ -1037,6 +1092,8 @@ func (m Model) runTurnInline(id int, ctx context.Context, runner func(context.Co
 		stats       *provider.TurnStats
 		tools       []engine.ToolActivity
 		contextNote string
+		steerText   string
+		steerStored bool
 	)
 	reply, err := runner(ctx, func(ev engine.Event) {
 		switch {
@@ -1055,6 +1112,9 @@ func (m Model) runTurnInline(id int, ctx context.Context, runner func(context.Co
 			stats = &s
 		case ev.Context != nil:
 			contextNote = ev.Context.Text
+		case ev.Steer != "":
+			steerText = ev.Steer
+			steerStored = ev.SteerStored
 		}
 	})
 	if err != nil {
@@ -1070,6 +1130,8 @@ func (m Model) runTurnInline(id int, ctx context.Context, runner func(context.Co
 		stats:       stats,
 		tools:       tools,
 		context:     contextNote,
+		steer:       steerText,
+		steerStored: steerStored,
 	}
 }
 
@@ -1127,6 +1189,8 @@ func (m Model) runTurn(id int, ctx context.Context, runner func(context.Context,
 			m.sender(streamToolStartMsg{id: id, activity: *ev.ToolStart})
 		case ev.Tool != nil:
 			m.sender(streamToolMsg{id: id, activity: *ev.Tool})
+		case ev.Steer != "":
+			m.sender(steerMsg{id: id, text: ev.Steer, stored: ev.SteerStored})
 		case ev.Text != "":
 			m.sender(streamDeltaMsg{id: id, text: ev.Text})
 		case ev.Reasoning:
@@ -1246,6 +1310,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateEffort(msg)
 	case viewUsage:
 		return m.updateUsage(msg)
+	case viewQueue:
+		return m.updateQueue(msg)
 	case viewRename:
 		return m.updateRename(msg)
 	case viewApprove:
@@ -1446,6 +1512,12 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.mouseRelease(msg)
 	case selectionScrollMsg:
 		return m.selectionScrollTick(msg)
+	case steerMsg:
+		if !m.currentTurn(msg.id) {
+			return m, nil
+		}
+		m.noteSteer(msg.text, msg.stored)
+		return m, nil
 	case streamThinkingMsg:
 		if !m.currentTurn(msg.id) {
 			return m, nil
@@ -1554,6 +1626,17 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// authority: nothing is written until the operator says so.
 			m.requestWrite(*msg.proposal)
 		}
+		// The turn is over: the messages it carried are done, and the
+		// queue moves on. A turn that produced an answer is followed by
+		// the next waiting message; a turn that failed or was cancelled
+		// leaves the queue alone, so the operator decides.
+		m.endQueueItems()
+		if msg.steer != "" {
+			m.noteSteer(msg.steer, msg.steerStored)
+		}
+		if item, ok := m.nextQueued(); ok {
+			return m.startTurn(item.Text, item.Files, m.entryForQueueItem(item.ID))
+		}
 		return m, nil
 	case skillDecisionMsg:
 		d := msg.decision
@@ -1600,6 +1683,11 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The turn is over, however it ended: a prompt that was
 		// collapsed for it opens again instead of staying abbreviated.
 		m.expandAfterTurn()
+		// The messages the turn carried are done. The messages that were
+		// waiting keep waiting: the operator cancelled or the provider
+		// failed, and that is not a reason to send what they had
+		// already written without being asked.
+		m.endQueueItems()
 		return m, nil
 	}
 	if m.ready {
@@ -1664,7 +1752,10 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		return m, m.dispatchSlash(input)
 	}
 	if m.sending {
-		return m, nil
+		// HAL is working. The operator's message waits in the queue
+		// instead of being dropped on the floor: it is sent when the
+		// turn ends, and /queue shows it until then.
+		return m.queueMessage(input)
 	}
 	if strings.HasPrefix(input, "//") {
 		// "//" escapes to a literal slash-prefixed message.
@@ -1673,21 +1764,38 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 	m.composer.Reset()
 	m.clearUndo()
 	m.fitComposer()
-	m.streamID++
-	id := m.streamID
 	// The files the operator attached belong to this message. They are
 	// taken out of the pending list here, so the next message starts
 	// clean, and they are recorded with the message so a restored
 	// conversation still shows which files were discussed.
 	atts := m.pendingFiles
 	m.pendingFiles = nil
+	return m.startTurn(input, atts, -1)
+}
+
+// startTurn begins a turn.
+//
+// entry is the row of the conversation that already shows the message,
+// or -1 when the message has no row yet: a message that was written
+// while HAL was working already has one.
+func (m Model) startTurn(input string, atts []attachments.Meta, entry int) (tea.Model, tea.Cmd) {
+	m.streamID++
+	id := m.streamID
 	// The row that named the pending files is gone now, so the frame
 	// changes before the message is drawn.
 	m.resizeFrame()
 	// A new turn starts with no attribution: whatever the previous turn
 	// used says nothing about this one.
 	m.turnAttribution = nil
-	i := m.appendEntry("user", input)
+	i := entry
+	if i < 0 {
+		i = m.appendEntry("user", input)
+	} else {
+		// The message was written while HAL was working and already
+		// has a row. The row now says that it was sent.
+		m.refreshQueueMarkers()
+		m.renderConversation()
+	}
 	if len(atts) > 0 {
 		m.entries[i].files = atts
 		m.renderEntry(i)
@@ -1955,6 +2063,9 @@ func (m *Model) quit() tea.Cmd {
 	m.endActivity()
 	m.sending = false
 	m.pending = ""
+	// The messages that were waiting are written to the session's own
+	// file before HAL leaves, so they are still there next time.
+	m.saveQueue()
 	return tea.Quit
 }
 
@@ -2736,6 +2847,12 @@ func (m Model) renderUser(e *entry) ([]string, []bool) {
 	if len(e.files) > 0 {
 		ref = append(ref, prefix+m.attachmentReference(e.files))
 	}
+	// A message that was written while HAL was working says where it is:
+	// waiting, sent or done. The row is interface, so a selection never
+	// copies it.
+	if marker := queueMarker(e.queueKind, e.queueState, e.queueRestored); marker != "" {
+		ref = append(ref, prefix+m.queueMarkerRow(marker))
+	}
 	preview := m.collapsedPreviewRows()
 	if len(body) <= preview {
 		rows := append(append([]string{}, body...), ref...)
@@ -3288,6 +3405,8 @@ func (m Model) activePanel() []string {
 		return m.effortRows()
 	case viewUsage:
 		return m.usageRows()
+	case viewQueue:
+		return m.queueRows()
 	case viewRename:
 		return m.renameRows()
 	case viewSkills:
@@ -3859,6 +3978,28 @@ func (m Model) Viewport() viewport.Model { return m.viewport }
 
 // Composer exposes the composer, for tests.
 func (m Model) Composer() textarea.Model { return m.composer }
+
+// SetQueue replaces the queue the interface uses.
+//
+// The application owns the queue so that the interface and the running
+// turn share it: the interface fills it and shows it, and the turn
+// asks it for a steering message.
+//
+// The messages that were waiting for this session are read back.
+func (m *Model) SetQueue(q *queue.Queue) {
+	if q == nil {
+		return
+	}
+	m.queue = q
+	m.queueEntries = map[string]int{}
+	m.loadQueue()
+}
+
+// QueuePending reports how many messages are waiting to be sent.
+func (m Model) QueuePending() int { return m.queue.Pending() }
+
+// QueueSnapshot exposes the queue, for tests and for the application.
+func (m Model) QueueSnapshot() []queue.Item { return m.queue.Snapshot() }
 
 // ComposerRows is how many rows of the draft the composer shows.
 func (m Model) ComposerRows() int { return m.frame.composer }
