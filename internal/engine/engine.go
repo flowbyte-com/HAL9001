@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/flowbyte-com/HAL9001/internal/agenttools"
 	"github.com/flowbyte-com/HAL9001/internal/attachments"
 	"github.com/flowbyte-com/HAL9001/internal/capability"
 	"github.com/flowbyte-com/HAL9001/internal/knowledge"
+	"github.com/flowbyte-com/HAL9001/internal/lifecycle"
 	"github.com/flowbyte-com/HAL9001/internal/mcp"
 	"github.com/flowbyte-com/HAL9001/internal/permission"
 	"github.com/flowbyte-com/HAL9001/internal/provider"
@@ -78,6 +80,20 @@ type Engine struct {
 	// every call is decided by the gate and by the operator's local
 	// policy, never by the server.
 	mcp MCPRegistry
+	// lifecycle is the state of the exchange the engine is running. The
+	// engine runs the work, so the engine owns its state.
+	lifecycle *lifecycle.Manager
+	// checkpoint is the safe point of the exchange that was interrupted.
+	// It is nil when there is nothing to continue from.
+	//
+	// It is guarded: the interface asks about the exchange from its own
+	// thread while the engine's thread is running it.
+	checkpointMu sync.Mutex
+	checkpoint   *checkpoint
+	// exchangeSeq counts the exchanges the engine has started. It tells
+	// a late report from an interrupted exchange that a newer exchange
+	// has already taken the operator's attention.
+	exchangeSeq int
 }
 
 // MCPRegistry is the engine's narrow view of the native MCP client.
@@ -97,7 +113,12 @@ const maxToolSteps = 8
 
 // New binds a session store to a provider and model.
 func New(sessions *session.Store, p provider.Provider, model provider.Model) *Engine {
-	return &Engine{sessions: sessions, provider: p, model: model}
+	return &Engine{
+		sessions:  sessions,
+		provider:  p,
+		model:     model,
+		lifecycle: lifecycle.New(),
+	}
 }
 
 // WithWorkspace enables the single write proposal: a model may ask to save
@@ -519,6 +540,24 @@ func (e *Engine) RespondStreamEvents(ctx context.Context, input string, emit fun
 // stores only their references, and it composes their contents into
 // this turn's request as untrusted data.
 func (e *Engine) RespondStreamEventsWithAttachments(ctx context.Context, input string, atts []attachments.Meta, emit func(Event)) (string, error) {
+	// The engine runs the work, so the engine owns its state: the
+	// exchange is running from here until it ends, one way or another.
+	op := e.lifecycle.Begin("turn")
+	reply, err := e.respondTurn(ctx, op, input, atts, emit)
+	e.endOperation(op, err)
+	return reply, err
+}
+
+// respondTurn answers one exchange.
+//
+// A turn that was interrupted leaves a checkpoint behind: the exchange
+// can be continued from it, and the operations that already ran inside
+// it are never run again.
+func (e *Engine) respondTurn(ctx context.Context, op lifecycle.Operation, input string, atts []attachments.Meta, emit func(Event)) (string, error) {
+	// A new exchange starts from a clean slate: the checkpoint of an
+	// older interrupted exchange belongs to that exchange, and the
+	// operator has moved on.
+	seq := e.beginExchange()
 	if strings.TrimSpace(input) == "" {
 		return "", fmt.Errorf("engine: empty input")
 	}
@@ -530,6 +569,10 @@ func (e *Engine) RespondStreamEventsWithAttachments(ctx context.Context, input s
 		return "", err
 	}
 	if e.provider == nil {
+		// The operator's message is stored and unanswered, so the
+		// exchange is not finished: it can be continued once there is
+		// a provider to answer it.
+		e.rememberCheckpoint(seq, turnID, input, atts, nil, nil, "there is no provider")
 		return "", ErrNoProvider
 	}
 	history, err := e.sessions.History()
@@ -549,8 +592,16 @@ func (e *Engine) RespondStreamEventsWithAttachments(ctx context.Context, input s
 	messages := e.requestMessages(history, skillBlock(loaded), turnID)
 	turn := userTurns(history)
 	tools := e.offeredTools()
-	resp, reply, proposal, evidence, err := e.toolTurn(ctx, messages, tools, turn, turnID, emit)
+	resp, reply, proposal, evidence, ran, err := e.toolTurn(ctx, messages, tools, turn, turnID, emit)
+	// The operations that really ran are part of the state of the
+	// exchange: they are what the operator sees in the status.
+	e.lifecycle.Steps(op.ID, len(ran))
 	if err != nil {
+		// An exchange that did not finish leaves a checkpoint behind:
+		// the operator can continue it, and the operations that
+		// already ran inside it are never run again. A turn that was
+		// stopped and a turn that failed are continued the same way.
+		e.rememberCheckpoint(seq, turnID, input, atts, evidence, ran, checkpointReason(err))
 		// A failed turn still reports its content-free diagnostics: the
 		// elapsed time and the event counts are how a stall is explained.
 		if emit != nil && !resp.Stats.StartedAt.IsZero() {
@@ -572,6 +623,10 @@ func (e *Engine) RespondStreamEventsWithAttachments(ctx context.Context, input s
 		// honestly and store nothing: an explanation is not an assistant
 		// message, and silently retrying or raising the cap would hide
 		// the cost instead of explaining it.
+		//
+		// The operator's message is still unanswered, so the exchange
+		// can be continued.
+		e.rememberCheckpoint(seq, turnID, input, atts, evidence, ran, "the model produced no visible answer")
 		finish := resp.FinishReason
 		if finish == "" {
 			finish = "unknown"
@@ -604,12 +659,13 @@ func (e *Engine) RespondStreamEventsWithAttachments(ctx context.Context, input s
 // the interface inventing prose between them. The session stores one user
 // message, one final answer and a bounded ledger of the tool executions;
 // the raw provider transcript belongs only to the turn.
-func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tools []provider.Tool, turn int, turnID string, emit func(Event)) (provider.Response, string, *workspace.Proposal, []session.ToolExecution, error) {
+func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tools []provider.Tool, turn int, turnID string, emit func(Event)) (provider.Response, string, *workspace.Proposal, []session.ToolExecution, []executedOperation, error) {
 	current := append([]provider.Message(nil), messages...)
 	var (
 		parts    []string
 		proposal *workspace.Proposal
 		evidence []session.ToolExecution
+		ran      []executedOperation
 		last     provider.Response
 		halted   bool
 	)
@@ -624,7 +680,7 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 			resp, err = e.chat(ctx, current, nil, emit)
 		}
 		if err != nil {
-			return resp, strings.Join(parts, "\n\n"), proposal, evidence, err
+			return resp, strings.Join(parts, "\n\n"), proposal, evidence, ran, err
 		}
 		last = resp
 		if strings.TrimSpace(resp.Content) != "" {
@@ -634,7 +690,7 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 			break
 		}
 		if ctx.Err() != nil {
-			return resp, strings.Join(parts, "\n\n"), proposal, evidence, ctx.Err()
+			return resp, strings.Join(parts, "\n\n"), proposal, evidence, ran, ctx.Err()
 		}
 		current = append(current, provider.Message{
 			Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
@@ -651,7 +707,24 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 				}
 				emit(Event{ToolStart: &start})
 			}
-			content, activity, prepared, halt := e.executeTool(ctx, call, turn, turnID)
+			var (
+				content  string
+				activity ToolActivity
+				prepared *workspace.Proposal
+				halt     bool
+			)
+			if done, ok := e.alreadyRan(call); ok {
+				// The operation ran inside the interrupted attempt of
+				// this exchange. It is not run again: the recorded
+				// result is handed to the model instead, so the side
+				// effect happens exactly once.
+				content, activity = done.result(call, e.permissionMode())
+			} else {
+				content, activity, prepared, halt = e.executeTool(ctx, call, turn, turnID)
+				if operation, ok := ranOperation(call, activity); ok {
+					ran = append(ran, operation)
+				}
+			}
 			if emit != nil {
 				a := activity
 				emit(Event{Tool: &a})
@@ -694,7 +767,7 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 	if !halted && len(last.ToolCalls) > 0 {
 		parts = append(parts, fmt.Sprintf("Stopped after %d tool steps; ask me to continue if you want the remaining work done.", maxToolSteps))
 	}
-	return last, strings.Join(parts, "\n\n"), proposal, evidence, nil
+	return last, strings.Join(parts, "\n\n"), proposal, evidence, ran, nil
 }
 
 // executeTool resolves one provider call. The permission gate is consulted

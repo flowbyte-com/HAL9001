@@ -109,6 +109,46 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/composer_checks.py
 ```
 
+The stop/resume checks start their own holding provider on port 8266 (and two
+more on 8267 and 8268) and own their config, home, workspace and session
+store. The provider holds a request and records every request it receives,
+so the request that actually left the machine can be inspected. The whole
+scenario runs inside **one** HAL process: the safe point that `/resume`
+continues from lives in the running process, so a scenario spread over two
+processes would resume nothing at all. The suite proves that `/stop`
+abandons the request and leaves the conversation whole, that `/resume`
+continues the exchange without asking the operator's message again, that an
+operation which already ran is not run a second time, that a finished
+exchange is never replayed, that a failed exchange is continued rather than
+abandoned, that `/stop` with nothing running says so, and that `/diag`
+names the state:
+
+```sh
+go build -o /tmp/opencode/hal9001 ./cmd/hal9001
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/stop_resume_checks.py
+```
+
+The panel-completion checks start their own holding provider on port 8270
+(and one more per panel, 8271 upwards) and own their config, home,
+workspace and session store. The provider holds the request that carries
+the operator's question until the check releases it, so the answer can be
+made to arrive while a panel is open. The suite proves that a turn that
+completes behind `/help`, `/diag`, `/model`, `/theme`, `/sessions`,
+`/usage` or `/effort` is not lost: the completion is processed while the
+panel is open, the answer is in the conversation once the panel is
+closed, it is there exactly once, the turn is over, and the next question
+reaches the provider. It also covers a provider failure behind a panel, a
+turn that is stopped behind a panel, an answer that arrives in pieces and
+a tool call whose activity arrives behind a panel. The queue panel of the
+steering branch is covered as well, when the binary has one:
+
+```sh
+go build -o /tmp/opencode/hal9001 ./cmd/hal9001
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/panel_completion_checks.py
+```
+
 The tool-icon checks use a fixture session with historical tool evidence.
 They check the default emoji rows, the classic opt-out, switching back,
 the failure priority, the `✏️` variation selector, the icon gutter and all
@@ -370,6 +410,18 @@ python3 tools/ptycheck/budget_checks.py
   unless a flag has already decided.
 - The wheel over the composer scrolls the draft and leaves the caret
   where it was; the conversation does not move.
+- The stop/resume suite drives one real HAL process through the whole
+  lifecycle. `/stop` abandons the held request, says so, and leaves the
+  composer usable at once; the operator's message is stored exactly once
+  and the stopped turn stores no answer. `/resume` sends a second request
+  that carries the operator's message exactly once, the answer arrives,
+  and the conversation holds the question and the answer. A command that
+  already ran inside the interrupted exchange is not run again: the side
+  effect happens exactly once, the interface says the work is already
+  done, and the ledger of the exchange keeps one record of it. A
+  finished exchange is never replayed — `/resume` says there is nothing
+  to continue and the provider is asked nothing — and `/stop` with
+  nothing running says so. `/diag` names the state of the exchange.
 
 ## A note on resizes
 
@@ -396,4 +448,8 @@ by hand in a real terminal.
 | `hostile_provider.py` | a local provider whose model catalogue carries hostile identifiers and labels |
 | `discovery_checks.py` | isolated discovery-hygiene checks: no injected escape sequence, no forged row, exact identifiers survive |
 | `recording_provider.py` | a local provider that records every request it receives |
+| `holding_provider.py` | a local provider that holds a request and records every request it receives |
+| `stop_resume_checks.py` | isolated lifecycle checks: `/stop` abandons the turn, `/resume` continues it, and a side effect is never repeated |
+| `pty_session.py` | the shared pseudo-terminal driver: one HAL process, driven step by step |
+| `panel_completion_checks.py` | isolated panel checks: a turn that completes behind a panel keeps its answer |
 | `budget_checks.py` | isolated context-budget checks: the transmitted request honours the operator's limit, or nothing is sent |

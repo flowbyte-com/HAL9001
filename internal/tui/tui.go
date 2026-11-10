@@ -1018,6 +1018,17 @@ func (m Model) sendCmd(id int, input string, atts []attachments.Meta, ctx contex
 }
 
 func (m Model) runRespond(id int, input string, atts []attachments.Meta, ctx context.Context) tea.Msg {
+	return m.runTurnInline(id, ctx, func(ctx context.Context, collect func(engine.Event)) (string, error) {
+		return m.respondEvents(ctx, input, atts, collect)
+	})
+}
+
+// runTurnInline runs one turn headless and reports its outcome.
+//
+// The runner does the work; the events it emits are the turn's. It is
+// the inline twin of runTurn: the same collection, without the
+// background goroutine.
+func (m Model) runTurnInline(id int, ctx context.Context, runner func(context.Context, func(engine.Event)) (string, error)) tea.Msg {
 	var (
 		proposal    *workspace.Proposal
 		decision    *skills.Decision
@@ -1027,7 +1038,7 @@ func (m Model) runRespond(id int, input string, atts []attachments.Meta, ctx con
 		tools       []engine.ToolActivity
 		contextNote string
 	)
-	reply, err := m.respondEvents(ctx, input, atts, func(ev engine.Event) {
+	reply, err := runner(ctx, func(ev engine.Event) {
 		switch {
 		case ev.Proposal != nil:
 			p := *ev.Proposal
@@ -1086,6 +1097,28 @@ func (m Model) respondEvents(ctx context.Context, input string, atts []attachmen
 // and content-free statistics as well as text; none of the reasoning
 // text itself ever reaches the interface.
 func (m Model) runStream(id int, input string, atts []attachments.Meta, ctx context.Context) {
+	m.runTurn(id, ctx, func(ctx context.Context, collect func(engine.Event)) (string, error) {
+		if len(atts) > 0 {
+			if ae, ok := m.engine.(AttachmentEngine); ok {
+				return ae.RespondStreamEventsWithAttachments(ctx, input, atts, collect)
+			}
+			return "", fmt.Errorf("this session cannot send attached files")
+		}
+		if pe, ok := m.engine.(ProgressEngine); ok {
+			return pe.RespondStreamEvents(ctx, input, collect)
+		}
+		return m.engine.RespondStream(ctx, input, func(text string) {
+			m.sender(streamDeltaMsg{id: id, text: text})
+		})
+	})
+}
+
+// runTurn drives one turn in the background and reports its outcome.
+//
+// The runner does the work; the events it emits are the turn's. It is
+// the background twin of runTurnInline, and a continued exchange uses
+// it as well: a continuation is a turn like any other.
+func (m Model) runTurn(id int, ctx context.Context, runner func(context.Context, func(engine.Event)) (string, error)) {
 	emit := func(ev engine.Event) {
 		switch {
 		case ev.Stats != nil:
@@ -1134,19 +1167,7 @@ func (m Model) runStream(id int, input string, atts []attachments.Meta, ctx cont
 		reply string
 		err   error
 	)
-	if len(atts) > 0 {
-		if ae, ok := m.engine.(AttachmentEngine); ok {
-			reply, err = ae.RespondStreamEventsWithAttachments(ctx, input, atts, collect)
-		} else {
-			err = fmt.Errorf("this session cannot send attached files")
-		}
-	} else if pe, ok := m.engine.(ProgressEngine); ok {
-		reply, err = pe.RespondStreamEvents(ctx, input, collect)
-	} else {
-		reply, err = m.engine.RespondStream(ctx, input, func(text string) {
-			m.sender(streamDeltaMsg{id: id, text: text})
-		})
-	}
+	reply, err = runner(ctx, collect)
 	if err != nil {
 		m.sender(errorMsg{id: id, err: err})
 		return
@@ -1197,6 +1218,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// A turn runs while the operator reads a panel. The events of that
+	// turn belong to the conversation, not to the panel: they are
+	// handled here, before the panel is asked. A panel that swallowed
+	// them would lose the answer, keep the interface sending and leave
+	// the operator with a conversation that never finished.
+	//
+	// Each event keeps its own handling: the conversation's handler
+	// decides what it means. Only the routing changes.
+	if conversationEvent(msg) {
+		return m.updateChat(msg)
+	}
 	switch m.view {
 	case viewOnboard:
 		return m.updateOnboard(msg)
@@ -1230,6 +1262,27 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.updateChat(msg)
 }
 
+// conversationEvent reports whether a message is an event of the
+// running conversation rather than something the panel on screen owns.
+//
+// The answer, the deltas, the tool activity, the statistics, the end of
+// the turn and the end of a cancelled turn are the conversation's: they
+// are handled the same way whatever the operator is reading.
+//
+// A panel that needs one of them keeps it: the MCP panel's own
+// notification is not a conversation event and stays with the panel.
+func conversationEvent(msg tea.Msg) bool {
+	switch msg.(type) {
+	case streamThinkingMsg, streamToolStartMsg, streamToolMsg,
+		streamDeltaMsg, streamStatsMsg, animationTickMsg,
+		responseMsg, skillDecisionMsg, writeResultMsg, copyResultMsg,
+		errorMsg:
+		return true
+	}
+	return false
+}
+
+// updateChat handles the conversation and the composer.
 func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case mcpActionMsg:
@@ -1317,7 +1370,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.stopStream()
 				m.sending = false
 				m.endActivity()
-				m.notice = "cancelled — stored nothing from the assistant"
+				m.notice = "cancelled — stopping the request"
 				// The turn is over, so the prompt that was collapsed
 				// for it opens again.
 				m.expandAfterTurn()
@@ -1525,7 +1578,10 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recordFailed()
 		switch {
 		case errors.Is(msg.err, context.Canceled):
-			m.notice = "cancelled — stored nothing from the assistant"
+			// The turn was cancelled. The notice says whether the
+			// exchange can be continued: a stopped turn and a failed
+			// one call for different actions.
+			m.notice = m.cancelledNotice()
 		case errors.Is(msg.err, engine.ErrNoProvider):
 			m.notice = "No provider configured — message stored in this session."
 		case errors.Is(msg.err, engine.ErrNoVisibleAnswer):
@@ -1538,7 +1594,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "the turn hit its time limit — the request was closed"
 			m.appendNote("assistant", "(the turn exceeded its time limit; the request was closed)")
 		default:
-			m.notice = "error: " + msg.err.Error()
+			m.notice = m.failedNotice(msg.err)
 			m.appendNote("assistant", "(I couldn't answer that: "+msg.err.Error()+")")
 		}
 		// The turn is over, however it ended: a prompt that was

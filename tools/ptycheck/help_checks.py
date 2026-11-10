@@ -262,7 +262,12 @@ def main():
               "scroll" in text, text)
         check("suggestions: no row overflows", no_overflow(initial, 80), text)
 
-        scrolled = capture([(2.0, b"/"), (0.5, b"\x1b[B" * 24), (0.5, b"")],
+        # The list is longer than the panel, so the operator scrolls to
+        # the end of it and back. The number of commands is not fixed,
+        # so the check scrolls to the end and one page back rather than
+        # counting rows.
+        scrolled = capture([(2.0, b"/"), (0.5, b"\x1b[B" * 40),
+                            (0.5, b"\x1b[A" * 7), (0.5, b"")],
                            80, 24, **common)
         text = scrolled.text()
         check("suggestions: scrolling reaches /skills",
