@@ -429,6 +429,8 @@ func (a *app) run() error {
 		EditModel:      a.editModel,
 		DeleteModel:    a.deleteModel,
 		ModelDetails:   a.modelDetails,
+		ModelDetail:    a.modelDetail,
+		EndpointDetail: a.endpointDetail,
 		Discover:       a.discover,
 		CurrentOnboard: a.currentOnboard,
 		NewSession:     a.newSession,

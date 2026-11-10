@@ -891,20 +891,41 @@ func TestResizeRewrapsMarkdown(t *testing.T) {
 	}
 }
 
-func TestModelCommandOpensPicker(t *testing.T) {
+func TestModelCommandOpensTheManagementInterface(t *testing.T) {
 	hooks := Hooks{ListModels: func() []ModelInfo { return []ModelInfo{{ID: "a", Active: true}} }}
 	m := NewWithHooks(&scriptEngine{}, hooks)
 	m.SetColor(false)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = updated.(Model)
 	m = typeText(m, "/model")
 	m = sendCurrent(m)
-	if view := string(m.View().Content); !strings.Contains(view, "Models (Enter switches") {
-		t.Errorf("/model must open the picker:\n%s", view)
+	view := string(m.View().Content)
+	// Every action is offered, and the command that does the same thing
+	// is named: the operator can always type it instead.
+	for _, want := range []string{"Use", "Add", "Edit", "Remove", "Context",
+		"Show", "Discover", "List", "/model edit", "label, effort"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("/model must offer %q:\n%s", want, view)
+		}
 	}
 	m = pressKey(m, tea.KeyEscape, 0, "")
-	if view := string(m.View().Content); strings.Contains(view, "Models (Enter switches") {
-		t.Error("Esc must leave the picker")
+	if view := string(m.View().Content); strings.Contains(view, "Every action is also a command") {
+		t.Error("Esc must leave the management interface")
+	}
+}
+
+func TestTheManagementInterfaceOpensThePicker(t *testing.T) {
+	hooks := Hooks{ListModels: func() []ModelInfo { return []ModelInfo{{ID: "a", Active: true}} }}
+	m := NewWithHooks(&scriptEngine{}, hooks)
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	m = typeText(m, "/model")
+	m = sendCurrent(m)
+	// The letter of an action runs it.
+	m = pressKey(m, 'u', 0, "u")
+	if view := string(m.View().Content); !strings.Contains(view, "Models (Enter switches") {
+		t.Errorf("the picker must open:\n%s", view)
 	}
 }
 

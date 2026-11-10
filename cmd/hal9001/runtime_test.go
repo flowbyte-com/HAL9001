@@ -166,13 +166,14 @@ func newRuntimeApp(t *testing.T, stored config.FileConfig) *app {
 
 // tuiEndpointSpec describes an endpoint for the management commands.
 func tuiEndpointSpec(id, name, baseURL, credentialEnv string) tui.EndpointSpec {
+	discovery := true
 	return tui.EndpointSpec{
 		ID:            id,
 		Name:          name,
 		Protocol:      string(config.ProtocolOpenAI),
 		BaseURL:       baseURL,
 		CredentialEnv: credentialEnv,
-		Discovery:     true,
+		Discovery:     &discovery,
 	}
 }
 

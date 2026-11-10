@@ -112,8 +112,10 @@ func (a *app) saveEndpoint(spec tui.EndpointSpec) error {
 			BaseURL:       spec.BaseURL,
 			CredentialEnv: spec.CredentialEnv,
 			Credential:    spec.Credential,
-			Discovery:     config.DiscoveryRecord{Enabled: spec.Discovery},
 		}
+		// A new endpoint may be discovered unless the operator says
+		// otherwise: the catalogue of a new endpoint is worth reading.
+		rec.Discovery.Enabled = spec.Discovery == nil || *spec.Discovery
 		if rec.Name == "" {
 			rec.Name = rec.ID
 		}
@@ -148,7 +150,12 @@ func (a *app) saveEndpoint(spec tui.EndpointSpec) error {
 			e.Credential = spec.Credential
 			e.CredentialEnv = ""
 		}
-		e.Discovery.Enabled = spec.Discovery
+		// The flag has three states: a new endpoint may leave it alone,
+		// and an edit may change it. An edit that named nothing else
+		// keeps the flag as it was.
+		if spec.Discovery != nil {
+			e.Discovery.Enabled = *spec.Discovery
+		}
 		return nil
 	})
 	if err != nil {
@@ -355,6 +362,104 @@ func (a *app) modelDetails(endpointID, modelID string) ([]string, error) {
 		lines = append(lines, fmt.Sprintf("  needs review    %s", model.Review))
 	}
 	return lines, nil
+}
+
+// modelDetail describes one model: its settings and where they came from.
+//
+// It reads the same record the configuration handlers work with, so the
+// management screen and the command always describe one state.
+func (a *app) modelDetail(endpointID, modelID string) (tui.ModelDetail, error) {
+	endpoint, ok := a.stored.EndpointByID(endpointID)
+	if !ok {
+		return tui.ModelDetail{}, fmt.Errorf("no endpoint with the id %q", endpointID)
+	}
+	model, ok := endpoint.Model(modelID)
+	if !ok {
+		return tui.ModelDetail{}, fmt.Errorf("endpoint %q has no model %q", endpointID, modelID)
+	}
+	// An empty mode means the automatic one. The screens show the mode
+	// that is really in force, so the operator is never asked about a
+	// setting that was never written.
+	mode := model.ContextMode
+	if mode == "" {
+		mode = config.ContextAuto
+	}
+	detail := tui.ModelDetail{
+		Settings: tui.ModelSpec{
+			ID:              model.ID,
+			Label:           model.Label,
+			Effort:          model.Effort,
+			ContextMode:     mode,
+			ContextWindow:   model.ContextWindow,
+			MaxOutputTokens: model.MaxOutputTokens,
+		},
+	}
+	// The context window and where it came from. The provenance travels
+	// with the numbers: the operator sees whether the limit is the
+	// provider's own or one HAL was told to use.
+	detail.Context = append(detail.Context,
+		fmt.Sprintf("  mode            %s", mode))
+	if model.ContextMode == config.ContextManual {
+		detail.Context = append(detail.Context,
+			fmt.Sprintf("  window          %d tokens (the operator's own limit)", model.ContextWindow))
+	} else {
+		detail.Context = append(detail.Context,
+			"  window          the window the provider reported for this model")
+	}
+	if budget, err := a.budgetForModel(endpoint, model); err == nil {
+		// The budget is one line per part: a panel truncates a long line,
+		// and the numbers are the point of this screen.
+		parts := strings.Split(provider.DescribeBudget(budget), " · ")
+		detail.Context = append(detail.Context, "  budget          "+parts[0])
+		for _, part := range parts[1:] {
+			detail.Context = append(detail.Context, "                  "+part)
+		}
+	}
+	detail.Context = append(detail.Context,
+		fmt.Sprintf("  source          %s", orDefault(model.Source, config.SourceManual)))
+	if model.FetchedAt != "" {
+		detail.Context = append(detail.Context,
+			fmt.Sprintf("  confirmed at    %s", model.FetchedAt))
+	}
+	if model.Review != "" {
+		detail.Context = append(detail.Context,
+			fmt.Sprintf("  needs review    %s", model.Review))
+	}
+	return detail, nil
+}
+
+// endpointDetail describes one endpoint: its settings and its models.
+//
+// The credential is described, never shown: the screen offers the name
+// of the environment variable that holds it, never its value.
+func (a *app) endpointDetail(endpointID string) (tui.EndpointDetail, error) {
+	endpoint, ok := a.stored.EndpointByID(endpointID)
+	if !ok {
+		return tui.EndpointDetail{}, fmt.Errorf("no endpoint with the id %q", endpointID)
+	}
+	detail := tui.EndpointDetail{
+		Settings: tui.EndpointSpec{
+			ID:            endpoint.ID,
+			Name:          endpoint.Name,
+			Protocol:      string(endpoint.Protocol),
+			WireProtocol:  string(endpoint.WireProtocol),
+			BaseURL:       endpoint.BaseURL,
+			CredentialEnv: endpoint.CredentialEnv,
+		},
+	}
+	if detail.Settings.Name == "" {
+		detail.Settings.Name = endpoint.Display()
+	}
+	discovery := endpoint.Discovery.Enabled
+	detail.Settings.Discovery = &discovery
+	for _, model := range endpoint.Models {
+		detail.Models = append(detail.Models, tui.ModelInfo{
+			ID:       model.ID,
+			Label:    model.Display(),
+			Endpoint: endpoint.ID,
+		})
+	}
+	return detail, nil
 }
 
 // budgetForModel resolves the effective budget of one model of one

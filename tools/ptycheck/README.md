@@ -203,6 +203,30 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/model_management_checks.py
 ```
 
+The model usability checks start the built binary against an isolated
+configuration in a temporary home, session store and workspace, and drive
+it through one pseudo-terminal, because the interactive management asks
+the operator for what a change needs. They prove that `/model` opens the
+management interface and names every action and the command that does
+the same thing, that `/model edit` without arguments asks which model to
+edit and then for its settings and stores only the setting that changed,
+that a value the configuration refuses keeps the form open and changes
+nothing, that a cancelled form changes nothing, that the change is on
+disk, is visible again and survives a restart, that `/model remove` asks
+before it removes and never removes the active model without a
+replacement, that `/model add` asks for the fields of the model, that
+`/model context` shows the context window and where it came from, that
+`/model discover` asks the provider only when the operator names the
+endpoint, that `/endpoint` and its actions follow the same conventions,
+that an unknown action opens the interface and says what is wrong, and
+that none of the screens changes the active model:
+
+```sh
+go build -o /tmp/opencode/hal9001 ./cmd/hal9001
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/model_usability_checks.py
+```
+
 The discovery checks start their own hostile provider on port 8263 and own
 their config, home, workspace and session store. The provider answers with
 a model catalogue that carries every trick a broken or hostile endpoint can
@@ -317,6 +341,16 @@ python3 tools/ptycheck/steering_checks.py
   right-aligned statistics sit beneath the answer, and all five themes
   render the eye in colour. It also covers slash Esc dismissal and the
   444/666 footer.
+- The model-management suite covers the operator path end to end: `/model`
+  opens the management interface and names every action and the command
+  that does the same thing, `/model edit` without arguments asks which
+  model to edit and then for its settings, a refused value keeps the form
+  open, a cancelled form stores nothing, the change is on disk and
+  survives a restart, `/model remove` asks before it removes and never
+  removes the active model without a replacement, `/model context` shows
+  the context window and where it came from, `/model discover` asks the
+  provider only when the operator names the endpoint, and none of the
+  screens changes the active model.
 - The web-research suite runs the unified `web_search` path and the
   Firecrawl scrape path. It checks Firecrawl success, empty results,
   Firecrawl -> Exa fallback, Exa -> DuckDuckGo fallback, malformed-primary
@@ -474,6 +508,7 @@ by hand in a real terminal.
 | `recording_provider.py` | a local provider that records every request it receives |
 | `holding_provider.py` | a local provider that holds a request and records every request it receives |
 | `stop_resume_checks.py` | isolated lifecycle checks: `/stop` abandons the turn, `/resume` continues it, and a side effect is never repeated |
+| `model_usability_checks.py` | isolated model-management checks: the interactive screens ask for what a change needs, and a cancelled or refused change stores nothing |
 | `pty_session.py` | the shared pseudo-terminal driver: one HAL process, driven step by step |
 | `panel_completion_checks.py` | isolated panel checks: a turn that completes behind a panel keeps its answer |
 | `budget_checks.py` | isolated context-budget checks: the transmitted request honours the operator's limit, or nothing is sent |

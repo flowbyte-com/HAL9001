@@ -154,12 +154,16 @@ def main():
               endpoints and any(m.get("review") for m in endpoints[0].get("models", [])),
               json.dumps(endpoints, indent=2)[:1200])
 
-        # 2. /model alone opens the picker, and /endpoint alone shows the
-        #    endpoints.
+        # 2. /model alone opens the management interface, /endpoint alone
+        #    opens the endpoint one, and /model list shows the endpoints.
         raw, screen = capture([(2.0, b"/model\r"), (1.0, b"")])
-        check("/model opens the picker", shown(raw, "Models"), screen.text())
+        check("/model opens the management interface",
+              shown(raw, "Every action is also a command"), screen.text())
         raw, screen = capture([(2.0, b"/endpoint\r"), (1.0, b"")])
-        check("/endpoint shows the endpoints", shown(raw, "Endpoints"), screen.text())
+        check("/endpoint opens the management interface",
+              shown(raw, "Every action is also a command"), screen.text())
+        raw, screen = capture([(2.0, b"/endpoint list\r"), (1.0, b"")])
+        check("/endpoint list shows the endpoints", shown(raw, "Endpoints"), screen.text())
 
         # 3. /model list shows the endpoints and their models.
         raw, screen = capture([(2.0, b"/model list\r"), (1.0, b"")])

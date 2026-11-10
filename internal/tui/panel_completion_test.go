@@ -242,7 +242,7 @@ var thePanels = []struct {
 }{
 	{"/help", viewHelp},
 	{"/diag", viewDiag},
-	{"/model", viewPicker},
+	{"/model", viewManage},
 	{"/theme", viewTheme},
 	{"/sessions", viewSessions},
 	{"/usage", viewUsage},

@@ -300,7 +300,7 @@ never turned into an automatic mode and never becomes a zero.
 ## Operator commands
 
 ```
-/model                                     open the model picker
+/model                                     open the management interface
 /model list                                list endpoints and their models
 /model add <endpoint> <id> [label]         add a model to an endpoint
 /model edit <endpoint> <id> <key=value>…   edit a model's settings
@@ -310,11 +310,49 @@ never turned into an automatic mode and never becomes a zero.
 /model context <endpoint> <id> auto|manual [tokens]
 /model discover <endpoint>                 probe the provider's catalogue
 
+/endpoint                                  open the endpoint interface
 /endpoint list                             list endpoints
 /endpoint add <id> <name> <protocol> <url> [credential-env]
 /endpoint edit <id> <key=value>…           edit an endpoint
 /endpoint remove <id> [--use E/M]          remove an endpoint
 ```
+
+### The management interface
+
+`/model` and `/endpoint` open an interface that lists every action and
+names the command that does the same thing, so an operator who knows the
+commands is never slowed down and an operator who does not is never left
+guessing. The actions are `Use`, `Add`, `Edit`, `Remove`, `Context`,
+`Show`, `Discover` and `List` for the models, and `List`, `Add`, `Edit`
+and `Remove` for the endpoints. A letter runs the action it names, the
+arrow keys and `Tab` move, `Enter` runs the chosen row, and `Esc` leaves.
+
+The same command without its arguments opens the same workflow, step by
+step: `/model edit` asks which model to edit and then for its settings,
+`/model add` asks for the endpoint, the identifier and the label,
+`/model remove` asks which model and then asks for a confirmation, and
+`/model context` shows the context window and where it came from before
+asking for a new one.
+
+In a form the current value is shown as a hint and the field starts
+empty: typing replaces the value instead of appending to it, and an empty
+field keeps the current one. `Tab` and the arrow keys move between the
+fields, `Ctrl+S` saves and `Esc` cancels. Only the settings the operator
+named are sent to the configuration handler, so the settings that were not
+named keep their values. A value the configuration refuses keeps the form
+open and changes nothing, and a cancelled form changes nothing at all.
+
+The credential is never a field of a form: only the name of the
+environment variable that holds it, so a secret never reaches the screen.
+
+No screen of the interface contacts a provider. The one exception is the
+discovery, and it happens only when the operator names the endpoint to
+ask: the catalogue of a provider is never fetched merely to draw a
+screen.
+
+A command that is only half spelled out opens the interface and says what
+is missing, together with the exact usage. An unknown action does the
+same and names the action that was not understood.
 
 Adding a model never changes the active model. Removing the active model, or
 an endpoint that holds the active model, is refused unless the operator names

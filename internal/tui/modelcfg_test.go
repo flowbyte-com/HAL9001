@@ -292,11 +292,25 @@ func TestAFailedEndpointEditKeepsTheEngine(t *testing.T) {
 	}
 }
 
-func TestUnknownSubcommandShowsTheUsage(t *testing.T) {
+func TestUnknownSubcommandOpensTheInterfaceAndSaysWhatIsWrong(t *testing.T) {
 	m := NewWithHooks(&scriptEngine{}, Hooks{})
+	m.SetColor(false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
 	m = runCommand(m, "/model frobnicate")
-	if !strings.Contains(m.notice, "Usage:") {
-		t.Errorf("the notice = %q", m.notice)
+	if m.view != viewManage {
+		t.Fatalf("the view = %v, want the management interface", m.view)
+	}
+	if !strings.Contains(m.manage.notice, "frobnicate") {
+		t.Errorf("the notice = %q", m.manage.notice)
+	}
+	// The actions are listed, so the operator is not left guessing.
+	view := string(m.View().Content)
+	for _, want := range []string{"Use", "Add", "Edit", "Remove", "Context",
+		"Show", "Discover", "List"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the interface must offer %q:\n%s", want, view)
+		}
 	}
 }
 

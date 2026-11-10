@@ -76,7 +76,7 @@ MODEL = "MiniMax-M3.1-Flash"
 PANELS = [
     ("/help", "Help · Keys and commands"),
     ("/diag", "Last turn — diagnostics"),
-    ("/model", "Models (Enter switches"),
+    ("/model", "Models (Up and down choose"),
     ("/theme", "Themes (Enter applies"),
     ("/sessions", "Sessions (Enter resumes"),
     ("/usage", "Session usage"),

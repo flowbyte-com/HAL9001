@@ -43,7 +43,9 @@ re-run at any time.
 Why the model picker is not `Ctrl+M`: on a terminal, `Ctrl+M` and
 `Enter` are the same byte (CR). With the model picker on `Ctrl+M`, a
 plain `Enter` would both open the picker and submit the message. The
-picker moved to `Ctrl+K`; `/model` remains available everywhere.
+picker moved to `Ctrl+K`; `/model` remains available everywhere and
+opens the management interface, whose `Use` action opens the same
+picker.
 
 Why `Ctrl+J` is the documented newline: `Enter` and `Ctrl+J` are
 distinct bytes (CR and LF) on every terminal, so `Ctrl+J` is never

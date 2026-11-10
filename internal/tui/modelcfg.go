@@ -26,50 +26,92 @@ const modelCfgUsage = "/model <subcommand> [model]"
 const endpointCfgUsage = "/endpoint <subcommand> [id]"
 
 // modelCommand runs the /model command family.
+//
+// A command with all its arguments does exactly what it always did. A
+// command without them opens its own screen, and the operator is asked
+// for what the command needs. A command that is only half spelled out
+// says what is missing and opens the same screen.
 func (m *Model) modelCommand(args []string) tea.Cmd {
 	if len(args) == 0 {
-		m.enterPicker()
+		m.openModelMenu()
 		return nil
 	}
 	switch strings.ToLower(args[0]) {
 	case "list":
 		return m.showEndpoints()
 	case "add":
+		if len(args) == 1 {
+			return m.manageAddModel()
+		}
 		return m.addModel(args[1:])
 	case "edit":
+		if len(args) == 1 {
+			return m.manageEditModel()
+		}
 		return m.editModel(args[1:])
 	case "remove", "rm", "delete":
+		if len(args) == 1 {
+			return m.manageRemoveModel()
+		}
 		return m.removeModel(args[1:])
 	case "use", "select":
+		if len(args) == 1 {
+			return m.manageUse()
+		}
 		return m.selectModel(args[1:])
 	case "show", "info":
+		if len(args) == 1 {
+			return m.manageShowModel()
+		}
 		return m.showModel(args[1:])
 	case "context", "ctx":
+		if len(args) == 1 {
+			return m.manageContextModel()
+		}
 		return m.modelContext(args[1:])
 	case "discover", "models":
+		if len(args) == 1 {
+			return m.manageDiscover()
+		}
 		return m.discoverModels(args[1:])
 	default:
-		m.notice = "Usage: " + modelCfgUsage
+		m.openModelMenu()
+		m.manage.notice = fmt.Sprintf("%q is not a model action. The actions are listed below.", args[0])
 		return nil
 	}
 }
 
 // endpointCommand runs the /endpoint command family.
+//
+// The conventions are the ones of the /model family: a command without
+// its arguments opens its own screen, and a command that is only half
+// spelled out says what is missing.
 func (m *Model) endpointCommand(args []string) tea.Cmd {
 	if len(args) == 0 {
-		return m.showEndpoints()
+		m.openEndpointMenu()
+		return nil
 	}
 	switch strings.ToLower(args[0]) {
 	case "list":
 		return m.showEndpoints()
 	case "add":
+		if len(args) == 1 {
+			return m.manageAddEndpoint()
+		}
 		return m.addEndpoint(args[1:])
 	case "edit":
+		if len(args) == 1 {
+			return m.manageEditEndpoint()
+		}
 		return m.editEndpoint(args[1:])
 	case "remove", "rm", "delete":
+		if len(args) == 1 {
+			return m.manageRemoveEndpoint()
+		}
 		return m.removeEndpoint(args[1:])
 	default:
-		m.notice = "Usage: " + endpointCfgUsage
+		m.openEndpointMenu()
+		m.manage.notice = fmt.Sprintf("%q is not an endpoint action. The actions are listed below.", args[0])
 		return nil
 	}
 }
@@ -128,18 +170,37 @@ func (m *Model) refreshEngine() {
 	}
 }
 
+// modelGuidance opens the model interface and says what the command was
+// missing.
+//
+// The operator is not left with a usage line and an empty screen: the
+// interface is open, and it lists every action and the command that
+// does the same thing.
+func (m *Model) modelGuidance(missing, usage string) {
+	m.openModelMenu()
+	m.manage.notice = missing + " Usage: " + usage
+}
+
+// endpointGuidance opens the endpoint interface and says what the
+// command was missing.
+func (m *Model) endpointGuidance(missing, usage string) {
+	m.openEndpointMenu()
+	m.manage.notice = missing + " Usage: " + usage
+}
+
 // addModel stores a new model under one endpoint.
 //
 // Adding a model never changes the active model: the operator selects one
 // explicitly with /model use.
 func (m *Model) addModel(args []string) tea.Cmd {
-	if m.hooks.AddModel == nil {
-		m.notice = "Model management is not wired up."
-		return nil
-	}
 	endpoint, id, rest, err := modelArgs(args, "add <endpoint> <model-id> [label]")
 	if err != nil {
-		m.notice = err.Error()
+		m.modelGuidance("/model add needs an endpoint and a model id.",
+			"/model add <endpoint> <model-id> [label]")
+		return nil
+	}
+	if m.hooks.AddModel == nil {
+		m.notice = "Model management is not wired up."
 		return nil
 	}
 	spec := ModelSpec{ID: id, Label: strings.Join(rest, " ")}
@@ -154,17 +215,19 @@ func (m *Model) addModel(args []string) tea.Cmd {
 
 // editModel changes one model's settings.
 func (m *Model) editModel(args []string) tea.Cmd {
-	if m.hooks.EditModel == nil {
-		m.notice = "Model management is not wired up."
-		return nil
-	}
 	endpoint, id, rest, err := modelArgs(args, "edit <endpoint> <model-id> <key=value>…")
 	if err != nil {
-		m.notice = err.Error()
+		m.modelGuidance("/model edit needs an endpoint and a model id.",
+			"/model edit <endpoint> <model-id> <key=value>…")
 		return nil
 	}
 	if len(rest) == 0 {
-		m.notice = "Usage: /model edit <endpoint> <model-id> <key=value>…"
+		m.modelGuidance("/model edit needs at least one setting.",
+			"/model edit <endpoint> <model-id> <key=value>…")
+		return nil
+	}
+	if m.hooks.EditModel == nil {
+		m.notice = "Model management is not wired up."
 		return nil
 	}
 	spec, err := modelSpecFromPairs(rest)
@@ -187,13 +250,14 @@ func (m *Model) editModel(args []string) tea.Cmd {
 // The active model is never removed silently: the operator either names a
 // replacement or is told exactly what to do.
 func (m *Model) removeModel(args []string) tea.Cmd {
-	if m.hooks.DeleteModel == nil {
-		m.notice = "Model management is not wired up."
-		return nil
-	}
 	endpoint, id, rest, err := modelArgs(args, "remove <endpoint> <model-id> [--use endpoint/model]")
 	if err != nil {
-		m.notice = err.Error()
+		m.modelGuidance("/model remove needs an endpoint and a model id.",
+			"/model remove <endpoint> <model-id> [--use endpoint/model]")
+		return nil
+	}
+	if m.hooks.DeleteModel == nil {
+		m.notice = "Model management is not wired up."
 		return nil
 	}
 	replacement, err := replacementFromPairs(rest)
@@ -212,13 +276,14 @@ func (m *Model) removeModel(args []string) tea.Cmd {
 
 // selectModel makes one model the active one.
 func (m *Model) selectModel(args []string) tea.Cmd {
-	if m.hooks.SwitchModel == nil {
-		m.notice = "Model management is not wired up."
-		return nil
-	}
 	endpoint, id, _, err := modelArgs(args, "use <endpoint> <model-id>")
 	if err != nil {
-		m.notice = err.Error()
+		m.modelGuidance("/model use needs an endpoint and a model id.",
+			"/model use <endpoint> <model-id>")
+		return nil
+	}
+	if m.hooks.SwitchModel == nil {
+		m.notice = "Model management is not wired up."
 		return nil
 	}
 	eng, err := m.hooks.SwitchModel(endpoint, id)
@@ -239,13 +304,14 @@ func (m *Model) selectModel(args []string) tea.Cmd {
 
 // showModel inspects one model's settings.
 func (m *Model) showModel(args []string) tea.Cmd {
-	if m.hooks.ModelDetails == nil {
-		m.notice = "Model management is not wired up."
-		return nil
-	}
 	endpoint, id, _, err := modelArgs(args, "show <endpoint> <model-id>")
 	if err != nil {
-		m.notice = err.Error()
+		m.modelGuidance("/model show needs an endpoint and a model id.",
+			"/model show <endpoint> <model-id>")
+		return nil
+	}
+	if m.hooks.ModelDetails == nil {
+		m.notice = "Model management is not wired up."
 		return nil
 	}
 	lines, err := m.hooks.ModelDetails(endpoint, id)
@@ -259,24 +325,27 @@ func (m *Model) showModel(args []string) tea.Cmd {
 
 // modelContext configures the context limits of one model.
 func (m *Model) modelContext(args []string) tea.Cmd {
-	if m.hooks.EditModel == nil {
-		m.notice = "Model management is not wired up."
-		return nil
-	}
 	endpoint, id, rest, err := modelArgs(args, "context <endpoint> <model-id> auto|manual [tokens]")
 	if err != nil {
-		m.notice = err.Error()
+		m.modelGuidance("/model context needs an endpoint and a model id.",
+			"/model context <endpoint> <model-id> auto|manual [tokens]")
 		return nil
 	}
 	if len(rest) == 0 {
-		m.notice = "Usage: /model context <endpoint> <model-id> auto|manual [tokens]"
+		m.modelGuidance("/model context needs auto or manual.",
+			"/model context <endpoint> <model-id> auto|manual [tokens]")
+		return nil
+	}
+	if m.hooks.EditModel == nil {
+		m.notice = "Model management is not wired up."
 		return nil
 	}
 	mode := strings.ToLower(rest[0])
 	switch mode {
 	case "auto", "manual":
 	default:
-		m.notice = "Usage: /model context <endpoint> <model-id> auto|manual [tokens]"
+		m.modelGuidance("/model context needs auto or manual.",
+			"/model context <endpoint> <model-id> auto|manual [tokens]")
 		return nil
 	}
 	spec := ModelSpec{ContextMode: mode}
@@ -308,12 +377,13 @@ func (m *Model) modelContext(args []string) tea.Cmd {
 // Discovery confirms identifiers and reports which ones are not configured
 // yet. It never adds a model and never moves one between endpoints.
 func (m *Model) discoverModels(args []string) tea.Cmd {
-	if m.hooks.Discover == nil {
-		m.notice = "Model discovery is not wired up."
+	if len(args) == 0 {
+		m.modelGuidance("/model discover needs an endpoint.",
+			"/model discover <endpoint>")
 		return nil
 	}
-	if len(args) == 0 {
-		m.notice = "Usage: /model discover <endpoint>"
+	if m.hooks.Discover == nil {
+		m.notice = "Model discovery is not wired up."
 		return nil
 	}
 	endpoint := args[0]
@@ -322,6 +392,15 @@ func (m *Model) discoverModels(args []string) tea.Cmd {
 		m.notice = "Cannot read the catalogue: " + err.Error()
 		return nil
 	}
+	m.openCatalogue(endpoint, ids)
+	return nil
+}
+
+// openCatalogue shows what one endpoint serves.
+//
+// The catalogue is what the provider reported, never what HAL guessed:
+// a model that is not configured is named with the command that adds it.
+func (m *Model) openCatalogue(endpoint string, ids []string) {
 	configured := map[string]bool{}
 	if m.hooks.Endpoints != nil {
 		for _, e := range m.hooks.Endpoints() {
@@ -347,25 +426,26 @@ func (m *Model) discoverModels(args []string) tea.Cmd {
 		lines = append(lines, "  every reported model is configured")
 	}
 	m.openModelCfg("Catalogue of "+endpoint, lines)
-	return nil
 }
 
 // addEndpoint stores a new endpoint.
 func (m *Model) addEndpoint(args []string) tea.Cmd {
+	if len(args) < 4 {
+		m.endpointGuidance("/endpoint add needs an id, a name, a protocol and a url.",
+			"/endpoint add <id> <name> <protocol> <url> [credential-env]")
+		return nil
+	}
 	if m.hooks.SaveEndpoint == nil {
 		m.notice = "Endpoint management is not wired up."
 		return nil
 	}
-	if len(args) < 4 {
-		m.notice = "Usage: /endpoint add <id> <name> <protocol> <url> [credential-env]"
-		return nil
-	}
+	discovery := true
 	spec := EndpointSpec{
 		ID:            args[0],
 		Name:          args[1],
 		Protocol:      args[2],
 		BaseURL:       args[3],
-		Discovery:     true,
+		Discovery:     &discovery,
 		WireProtocol:  "",
 		CredentialEnv: "",
 	}
@@ -383,16 +463,18 @@ func (m *Model) addEndpoint(args []string) tea.Cmd {
 
 // editEndpoint changes one endpoint's settings.
 func (m *Model) editEndpoint(args []string) tea.Cmd {
-	if m.hooks.SaveEndpoint == nil {
-		m.notice = "Endpoint management is not wired up."
-		return nil
-	}
 	if len(args) < 1 {
-		m.notice = "Usage: /endpoint edit <id> <key=value>…"
+		m.endpointGuidance("/endpoint edit needs an id.",
+			"/endpoint edit <id> <key=value>…")
 		return nil
 	}
 	if len(args) < 2 {
-		m.notice = "Usage: /endpoint edit <id> <key=value>…"
+		m.endpointGuidance("/endpoint edit needs at least one setting.",
+			"/endpoint edit <id> <key=value>…")
+		return nil
+	}
+	if m.hooks.SaveEndpoint == nil {
+		m.notice = "Endpoint management is not wired up."
 		return nil
 	}
 	spec, err := endpointSpecFromPairs(args[1:])
@@ -412,12 +494,13 @@ func (m *Model) editEndpoint(args []string) tea.Cmd {
 
 // removeEndpoint deletes one endpoint and its models.
 func (m *Model) removeEndpoint(args []string) tea.Cmd {
-	if m.hooks.DeleteEndpoint == nil {
-		m.notice = "Endpoint management is not wired up."
+	if len(args) == 0 {
+		m.endpointGuidance("/endpoint remove needs an id.",
+			"/endpoint remove <id> [--use endpoint/model]")
 		return nil
 	}
-	if len(args) == 0 {
-		m.notice = "Usage: /endpoint remove <id> [--use endpoint/model]"
+	if m.hooks.DeleteEndpoint == nil {
+		m.notice = "Endpoint management is not wired up."
 		return nil
 	}
 	replacement, err := replacementFromPairs(args[1:])
@@ -605,9 +688,11 @@ func endpointSpecFromPairs(args []string) (EndpointSpec, error) {
 		case "credential", "key":
 			spec.Credential = value
 		case "discovery":
-			spec.Discovery = strings.EqualFold(strings.TrimSpace(value), "on") ||
-				strings.EqualFold(strings.TrimSpace(value), "true") ||
-				strings.EqualFold(strings.TrimSpace(value), "yes")
+			on, err := parseOnOff(value)
+			if err != nil {
+				return spec, fmt.Errorf("discovery is on or off.")
+			}
+			spec.Discovery = &on
 		default:
 			return spec, fmt.Errorf("%q is not an endpoint setting. Use name, protocol, wire_protocol, base_url, credential_env or discovery.", key)
 		}

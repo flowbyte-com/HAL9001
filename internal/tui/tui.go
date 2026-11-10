@@ -199,7 +199,32 @@ type EndpointSpec struct {
 	// variable is named.
 	Credential string
 	// Discovery allows the provider's catalogue to be probed.
-	Discovery bool
+	//
+	// It is a pointer because the flag has three states: a new endpoint
+	// may leave it alone, and an edit may change it. A plain boolean
+	// could not tell "off" from "not named", so an edit that named
+	// nothing else would silently turn the discovery off.
+	Discovery *bool
+}
+
+// ModelDetail describes one model: its settings and where they came from.
+//
+// It is what the management screens are filled from. The settings are
+// the ones the configuration handlers work with, so the screen and the
+// command always describe the same record.
+type ModelDetail struct {
+	// Settings are the model's current settings.
+	Settings ModelSpec
+	// Context describes the context window and where it came from.
+	Context []string
+}
+
+// EndpointDetail describes one endpoint: its settings and its models.
+type EndpointDetail struct {
+	// Settings are the endpoint's current settings.
+	Settings EndpointSpec
+	// Models are the endpoint's own models.
+	Models []ModelInfo
 }
 
 // ModelSpec is one model as the operator asked for it.
@@ -257,6 +282,14 @@ type Hooks struct {
 	DeleteModel func(endpointID, modelID, replacement string) error
 	// ModelDetails describes one model, one line per setting.
 	ModelDetails func(endpointID, modelID string) ([]string, error)
+	// ModelDetail describes one model: its settings and the provenance
+	// of its context window.
+	//
+	// It is what the management screens are filled from, so that the
+	// screen and the command always describe the same record.
+	ModelDetail func(endpointID, modelID string) (ModelDetail, error)
+	// EndpointDetail describes one endpoint: its settings and its models.
+	EndpointDetail func(endpointID string) (EndpointDetail, error)
 	// Discover probes the provider's catalogue and returns its model
 	// identifiers.
 	Discover func(endpointID string) ([]string, error)
@@ -360,6 +393,7 @@ const (
 	viewMCP
 	viewModels
 	viewQueue
+	viewManage
 )
 
 // SessionLine is one stored conversation turn, for session resume.
@@ -652,6 +686,8 @@ type Model struct {
 	pickerModels []ModelInfo
 	pickerCursor int
 	pickerNotice string
+	// manage is the state of the endpoint and model management interface.
+	manage manageState
 	// panelOffset is the first visible row of the active overlay. It
 	// keeps long panels usable in short windows.
 	panelOffset int
@@ -1324,6 +1360,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateMCP(msg)
 	case viewModels:
 		return m.updateModelCfg(msg)
+	case viewManage:
+		return m.updateManage(msg)
 	}
 	return m.updateChat(msg)
 }
@@ -3417,6 +3455,8 @@ func (m Model) activePanel() []string {
 		return m.mcpRows()
 	case viewModels:
 		return m.modelCfgRows()
+	case viewManage:
+		return m.manageRows()
 	}
 	return nil
 }
