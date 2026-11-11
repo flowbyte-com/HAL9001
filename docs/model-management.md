@@ -317,6 +317,13 @@ never turned into an automatic mode and never becomes a zero.
 /endpoint remove <id> [--use E/M]          remove an endpoint
 ```
 
+The settings a model carries are `label`, `effort`, `context_mode`,
+`context_window` and `max_output_tokens`. Two of them have a default that
+is restored by naming it: `effort=default` restores the model's own
+default reasoning level and `max_output_tokens=default` restores the
+provider's own output limit. An empty value means "leave it alone", so a
+reset is never a side effect of a value that was not typed.
+
 ### The management interface
 
 `/model` and `/endpoint` open an interface that lists every action and
@@ -334,21 +341,90 @@ step: `/model edit` asks which model to edit and then for its settings,
 `/model context` shows the context window and where it came from before
 asking for a new one.
 
-In a form the current value is shown as a hint and the field starts
-empty: typing replaces the value instead of appending to it, and an empty
-field keeps the current one. `Tab` and the arrow keys move between the
-fields, `Ctrl+S` saves and `Esc` cancels. Only the settings the operator
-named are sent to the configuration handler, so the settings that were not
-named keep their values. A value the configuration refuses keeps the form
-open and changes nothing, and a cancelled form changes nothing at all.
+#### The screens are a hierarchy
 
-The credential is never a field of a form: only the name of the
-environment variable that holds it, so a secret never reaches the screen.
+Every screen is a step of a workflow, and every step knows the step it
+came from:
 
-No screen of the interface contacts a provider. The one exception is the
-discovery, and it happens only when the operator names the endpoint to
-ask: the catalogue of a provider is never fetched merely to draw a
-screen.
+| Step | What it is | What `Esc` does |
+|---|---|---|
+| menu | the actions of a family | returns to the conversation |
+| pick | a list of choices | returns to the step that asked for the choice |
+| form | the fields of a value | returns to the step that asked for the value, and changes nothing |
+| confirm | a question before a removal | returns to the list the model came from |
+
+The steps are kept whole: what the operator typed in a form is still there
+when they come back to it, and a form that is left is never committed.
+The keyboard hint of a screen says what its keys do, and the hint of the
+form is the only place where the current value of a field is stated.
+
+#### Adding a model
+
+The endpoint a model belongs to is **chosen from the endpoints HAL knows**,
+never typed. The list names the identifier, the protocol and the address of
+every endpoint, because those are three different things and confusing them
+is the mistake the screen exists to prevent. The last row of the list
+creates an endpoint, so an operator who needs one never has to leave the
+workflow to get it; when the endpoint is stored, the operator comes back to
+Add Model with the new endpoint chosen and the task they started is finished
+without starting over.
+
+The command that takes an endpoint identifier says what an address is:
+`/model add https://api.deepseek.com/v1 deepseek-chat` is refused with a
+message that names the address as an API URL and names the endpoints that do
+exist. A model is never attached to an endpoint that does not exist.
+
+Adding a model never changes the active model.
+
+#### Editing a model
+
+The settings of a model are a **menu of rows**, and every row shows the
+value the setting holds now: the display label, the reasoning effort, the
+output limit and the context. A setting is opened, changed and staged; the
+staged changes are written when the operator saves them (`Ctrl+S`, or the
+`Save` row), and leaving the screen without saving writes nothing.
+
+* The effort is a list of the documented levels, and the model's own
+  default is one of the choices. Restoring it is an explicit act.
+* The output limit offers the provider's own limit as one of its choices.
+  Restoring it is an explicit act.
+* An empty field is **never** a reset: an empty field keeps the current
+  value. A reset is a choice the operator makes, and it is the only thing
+  that restores a default.
+* The model identifier and the endpoint are the identity of the record, and
+  they never change. The screen says so: a model that belongs to the wrong
+  endpoint is moved by adding it to the right one.
+
+The command path says the same thing in words: `effort=default` restores
+the model's own default and `max_output_tokens=default` restores the
+provider's own. An empty value means "leave it alone".
+
+Only the settings the operator named are sent to the configuration handler,
+so the settings that were not named keep their values. A value the
+configuration refuses keeps the screen open, says why, and changes nothing.
+
+#### The credential of an endpoint
+
+The credential of an endpoint is a **reference to an environment variable**,
+never the secret itself. The endpoint screens offer the variables the other
+endpoints already use — each labelled with the endpoint that uses it — the
+variable the endpoint's own name suggests, and any other name the operator
+types. The screens say whether a variable holds a value ("is set in this
+environment", "is not set in this environment") and never what the value is.
+
+Editing an endpoint keeps its credential unless the operator names another
+one, and a new endpoint never takes the credential of another endpoint. A
+connection test is available (`T Test`), but it happens only when the
+operator asks for it, it reads the catalogue rather than running a
+conversation, and its report never carries the credential.
+
+#### What the screens never do
+
+No screen of the interface contacts a provider to draw itself. The two
+exceptions are named by the operator: the discovery of a catalogue and the
+connection test of an endpoint. A screen that shows what is already
+configured never asks the provider anything, and it never changes the
+active model.
 
 A command that is only half spelled out opens the interface and says what
 is missing, together with the exact usage. An unknown action does the

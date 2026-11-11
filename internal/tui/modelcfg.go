@@ -203,6 +203,12 @@ func (m *Model) addModel(args []string) tea.Cmd {
 		m.notice = "Model management is not wired up."
 		return nil
 	}
+	// An address is not an endpoint id. The command says so, and it
+	// names the endpoints that do exist.
+	if !m.endpointKnown(endpoint) {
+		m.notice = m.unknownEndpointNotice(endpoint)
+		return nil
+	}
 	spec := ModelSpec{ID: id, Label: strings.Join(rest, " ")}
 	if err := m.hooks.AddModel(endpoint, spec); err != nil {
 		m.notice = "Cannot add the model: " + err.Error()
@@ -632,6 +638,13 @@ func modelSpecFromPairs(args []string) (ModelSpec, error) {
 		case "label":
 			spec.Label = value
 		case "effort":
+			// "default" restores the model's own default. It is
+			// spelled out, because an empty value means "leave it
+			// alone" and the two have to be told apart.
+			if strings.EqualFold(strings.TrimSpace(value), "default") {
+				spec.ResetEffort = true
+				break
+			}
 			spec.Effort = strings.ToLower(strings.TrimSpace(value))
 		case "context_mode", "context-mode":
 			spec.ContextMode = strings.ToLower(strings.TrimSpace(value))
@@ -642,6 +655,10 @@ func modelSpecFromPairs(args []string) (ModelSpec, error) {
 			}
 			spec.ContextWindow = tokens
 		case "max_output_tokens", "max-output-tokens":
+			if strings.EqualFold(strings.TrimSpace(value), "default") {
+				spec.ResetOutputTokens = true
+				break
+			}
 			tokens, err := strconv.Atoi(strings.TrimSpace(value))
 			if err != nil || tokens < 0 {
 				return spec, fmt.Errorf("The output limit must be a number of tokens.")

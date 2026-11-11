@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -33,14 +35,15 @@ func (a *app) endpointInfos() []tui.EndpointInfo {
 	activeModel := a.stored.ActiveModelID()
 	for _, e := range a.stored.Endpoints {
 		info := tui.EndpointInfo{
-			ID:           e.ID,
-			Name:         e.Display(),
-			Protocol:     string(e.Protocol),
-			WireProtocol: string(e.WireProtocol),
-			BaseURL:      e.BaseURL,
-			Credential:   credentialLabel(e),
-			Active:       e.ID == activeEndpoint,
-			Review:       e.Review,
+			ID:            e.ID,
+			Name:          e.Display(),
+			Protocol:      string(e.Protocol),
+			WireProtocol:  string(e.WireProtocol),
+			BaseURL:       e.BaseURL,
+			Credential:    credentialLabel(e),
+			CredentialEnv: strings.TrimSpace(e.CredentialEnv),
+			Active:        e.ID == activeEndpoint,
+			Review:        e.Review,
 		}
 		if info.WireProtocol == "" {
 			if wire, err := e.EffectiveWireProtocol(); err == nil {
@@ -246,6 +249,12 @@ func (a *app) addModel(endpointID string, spec tui.ModelSpec) error {
 //
 // Only the settings the operator named are changed. The model's identity
 // and its endpoint never change.
+//
+// A setting that was restored to its default is changed like any other:
+// the configuration keeps an unnamed effort as the model's own default
+// and a zero output limit as the provider's own, so a reset has to be
+// asked for explicitly. An edit that names nothing leaves the model
+// exactly as it was.
 func (a *app) editModel(endpointID, modelID string, spec tui.ModelSpec) error {
 	next := a.stored.Clone()
 	err := next.UpdateModel(endpointID, modelID, func(m *config.ModelRecord) error {
@@ -269,6 +278,14 @@ func (a *app) editModel(endpointID, modelID string, spec tui.ModelSpec) error {
 		}
 		if spec.MaxOutputTokens > 0 {
 			m.MaxOutputTokens = spec.MaxOutputTokens
+		}
+		// The resets come last: they undo a value, so they have the
+		// last word about it.
+		if spec.ResetEffort {
+			m.Effort = ""
+		}
+		if spec.ResetOutputTokens {
+			m.MaxOutputTokens = 0
 		}
 		return nil
 	})
@@ -415,14 +432,16 @@ func (a *app) modelDetail(endpointID, modelID string) (tui.ModelDetail, error) {
 			detail.Context = append(detail.Context, "                  "+part)
 		}
 	}
-	detail.Context = append(detail.Context,
+	// The provenance of the record travels apart from the context: the
+	// window is a limit, the provenance is the story of the record.
+	detail.Provenance = append(detail.Provenance,
 		fmt.Sprintf("  source          %s", orDefault(model.Source, config.SourceManual)))
 	if model.FetchedAt != "" {
-		detail.Context = append(detail.Context,
+		detail.Provenance = append(detail.Provenance,
 			fmt.Sprintf("  confirmed at    %s", model.FetchedAt))
 	}
 	if model.Review != "" {
-		detail.Context = append(detail.Context,
+		detail.Provenance = append(detail.Provenance,
 			fmt.Sprintf("  needs review    %s", model.Review))
 	}
 	return detail, nil
@@ -540,6 +559,86 @@ func (a *app) discover(endpointID string) ([]string, error) {
 	_ = a.commitConfig(next)
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// testEndpoint probes one endpoint and reports what it found.
+//
+// The probe lists the endpoint's catalogue: it asks the provider a
+// question, but it runs no conversation and it spends nothing. The
+// credential is read from the environment the endpoint names, and it
+// never appears in the report.
+func (a *app) testEndpoint(spec tui.EndpointSpec) (string, error) {
+	protocol := config.Protocol(spec.Protocol)
+	if protocol == "" {
+		protocol = config.ProtocolOpenAI
+	}
+	wire, err := endpointWireProtocol(protocol, config.WireProtocol(spec.WireProtocol))
+	if err != nil {
+		return "", err
+	}
+	record := config.EndpointRecord{
+		ID:            spec.ID,
+		Name:          spec.Name,
+		Protocol:      protocol,
+		WireProtocol:  config.WireProtocol(spec.WireProtocol),
+		BaseURL:       spec.BaseURL,
+		CredentialEnv: spec.CredentialEnv,
+	}
+	client, err := provider.NewForProtocol(wire, record.BaseURL, record.CredentialValue(), provider.Options{
+		DefaultMaxTokens: a.cfg.MaxTokens,
+		IdleTimeout:      seconds(a.cfg.StreamIdleSeconds),
+		TurnTimeout:      seconds(a.cfg.TurnTimeoutSeconds),
+	})
+	if err != nil {
+		return "", err
+	}
+	lister, ok := client.(provider.ModelLister)
+	if !ok {
+		return "", fmt.Errorf("the %s protocol cannot list models", wire)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ids, err := lister.Models(ctx)
+	if err != nil {
+		if errors.Is(err, provider.ErrNoModelListing) {
+			return "reachable, but it does not list its models; add the model id by hand", nil
+		}
+		return "", err
+	}
+	switch len(ids) {
+	case 0:
+		return "reachable, no models listed", nil
+	case 1:
+		return "reachable, 1 model", nil
+	default:
+		return fmt.Sprintf("reachable, %d models", len(ids)), nil
+	}
+}
+
+// endpointWireProtocol is the dialect HAL speaks to an endpoint.
+//
+// The endpoint's own record decides, and the declared protocol is only
+// the fallback for an endpoint that names none.
+func endpointWireProtocol(protocol config.Protocol, wire config.WireProtocol) (string, error) {
+	record := config.EndpointRecord{ID: "endpoint", Protocol: protocol, WireProtocol: wire}
+	effective, err := record.EffectiveWireProtocol()
+	if err != nil {
+		return "", err
+	}
+	return string(effective), nil
+}
+
+// credentialEnvSet reports whether an environment variable holds a
+// value.
+//
+// It never returns the value: the screens only need to know whether the
+// variable the endpoint names is there.
+func (a *app) credentialEnvSet(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	return strings.TrimSpace(os.Getenv(name)) != ""
 }
 
 // commitConfig writes the prepared configuration and adopts it.

@@ -7,6 +7,9 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	lipgloss "charm.land/lipgloss/v2"
+
+	"github.com/flowbyte-com/HAL9001/internal/provider"
 )
 
 // The interactive management of endpoints and models.
@@ -16,16 +19,22 @@ import (
 // when a command is missing its arguments: the same action, asked for
 // step by step.
 //
-// Nothing here contacts the provider on its own. The only step that
-// reaches the network is the one the operator names: the discovery of a
-// catalogue. A screen that shows what is already configured never asks
-// the provider anything, and it never changes the active model.
+// The screens are a hierarchy. A menu offers actions, a list offers
+// choices, a form asks for values and a confirmation asks once. Every
+// step knows the step it came from, so Esc walks back one level at a
+// time and the top of the hierarchy is the conversation.
+//
+// Nothing here contacts the provider on its own. The only steps that
+// reach the network are the ones the operator names: the discovery of a
+// catalogue and the connection test of an endpoint. A screen that shows
+// what is already configured never asks the provider anything, and it
+// never changes the active model.
 
 // manageScreen is the step of a management workflow.
 type manageScreen int
 
 const (
-	// manageMenu lists the actions of the interface.
+	// manageMenu lists the actions of a step.
 	manageMenu manageScreen = iota
 	// managePick asks the operator to choose a model or an endpoint.
 	managePick
@@ -43,7 +52,18 @@ const (
 	manageEndpoints
 )
 
-// manageAction is one action of the management interface.
+// The values a row of a list can carry that are not an endpoint or a
+// model.
+const (
+	// manageCreateEndpoint is the row that opens the endpoint screens
+	// instead of choosing something that already exists.
+	manageCreateEndpoint = "\x00create-endpoint"
+	// manageOtherCredential is the row that asks for the name of
+	// another environment variable.
+	manageOtherCredential = "\x00other-credential"
+)
+
+// manageAction is one action of a menu.
 //
 // Every action is a key in the menu and a command: the operator can
 // always type the command instead of walking through the screen.
@@ -54,6 +74,22 @@ type manageAction struct {
 	name string
 	// what says what the action does.
 	what string
+	// whatFn says what the action does, in terms of the value it
+	// holds.
+	//
+	// A row whose description depends on its own value says it here,
+	// so the description is never stale: the credential of an endpoint
+	// says whether its variable holds a value, and that changes the
+	// moment the operator names another variable.
+	whatFn func(value string) string
+	// value is what the action currently holds.
+	//
+	// It is shown in a column of its own, so the operator sees the
+	// current setting next to the name of the setting.
+	value string
+	// empty is what the row shows when it holds nothing yet. It is
+	// shown in place of the value, and it is never stored.
+	empty string
 	// command is the command that does the same thing.
 	command string
 	// run starts the action.
@@ -69,8 +105,12 @@ type manageItem struct {
 	// endpoint and model name what the row stands for.
 	endpoint string
 	model    string
-	// active marks the model or endpoint that is in use.
-	active bool
+	// value is what the row carries: the identifier of a setting, the
+	// name of a variable, or one of the markers above.
+	value string
+	// mark says what the row is: "active" for the model in use,
+	// "current" for the setting that is in force.
+	mark string
 }
 
 // manageField is one editable field of a form.
@@ -83,14 +123,23 @@ type manageField struct {
 	input textinput.Model
 }
 
+// manageChange is one change the operator has chosen but not saved.
+type manageChange struct {
+	// value is the new value.
+	value string
+	// reset says the value is restored to its default.
+	reset bool
+}
+
 // manageState is the state of the management interface.
 type manageState struct {
 	// screen is the step of the workflow.
 	screen manageScreen
-	// back is the step Esc returns to.
-	back manageScreen
 	// kind is what the workflow is about.
 	kind manageKind
+	// root marks the menu of a family: the step every workflow of that
+	// family grows out of, and the step Esc returns to.
+	root bool
 	// title names the step.
 	title string
 	// actions are the actions of the menu.
@@ -117,8 +166,30 @@ type manageState struct {
 	replacement bool
 	// chosen runs the action of a selection.
 	chosen func(*Model, manageItem) tea.Cmd
-	// save commits a form.
+	// save commits a form or a menu of settings.
 	save func(*Model) tea.Cmd
+	// keys overrides the hint of the screen. It is empty when the
+	// default hint of the screen type is the right one.
+	keys string
+	// pending holds the changes the operator has chosen in a settings
+	// menu and not saved yet.
+	pending map[string]manageChange
+	// endpointBefore is the endpoint as it was before the operator
+	// touched it.
+	//
+	// An edit sends only what changed, and only the endpoint that is
+	// being edited can say what it held before.
+	endpointBefore *EndpointDetail
+	// after is called with the id of an endpoint that was just stored.
+	//
+	// It is how a workflow that opened the endpoint screens goes on
+	// where it left off.
+	after func(*Model, string) tea.Cmd
+	// draft holds what the operator typed in the form of this step.
+	//
+	// The values belong to the step, not to the form that is drawn: a
+	// form that is left and come back to still holds them.
+	draft []string
 }
 
 // modelActions are the actions of the model management interface.
@@ -129,7 +200,7 @@ func modelActions() []manageAction {
 	return []manageAction{
 		{key: "U", name: "Use", what: "use another model for the next request", command: "/model use", run: (*Model).manageUse},
 		{key: "A", name: "Add", what: "add a model to an endpoint", command: "/model add", run: (*Model).manageAddModel},
-		{key: "E", name: "Edit", what: "change a model's label, effort and output limit", command: "/model edit", run: (*Model).manageEditModel},
+		{key: "E", name: "Edit", what: "change a model's settings", command: "/model edit", run: (*Model).manageEditModel},
 		{key: "R", name: "Remove", what: "remove a model", command: "/model remove", run: (*Model).manageRemoveModel},
 		{key: "C", name: "Context", what: "the context window and where it came from", command: "/model context", run: (*Model).manageContextModel},
 		{key: "S", name: "Show", what: "everything HAL knows about a model", command: "/model show", run: (*Model).manageShowModel},
@@ -150,26 +221,43 @@ func endpointActions() []manageAction {
 
 // openModelMenu opens the model management interface.
 func (m *Model) openModelMenu() {
-	m.manage = manageState{
-		screen:  manageMenu,
-		kind:    manageModels,
-		title:   "Models",
-		actions: modelActions(),
-	}
-	m.panelOffset = 0
-	m.view = viewManage
+	m.manageRoot(manageModels)
 }
 
 // openEndpointMenu opens the endpoint management interface.
 func (m *Model) openEndpointMenu() {
-	m.manage = manageState{
-		screen:  manageMenu,
-		kind:    manageEndpoints,
-		title:   "Endpoints",
-		actions: endpointActions(),
+	m.manageRoot(manageEndpoints)
+}
+
+// manageRoot puts the management interface at its top.
+//
+// Every workflow of the interface grows out of the menu of its family:
+// a command that opens a screen of its own (/model edit) has the menu
+// below it, so Esc walks back to the menu, and Esc from the menu
+// returns to the conversation.
+//
+// A menu that is already open is left alone: the operator who walked
+// into a screen from the menu keeps the menu below them.
+func (m *Model) manageRoot(kind manageKind) {
+	if m.manage.root && m.manage.kind == kind {
+		// The menu is already the top of the hierarchy.
+		return
 	}
+	menu := manageState{
+		screen:  manageMenu,
+		kind:    kind,
+		root:    true,
+		title:   "Models",
+		actions: modelActions(),
+	}
+	if kind == manageEndpoints {
+		menu.title = "Endpoints"
+		menu.actions = endpointActions()
+	}
+	m.manage = menu
+	m.manageStack = nil
 	m.panelOffset = 0
-	m.view = viewManage
+	m.enterManage()
 }
 
 // enterManage puts the management interface on the screen.
@@ -178,6 +266,28 @@ func (m *Model) openEndpointMenu() {
 // menu or straight from a command.
 func (m *Model) enterManage() {
 	m.view = viewManage
+}
+
+// managePush saves the current step and shows a new one.
+//
+// The saved step is a copy, so what the operator typed in a form is
+// still there when they come back to it.
+func (m *Model) managePush() {
+	m.manageStack = append(m.manageStack, m.manage)
+}
+
+// managePop returns to the step that was saved.
+//
+// It reports whether there was one: the top of the hierarchy is the
+// conversation, and there is no step below it.
+func (m *Model) managePop() bool {
+	if len(m.manageStack) == 0 {
+		return false
+	}
+	last := len(m.manageStack) - 1
+	m.manage = m.manageStack[last]
+	m.manageStack = m.manageStack[:last]
+	return true
 }
 
 // updateManage handles the management interface.
@@ -217,7 +327,7 @@ func (m Model) manageKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) manageMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.closeManage("")
+		m.manageBack()
 		return m, nil
 	case "up", "shift+tab":
 		if m.manage.cursor > 0 {
@@ -231,6 +341,12 @@ func (m Model) manageMenuKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.manageScroll()
 		return m, nil
+	case "ctrl+s":
+		// A menu of settings is saved with the same key a form is.
+		if m.manage.save == nil {
+			return m, nil
+		}
+		return m, m.manage.save(&m)
 	case "enter":
 		if len(m.manage.actions) == 0 {
 			return m, nil
@@ -344,18 +460,22 @@ func (m *Model) manageConfirm() tea.Cmd {
 		m.manage.notice = "There is no other model to use instead."
 		return nil
 	}
-	target, parent := m.manage.target, m.manage.parent
+	target := m.manage.target
+	kind := m.manage.kind
+	parent := m.manage.parent
+	m.managePush()
 	m.manage.screen = managePick
-	m.manage.back = manageConfirm
-	m.manage.cursor = 0
+	m.manage.kind = kind
+	m.manage.target = target
+	m.manage.parent = parent
 	m.manage.title = "Choose the model to use instead"
 	m.manage.message = "Enter removes " + target + " and uses the chosen model."
 	m.manage.items = items
+	m.manage.cursor = 0
 	m.manage.chosen = func(m *Model, item manageItem) tea.Cmd {
 		return m.runRemoval(item.endpoint + "/" + item.model)
 	}
 	m.enterManage()
-	_ = parent
 	return nil
 }
 
@@ -389,13 +509,47 @@ func (m *Model) runRemoval(replacement string) tea.Cmd {
 	}
 }
 
-// manageUse opens the picker.
+// manageUse asks which model to use.
 //
-// The active model changes only when the operator names the model they
-// want: the picker never switches by itself.
+// The list is a step of the workflow: Esc returns to the menu the
+// operator came from. The active model changes only when the operator
+// names the model they want: the list never switches by itself.
 func (m *Model) manageUse() tea.Cmd {
+	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
-	m.enterPicker()
+	if m.hooks.SwitchModel == nil {
+		m.manage.notice = "Switching is not wired up."
+		return nil
+	}
+	items := m.modelItems()
+	if len(items) == 0 {
+		m.manage.notice = "There is no model to use. Add one with /model add."
+		return nil
+	}
+	m.managePickModel("Choose the model to use",
+		"Enter uses the chosen model for the next request.", items,
+		func(m *Model, item manageItem) tea.Cmd { return m.switchToModel(item) })
+	return nil
+}
+
+// switchToModel makes the chosen model the active one.
+//
+// The switch is the only thing that changes the active model, and it
+// happens here, where the operator named the model.
+func (m *Model) switchToModel(item manageItem) tea.Cmd {
+	eng, err := m.hooks.SwitchModel(item.endpoint, item.model)
+	if err != nil {
+		m.manage.notice = "Switch failed: " + err.Error()
+		return nil
+	}
+	if eng != nil {
+		m.engine = eng
+	}
+	m.model = item.model
+	if m.hooks.Effort != nil {
+		m.SetEffort(m.hooks.Effort())
+	}
+	m.closeManage("Model: " + item.model + " (applies to the next request)")
 	return nil
 }
 
@@ -404,26 +558,62 @@ func (m *Model) manageList() tea.Cmd {
 	return m.showEndpoints()
 }
 
-// manageAddModel asks for the fields of a new model.
+// manageAddModel asks which endpoint the new model belongs to.
+//
+// The endpoint is chosen from the endpoints HAL knows. A URL is not an
+// endpoint id, and the screen never lets the two be confused.
 func (m *Model) manageAddModel() tea.Cmd {
+	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
 	if m.hooks.AddModel == nil {
 		m.manage.notice = "Model management is not wired up."
 		return nil
 	}
-	fields := []manageField{
-		{label: "Endpoint", hint: "the endpoint the model belongs to", input: namedInput("", m.defaultEndpoint(), false)},
-		{label: "Model id", hint: "the identifier the provider uses", input: namedInput("", "", false)},
-		{label: "Label", hint: "the name HAL shows; optional", input: namedInput("", "", false)},
-	}
-	m.openForm("Add a model",
-		"The model is added to the endpoint. The active model does not change.",
-		fields, (*Model).saveNewModel)
+	m.managePush()
+	m.openEndpointPicker("Add a model",
+		"Choose the endpoint the model belongs to. Enter opens the model form.",
+		func(m *Model, item manageItem) tea.Cmd {
+			if item.value == manageCreateEndpoint {
+				return m.openNewEndpoint(func(m *Model, id string) tea.Cmd {
+					return addModelAfterEndpoint(m, id)
+				})
+			}
+			return m.openAddModelForm(item.endpoint)
+		})
 	return nil
+}
+
+// addModelAfterEndpoint continues the Add Model workflow with the
+// endpoint that was just created.
+//
+// The operator is taken back to the step they came from and the model
+// form opens with the new endpoint chosen, so the task they started is
+// finished without starting over.
+//
+// It is a function and not a method on purpose: a method value would
+// bind the model of the moment the workflow was opened, and the
+// endpoint screen runs on a later one.
+func addModelAfterEndpoint(m *Model, endpointID string) tea.Cmd {
+	// The endpoint screen is left: the operator is back in the step
+	// they came from.
+	m.manageBack()
+	// The endpoint list is rebuilt: the new endpoint belongs in it.
+	m.manage.items = m.endpointPickerItems()
+	m.manage.cursor = m.endpointRowOf(endpointID)
+	m.manage.chosen = func(m *Model, item manageItem) tea.Cmd {
+		if item.value == manageCreateEndpoint {
+			return m.openNewEndpoint(func(m *Model, id string) tea.Cmd {
+				return addModelAfterEndpoint(m, id)
+			})
+		}
+		return m.openAddModelForm(item.endpoint)
+	}
+	return m.openAddModelForm(endpointID)
 }
 
 // manageEditModel asks which model to edit, and then for its settings.
 func (m *Model) manageEditModel() tea.Cmd {
+	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
 	items := m.modelItems()
 	if len(items) == 0 {
@@ -432,12 +622,13 @@ func (m *Model) manageEditModel() tea.Cmd {
 	}
 	m.managePickModel("Choose a model to edit",
 		"Enter opens the settings of the chosen model.", items,
-		func(m *Model, item manageItem) tea.Cmd { return m.openModelEditForm(item) })
+		func(m *Model, item manageItem) tea.Cmd { return m.openModelSettings(item) })
 	return nil
 }
 
 // manageRemoveModel asks which model to remove, and then confirms.
 func (m *Model) manageRemoveModel() tea.Cmd {
+	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
 	items := m.modelItems()
 	if len(items) == 0 {
@@ -453,6 +644,7 @@ func (m *Model) manageRemoveModel() tea.Cmd {
 // manageContextModel asks which model's context to look at, and then for
 // the limit itself.
 func (m *Model) manageContextModel() tea.Cmd {
+	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
 	items := m.modelItems()
 	if len(items) == 0 {
@@ -467,6 +659,7 @@ func (m *Model) manageContextModel() tea.Cmd {
 
 // manageShowModel asks which model to show, and then shows it.
 func (m *Model) manageShowModel() tea.Cmd {
+	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
 	items := m.modelItems()
 	if len(items) == 0 {
@@ -484,6 +677,7 @@ func (m *Model) manageShowModel() tea.Cmd {
 // The provider is asked only when the operator names the endpoint: no
 // screen of this interface contacts a provider on its own.
 func (m *Model) manageDiscover() tea.Cmd {
+	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
 	if m.hooks.Discover == nil {
 		m.manage.notice = "Model discovery is not wired up."
@@ -502,27 +696,19 @@ func (m *Model) manageDiscover() tea.Cmd {
 
 // manageAddEndpoint asks for the fields of a new endpoint.
 func (m *Model) manageAddEndpoint() tea.Cmd {
+	m.manageRoot(manageEndpoints)
 	m.manage.kind = manageEndpoints
 	if m.hooks.SaveEndpoint == nil {
 		m.manage.notice = "Endpoint management is not wired up."
 		return nil
 	}
-	fields := []manageField{
-		{label: "Id", hint: "letters, digits, _ and -; it never changes", input: namedInput("", "", false)},
-		{label: "Name", hint: "the name HAL shows", input: namedInput("", "", false)},
-		{label: "Protocol", hint: "openai-compatible, anthropic-compatible, local or custom; empty means openai-compatible", input: namedInput("openai-compatible", "", false)},
-		{label: "Base url", hint: "https://…", input: namedInput("", "", false)},
-		{label: "Credential env", hint: "the variable that holds the key; the key itself never enters the file", input: namedInput("", "", false)},
-	}
-	m.openForm("Add an endpoint",
-		"The endpoint is added. The active model does not change.",
-		fields, (*Model).saveNewEndpoint)
-	return nil
+	return m.openNewEndpoint(nil)
 }
 
 // manageEditEndpoint asks which endpoint to edit, and then for its
 // settings.
 func (m *Model) manageEditEndpoint() tea.Cmd {
+	m.manageRoot(manageEndpoints)
 	m.manage.kind = manageEndpoints
 	items := m.endpointItems()
 	if len(items) == 0 {
@@ -531,12 +717,13 @@ func (m *Model) manageEditEndpoint() tea.Cmd {
 	}
 	m.managePickModel("Choose an endpoint to edit",
 		"Enter opens the settings of the chosen endpoint.", items,
-		func(m *Model, item manageItem) tea.Cmd { return m.openEndpointEditForm(item) })
+		func(m *Model, item manageItem) tea.Cmd { return m.openEndpointSettings(item) })
 	return nil
 }
 
 // manageRemoveEndpoint asks which endpoint to remove, and then confirms.
 func (m *Model) manageRemoveEndpoint() tea.Cmd {
+	m.manageRoot(manageEndpoints)
 	m.manage.kind = manageEndpoints
 	items := m.endpointItems()
 	if len(items) == 0 {
@@ -549,8 +736,34 @@ func (m *Model) manageRemoveEndpoint() tea.Cmd {
 	return nil
 }
 
-// openModelEditForm asks for the settings of one model.
-func (m *Model) openModelEditForm(item manageItem) tea.Cmd {
+// openAddModelForm asks for the model that goes under the chosen
+// endpoint.
+//
+// The endpoint is shown, not asked for: it was chosen already, and a
+// second chance to type it is a second chance to type a URL.
+func (m *Model) openAddModelForm(endpointID string) tea.Cmd {
+	draft := m.stepDraft()
+	fields := []manageField{
+		{label: "Model id", hint: "the identifier the provider uses, e.g. deepseek-chat",
+			input: namedInput("", draftValue(draft, 0), false)},
+		{label: "Label", hint: "the name HAL shows; optional",
+			input: namedInput("", draftValue(draft, 1), false)},
+	}
+	m.managePush()
+	m.manage.lines = m.endpointLines(endpointID)
+	m.openForm("Add a model to "+endpointID,
+		"The model is added to the endpoint. The active model does not change.",
+		fields, func(m *Model) tea.Cmd { return m.saveNewModel(endpointID) })
+	return nil
+}
+
+// openModelSettings opens the settings of one model.
+//
+// The screen is a menu of the settings, each with its current value
+// next to it. A setting is opened, changed and staged; the changes are
+// written when the operator saves them, and leaving the screen without
+// saving writes nothing.
+func (m *Model) openModelSettings(item manageItem) tea.Cmd {
 	if m.hooks.ModelDetail == nil {
 		m.manage.notice = "Model management is not wired up."
 		return nil
@@ -560,15 +773,374 @@ func (m *Model) openModelEditForm(item manageItem) tea.Cmd {
 		m.manage.notice = "Cannot read the model: " + err.Error()
 		return nil
 	}
-	fields := []manageField{
-		{label: "Label", hint: "the name HAL shows", input: namedInput(detail.Settings.Label, "", false)},
-		{label: "Effort", hint: "low, medium, high, xhigh or max", input: namedInput(detail.Settings.Effort, "", false)},
-		{label: "Output limit", hint: "tokens; empty keeps the provider's default", input: namedInput(limitValue(detail.Settings.MaxOutputTokens), "", false)},
+	before := detail
+	m.managePush()
+	m.manage.screen = manageMenu
+	m.manage.title = "Edit model " + item.endpoint + " · " + item.model
+	m.manage.message = "Enter opens a setting. Ctrl+S writes the changes. Esc leaves them unwritten."
+	m.manage.keys = "Up and down choose · Enter opens · Ctrl+S saves · Esc back"
+	m.manage.pending = map[string]manageChange{}
+	m.manage.lines = m.modelIdentityLines(item, detail)
+	m.manage.actions = []manageAction{
+		{key: "L", name: "Label", value: labelValue(detail.Settings.Label),
+			what: "the name HAL shows", run: func(m *Model) tea.Cmd { return m.openLabelForm(item, before) }},
+		{key: "E", name: "Effort", value: effortValue(detail.Settings.Effort),
+			what: "the reasoning level", run: func(m *Model) tea.Cmd { return m.openEffortChoice(item, before) }},
+		{key: "O", name: "Output limit", value: outputValue(detail.Settings.MaxOutputTokens),
+			what: "the room the answer may use", run: func(m *Model) tea.Cmd { return m.openOutputChoice(item, before) }},
+		{key: "C", name: "Context", value: contextValue(detail),
+			what: "the context window and where it came from", run: func(m *Model) tea.Cmd { return m.openContextMenu(item, before) }},
+		{key: "S", name: "Save", value: "",
+			what: "write the changes", run: func(m *Model) tea.Cmd { return m.saveModelSettings(item, before) }},
 	}
-	m.openForm("Edit model "+item.endpoint+" · "+item.model,
-		"An empty field keeps the current value.", fields,
-		func(m *Model) tea.Cmd { return m.saveModelEdit(item, detail) })
+	m.manage.save = func(m *Model) tea.Cmd { return m.saveModelSettings(item, before) }
+	m.manage.notice = ""
+	m.manage.cursor = 0
+	m.panelOffset = 0
+	m.enterManage()
 	return nil
+}
+
+// openLabelForm asks for the display label of a model.
+//
+// The field starts empty and the current label is stated in the hint:
+// typing a name replaces it, and an empty field keeps it.
+func (m *Model) openLabelForm(item manageItem, before ModelDetail) tea.Cmd {
+	m.managePush()
+	fields := []manageField{{
+		label: "Label",
+		hint:  currentHint("the name HAL shows", before.Settings.Label),
+		input: namedInput("", "", false),
+	}}
+	m.openForm("Label of "+item.endpoint+" · "+item.model,
+		"An empty field keeps the current value.",
+		fields, func(m *Model) tea.Cmd {
+			value := strings.TrimSpace(m.manageValues()[0])
+			if value != "" {
+				m.manageSetPending("label", manageChange{value: value})
+			}
+			m.manageBack()
+			return nil
+		})
+	return nil
+}
+
+// openEffortChoice asks which reasoning level the model should use.
+//
+// The levels are the documented ones, and the model's own default is
+// one of the choices: restoring it is an explicit act, never what an
+// empty field means.
+func (m *Model) openEffortChoice(item manageItem, before ModelDetail) tea.Cmd {
+	defaults := provider.DefaultEffortFor(item.model)
+	items := []manageItem{{
+		name:   "the model's own default",
+		detail: effortDefaultDetail(defaults),
+		value:  "",
+		mark:   markFor(before.Settings.Effort == ""),
+	}}
+	for _, level := range provider.EffortLevels {
+		items = append(items, manageItem{
+			name:  level,
+			value: level,
+			mark:  markFor(before.Settings.Effort == level),
+		})
+	}
+	m.managePush()
+	m.openChoice("Effort of "+item.endpoint+" · "+item.model,
+		"Enter chooses the level. The default restores the model's own.",
+		items, func(m *Model, choice manageItem) tea.Cmd {
+			m.manageSetPending("effort", manageChange{value: choice.value, reset: choice.value == ""})
+			m.manageBack()
+			return nil
+		})
+	return nil
+}
+
+// openOutputChoice asks what the answer may use.
+//
+// The provider's own limit is one of the choices: restoring it is an
+// explicit act, never what an empty field means.
+func (m *Model) openOutputChoice(item manageItem, before ModelDetail) tea.Cmd {
+	m.managePush()
+	m.manage.screen = manageMenu
+	m.manage.title = "Output limit of " + item.endpoint + " · " + item.model
+	m.manage.message = "Enter chooses how much room the answer may use."
+	m.manage.keys = "Up and down choose · Enter runs · Esc back"
+	m.manage.lines = nil
+	m.manage.actions = []manageAction{
+		{key: "P", name: "Provider default", value: "",
+			what: "restore the provider's own limit", run: func(m *Model) tea.Cmd {
+				m.manageSetPending("output", manageChange{reset: true})
+				m.manageBack()
+				return nil
+			}},
+		{key: "T", name: "Type a number", value: limitValue(before.Settings.MaxOutputTokens),
+			what: "set an explicit limit in tokens", run: func(m *Model) tea.Cmd {
+				return m.openOutputForm(item, before)
+			}},
+	}
+	m.manage.notice = ""
+	m.manage.cursor = 0
+	m.panelOffset = 0
+	m.enterManage()
+	return nil
+}
+
+// openOutputForm asks for the number of tokens the answer may use.
+//
+// The field starts empty and the current limit is stated in the hint:
+// typing a number replaces it, and an empty field keeps it.
+func (m *Model) openOutputForm(item manageItem, before ModelDetail) tea.Cmd {
+	m.managePush()
+	fields := []manageField{{
+		label: "Output limit",
+		hint:  currentHint("tokens", limitValue(before.Settings.MaxOutputTokens)),
+		input: namedInput("", "", false),
+	}}
+	m.openForm("Output limit of "+item.endpoint+" · "+item.model,
+		"An empty field keeps the current value.",
+		fields, func(m *Model) tea.Cmd {
+			value := strings.TrimSpace(m.manageValues()[0])
+			if value != "" {
+				tokens, err := strconv.Atoi(value)
+				if err != nil || tokens <= 0 {
+					m.manage.notice = "The output limit must be a number of tokens. " +
+						"To restore the provider's own default, choose it above."
+					return nil
+				}
+				m.manageSetPending("output", manageChange{value: strconv.Itoa(tokens)})
+			}
+			m.manageBack()
+			return nil
+		})
+	return nil
+}
+
+// openContextMenu opens the context settings of one model.
+//
+// The window and where it came from are shown above the settings: the
+// operator sees the limit before changing it.
+func (m *Model) openContextMenu(item manageItem, before ModelDetail) tea.Cmd {
+	m.managePush()
+	m.manage.screen = manageMenu
+	m.manage.title = "Context of " + item.endpoint + " · " + item.model
+	m.manage.message = "Enter opens a setting. Esc leaves it as it is."
+	m.manage.keys = "Up and down choose · Enter opens · Esc back"
+	m.manage.lines = append(append([]string{}, before.Context...), before.Provenance...)
+	m.manage.actions = []manageAction{
+		{key: "M", name: "Mode", value: before.Settings.ContextMode,
+			what: "auto uses the provider's own window, manual uses yours",
+			run:  func(m *Model) tea.Cmd { return m.openContextModeChoice(item, before) }},
+		{key: "W", name: "Window", value: limitValue(before.Settings.ContextWindow),
+			what: "tokens; a window belongs to the manual mode",
+			run:  func(m *Model) tea.Cmd { return m.openContextWindowForm(item, before) }},
+	}
+	m.manage.notice = ""
+	m.manage.cursor = 0
+	m.panelOffset = 0
+	m.enterManage()
+	return nil
+}
+
+// openContextModeChoice asks whether the window is the provider's or
+// the operator's.
+func (m *Model) openContextModeChoice(item manageItem, before ModelDetail) tea.Cmd {
+	items := []manageItem{
+		{name: "auto", detail: "the window the provider reported for this model",
+			value: "auto", mark: markFor(before.Settings.ContextMode == "auto")},
+		{name: "manual", detail: "the operator's own limit",
+			value: "manual", mark: markFor(before.Settings.ContextMode == "manual")},
+	}
+	m.managePush()
+	m.openChoice("Context mode of "+item.endpoint+" · "+item.model,
+		"Enter chooses the mode.",
+		items, func(m *Model, choice manageItem) tea.Cmd {
+			m.manageSetPending("context_mode", manageChange{value: choice.value})
+			m.manageBack()
+			return nil
+		})
+	return nil
+}
+
+// openContextWindowForm asks for the context window of one model.
+//
+// The field starts empty and the current window is stated in the hint:
+// typing a number replaces it, and an empty field keeps it.
+func (m *Model) openContextWindowForm(item manageItem, before ModelDetail) tea.Cmd {
+	m.managePush()
+	fields := []manageField{{
+		label: "Context window",
+		hint:  currentHint("tokens", limitValue(before.Settings.ContextWindow)),
+		input: namedInput("", "", false),
+	}}
+	m.openForm("Context window of "+item.endpoint+" · "+item.model,
+		"An empty field keeps the current value.",
+		fields, func(m *Model) tea.Cmd {
+			value := strings.TrimSpace(m.manageValues()[0])
+			if value != "" {
+				tokens, err := strconv.Atoi(value)
+				if err != nil || tokens <= 0 {
+					m.manage.notice = "The context window must be a positive number of tokens."
+					return nil
+				}
+				m.manageSetPending("context_window", manageChange{value: strconv.Itoa(tokens)})
+			}
+			m.manageBack()
+			return nil
+		})
+	return nil
+}
+
+// saveModelSettings writes the changes the operator chose.
+//
+// Only the settings that were changed are sent: the configuration
+// handlers change what they are given and keep the rest.
+func (m *Model) saveModelSettings(item manageItem, before ModelDetail) tea.Cmd {
+	if m.hooks.EditModel == nil {
+		m.manage.notice = "Model management is not wired up."
+		return nil
+	}
+	spec, changed := m.stagedModelSpec()
+	if !changed {
+		m.closeManage("Nothing changed.")
+		return nil
+	}
+	if err := m.hooks.EditModel(item.endpoint, item.model, spec); err != nil {
+		m.manage.notice = "Cannot change the model: " + err.Error()
+		return nil
+	}
+	m.refreshEngine()
+	m.closeManage("Model " + item.model + " of endpoint " + item.endpoint + " updated.")
+	return nil
+}
+
+// stagedModelSpec is the change the operator chose, as the configuration
+// handlers take it.
+//
+// A setting that was not touched is not in it, and a setting that was
+// restored to its default says so with its own flag: an empty value
+// would be read as "unchanged", and the reset would be lost.
+func (m *Model) stagedModelSpec() (ModelSpec, bool) {
+	var spec ModelSpec
+	changed := false
+	if c, ok := m.manage.pending["label"]; ok {
+		spec.Label = c.value
+		changed = true
+	}
+	if c, ok := m.manage.pending["effort"]; ok {
+		if c.reset {
+			spec.ResetEffort = true
+		} else {
+			spec.Effort = c.value
+		}
+		changed = true
+	}
+	if c, ok := m.manage.pending["output"]; ok {
+		if c.reset {
+			spec.ResetOutputTokens = true
+		} else {
+			tokens, err := strconv.Atoi(c.value)
+			if err == nil && tokens > 0 {
+				spec.MaxOutputTokens = tokens
+			}
+		}
+		changed = true
+	}
+	if c, ok := m.manage.pending["context_mode"]; ok {
+		spec.ContextMode = c.value
+		changed = true
+	}
+	if c, ok := m.manage.pending["context_window"]; ok {
+		tokens, err := strconv.Atoi(c.value)
+		if err == nil && tokens > 0 {
+			spec.ContextWindow = tokens
+			// A window belongs to the manual mode: the two are set
+			// together, so the record never says "the provider's own
+			// window" and names one at the same time.
+			if _, ok := m.manage.pending["context_mode"]; !ok && spec.ContextMode == "" {
+				spec.ContextMode = "manual"
+			}
+		}
+		changed = true
+	}
+	return spec, changed
+}
+
+// manageSetPending records a change the operator chose.
+//
+// The changes belong to the step that asked for them, so a change made
+// in a child screen is still there when the operator comes back to the
+// step that collects them.
+func (m *Model) manageSetPending(key string, change manageChange) {
+	if m.manage.pending == nil {
+		m.manage.pending = map[string]manageChange{}
+	}
+	m.manage.pending[key] = change
+}
+
+// manageSetValue changes the value a row of the step below shows.
+//
+// The rows of a step are shared by the frame that was saved and the one
+// that is on screen, so a child screen can change what the step below
+// shows without knowing anything about it.
+func (m *Model) manageSetValue(key, value string) {
+	if len(m.manageStack) == 0 {
+		return
+	}
+	frame := &m.manageStack[len(m.manageStack)-1]
+	for i := range frame.actions {
+		if frame.actions[i].key == key {
+			frame.actions[i].value = value
+			return
+		}
+	}
+}
+
+// manageValue reads the value a row of the current step shows.
+func (m *Model) manageValue(key string) string {
+	for _, action := range m.manage.actions {
+		if action.key == key {
+			return action.value
+		}
+	}
+	return ""
+}
+
+// manageSetValueBelow changes the value a row of the step below the one
+// on screen shows.
+//
+// Some workflows go through a screen that is only a way to reach a
+// value: the list of the variables an endpoint may point at, for
+// instance. The value belongs to the screen above that one, and this
+// is how the child screen reaches it.
+func (m *Model) manageSetValueBelow(key, value string) {
+	if len(m.manageStack) < 2 {
+		m.manageSetValue(key, value)
+		return
+	}
+	frame := &m.manageStack[len(m.manageStack)-2]
+	for i := range frame.actions {
+		if frame.actions[i].key == key {
+			frame.actions[i].value = value
+			return
+		}
+	}
+}
+
+// stepDraft is what the operator typed in the form of this step.
+//
+// The values belong to the step, not to the form that is drawn: a form
+// that is left and come back to still holds them.
+func (m *Model) stepDraft() []string {
+	return m.manage.draft
+}
+
+// draftValue is one value of a draft.
+func draftValue(draft []string, index int) string {
+	if index < 0 || index >= len(draft) {
+		return ""
+	}
+	return draft[index]
 }
 
 // openModelContextForm asks for the context window of one model.
@@ -586,109 +1158,42 @@ func (m *Model) openModelContextForm(item manageItem) tea.Cmd {
 		return nil
 	}
 	fields := []manageField{
-		{label: "Mode", hint: "auto uses the provider's own window, manual uses yours", input: namedInput(detail.Settings.ContextMode, "", false)},
-		{label: "Window", hint: "tokens; used in manual mode", input: namedInput(limitValue(detail.Settings.ContextWindow), "", false)},
+		{label: "Mode", hint: currentHint("auto uses the provider's own window, manual uses yours", detail.Settings.ContextMode),
+			input: namedInput("", "", false)},
+		{label: "Window", hint: currentHint("tokens; used in manual mode", limitValue(detail.Settings.ContextWindow)),
+			input: namedInput("", "", false)},
 	}
-	m.manage.lines = detail.Context
+	m.manage.lines = append(append([]string{}, detail.Context...), detail.Provenance...)
 	m.openForm("Context of "+item.endpoint+" · "+item.model,
 		"An empty field keeps the current value.", fields,
 		func(m *Model) tea.Cmd { return m.saveModelContext(item, detail) })
 	return nil
 }
 
-// openEndpointEditForm asks for the settings of one endpoint.
-//
-// The credential is never a field: only the name of the environment
-// variable that holds it, so a secret never reaches the screen.
-func (m *Model) openEndpointEditForm(item manageItem) tea.Cmd {
-	if m.hooks.EndpointDetail == nil {
-		m.manage.notice = "Endpoint management is not wired up."
-		return nil
-	}
-	detail, err := m.hooks.EndpointDetail(item.endpoint)
-	if err != nil {
-		m.manage.notice = "Cannot read the endpoint: " + err.Error()
-		return nil
-	}
-	fields := []manageField{
-		{label: "Name", hint: "the name HAL shows", input: namedInput(detail.Settings.Name, "", false)},
-		{label: "Protocol", hint: "openai-compatible, anthropic-compatible, local or custom", input: namedInput(detail.Settings.Protocol, "", false)},
-		{label: "Wire protocol", hint: "openai-compatible or anthropic-compatible; a custom endpoint needs one", input: namedInput(detail.Settings.WireProtocol, "", false)},
-		{label: "Base url", hint: "https://…", input: namedInput(detail.Settings.BaseURL, "", false)},
-		{label: "Credential env", hint: "the variable that holds the key; the key itself never enters the file", input: namedInput(detail.Settings.CredentialEnv, "", false)},
-		{label: "Discovery", hint: "on or off", input: namedInput(onOffValue(detail.Settings.Discovery), "", false)},
-	}
-	m.openForm("Edit endpoint "+item.endpoint,
-		"An empty field keeps the current value.", fields,
-		func(m *Model) tea.Cmd { return m.saveEndpointEdit(item, detail) })
-	return nil
-}
-
 // saveNewModel stores the model the operator described.
-func (m *Model) saveNewModel() tea.Cmd {
+func (m *Model) saveNewModel(endpointID string) tea.Cmd {
 	values := m.manageValues()
-	endpoint, id, label := values[0], values[1], values[2]
-	if endpoint == "" || id == "" {
-		m.manage.notice = "The endpoint and the model id are required."
+	id, label := values[0], values[1]
+	if strings.TrimSpace(id) == "" {
+		m.manage.notice = "The model id is required."
+		return nil
+	}
+	// The endpoint is checked before anything is written: a model is
+	// never attached to an endpoint that does not exist.
+	if !m.endpointKnown(endpointID) {
+		m.manage.notice = m.unknownEndpointNotice(endpointID)
 		return nil
 	}
 	if m.hooks.AddModel == nil {
 		m.manage.notice = "Model management is not wired up."
 		return nil
 	}
-	if err := m.hooks.AddModel(endpoint, ModelSpec{ID: id, Label: label}); err != nil {
+	if err := m.hooks.AddModel(endpointID, ModelSpec{ID: id, Label: label}); err != nil {
 		m.manage.notice = "Cannot add the model: " + err.Error()
 		return nil
 	}
 	m.refreshEngine()
-	m.closeManage("Added model " + id + " to endpoint " + endpoint + ". The active model is unchanged.")
-	return nil
-}
-
-// saveModelEdit stores the settings the operator changed.
-//
-// Only the settings that changed are sent: the configuration handlers
-// change what they are given and keep the rest.
-func (m *Model) saveModelEdit(item manageItem, before ModelDetail) tea.Cmd {
-	if m.hooks.EditModel == nil {
-		m.manage.notice = "Model management is not wired up."
-		return nil
-	}
-	values := m.manageValues()
-	var spec ModelSpec
-	changed := false
-	if manageChanged(values[0], before.Settings.Label) {
-		spec.Label = values[0]
-		changed = true
-	}
-	if manageChanged(values[1], before.Settings.Effort) {
-		spec.Effort = values[1]
-		changed = true
-	}
-	if values[2] != "" && values[2] != limitValue(before.Settings.MaxOutputTokens) {
-		tokens, err := strconv.Atoi(values[2])
-		if err != nil || tokens <= 0 {
-			// Zero is the provider's own default, and the
-			// configuration keeps a zero unnamed: it cannot be
-			// written. Saying so is better than reporting a change
-			// that did not happen.
-			m.manage.notice = "The output limit must be a number of tokens. " +
-				"The provider's own default cannot be restored here."
-			return nil
-		}
-		spec.MaxOutputTokens = tokens
-		changed = true
-	}
-	if !changed {
-		m.closeManage("Nothing changed.")
-		return nil
-	}
-	if err := m.hooks.EditModel(item.endpoint, item.model, spec); err != nil {
-		m.manage.notice = "Cannot change the model: " + err.Error()
-		return nil
-	}
-	m.refreshEngine()
-	m.closeManage("Model " + item.model + " of endpoint " + item.endpoint + " updated.")
+	m.closeManage("Added model " + id + " to endpoint " + endpointID + ". The active model is unchanged.")
 	return nil
 }
 
@@ -741,102 +1246,19 @@ func (m *Model) saveModelContext(item manageItem, before ModelDetail) tea.Cmd {
 	return nil
 }
 
-// saveNewEndpoint stores the endpoint the operator described.
-func (m *Model) saveNewEndpoint() tea.Cmd {
-	if m.hooks.SaveEndpoint == nil {
-		m.manage.notice = "Endpoint management is not wired up."
-		return nil
-	}
-	values := m.manageValues()
-	id, name, protocol, baseURL, credentialEnv := values[0], values[1], values[2], values[3], values[4]
-	if id == "" {
-		m.manage.notice = "The endpoint needs an id."
-		return nil
-	}
-	discovery := true
-	spec := EndpointSpec{
-		ID:            id,
-		Name:          name,
-		Protocol:      protocol,
-		BaseURL:       baseURL,
-		CredentialEnv: credentialEnv,
-		Discovery:     &discovery,
-	}
-	if err := m.hooks.SaveEndpoint(spec); err != nil {
-		m.manage.notice = "Cannot add the endpoint: " + err.Error()
-		return nil
-	}
-	m.refreshEngine()
-	m.closeManage("Added endpoint " + id + ".")
-	return nil
-}
-
-// saveEndpointEdit stores the settings the operator changed.
-func (m *Model) saveEndpointEdit(item manageItem, before EndpointDetail) tea.Cmd {
-	if m.hooks.SaveEndpoint == nil {
-		m.manage.notice = "Endpoint management is not wired up."
-		return nil
-	}
-	values := m.manageValues()
-	var spec EndpointSpec
-	changed := false
-	if manageChanged(values[0], before.Settings.Name) {
-		spec.Name = values[0]
-		changed = true
-	}
-	if manageChanged(values[1], before.Settings.Protocol) {
-		spec.Protocol = values[1]
-		changed = true
-	}
-	if manageChanged(values[2], before.Settings.WireProtocol) {
-		spec.WireProtocol = values[2]
-		changed = true
-	}
-	if manageChanged(values[3], before.Settings.BaseURL) {
-		spec.BaseURL = values[3]
-		changed = true
-	}
-	if manageChanged(values[4], before.Settings.CredentialEnv) {
-		spec.CredentialEnv = values[4]
-		changed = true
-	}
-	discovery := discoveryEnabled(before.Settings.Discovery)
-	if values[5] != "" {
-		parsed, err := parseOnOff(values[5])
-		if err != nil {
-			m.manage.notice = "Discovery is on or off."
-			return nil
-		}
-		discovery = parsed
-	}
-	if discovery != discoveryEnabled(before.Settings.Discovery) {
-		spec.Discovery = &discovery
-		changed = true
-	}
-	if !changed {
-		m.closeManage("Nothing changed.")
-		return nil
-	}
-	spec.ID = item.endpoint
-	if err := m.hooks.SaveEndpoint(spec); err != nil {
-		m.manage.notice = "Cannot change the endpoint: " + err.Error()
-		return nil
-	}
-	m.refreshEngine()
-	m.closeManage("Endpoint " + item.endpoint + " updated.")
-	return nil
-}
-
 // confirmModelRemoval asks before a model is removed.
+//
+// The confirmation is a step of its own: Esc keeps the model and
+// returns to the list it came from.
 func (m *Model) confirmModelRemoval(item manageItem) tea.Cmd {
+	m.managePush()
 	m.enterManage()
 	m.manage.screen = manageConfirm
-	m.manage.back = manageMenu
 	m.manage.title = "Remove model " + item.endpoint + " · " + item.model + "?"
 	m.manage.target = item.model
 	m.manage.parent = item.endpoint
-	m.manage.replacement = item.active
-	if item.active {
+	m.manage.replacement = item.mark == "active"
+	if item.mark == "active" {
 		m.manage.message = "This is the active model. Choose the model to use instead: the removal and the switch happen together."
 		return nil
 	}
@@ -845,15 +1267,18 @@ func (m *Model) confirmModelRemoval(item manageItem) tea.Cmd {
 }
 
 // confirmEndpointRemoval asks before an endpoint is removed.
+//
+// The confirmation is a step of its own: Esc keeps the endpoint and
+// returns to the list it came from.
 func (m *Model) confirmEndpointRemoval(item manageItem) tea.Cmd {
+	m.managePush()
 	m.enterManage()
 	m.manage.screen = manageConfirm
-	m.manage.back = manageMenu
 	m.manage.title = "Remove endpoint " + item.endpoint + "?"
 	m.manage.target = item.endpoint
 	m.manage.parent = ""
-	m.manage.replacement = item.active
-	if item.active {
+	m.manage.replacement = item.mark == "active"
+	if item.mark == "active" {
 		m.manage.message = "This endpoint holds the active model. Choose the model to use instead: the removal and the switch happen together."
 		return nil
 	}
@@ -896,28 +1321,101 @@ func (m *Model) discoverEndpoint(endpoint string) tea.Cmd {
 // The chosen row is handed to the action that asked for it.
 func (m *Model) managePickModel(title, message string, items []manageItem,
 	then func(*Model, manageItem) tea.Cmd) {
+	m.managePush()
 	m.manage.screen = managePick
-	m.manage.back = manageMenu
 	m.manage.title = title
 	m.manage.message = message
 	m.manage.items = items
 	m.manage.cursor = 0
 	m.manage.chosen = then
 	m.manage.notice = ""
+	m.manage.actions = nil
+	m.panelOffset = 0
+	m.enterManage()
+}
+
+// openEndpointPicker asks which endpoint to use.
+//
+// The rows carry the endpoint's id, its protocol and its address: the
+// three things that are easy to confuse. The last row creates a new
+// endpoint, so the operator never has to leave the workflow to get one.
+func (m *Model) openEndpointPicker(title, message string,
+	then func(*Model, manageItem) tea.Cmd) {
+	m.manage.screen = managePick
+	m.manage.title = title
+	m.manage.message = message
+	m.manage.items = m.endpointPickerItems()
+	m.manage.cursor = 0
+	m.manage.chosen = then
+	m.manage.notice = ""
+	m.manage.actions = nil
+	m.panelOffset = 0
+	m.enterManage()
+}
+
+// endpointPickerItems are the endpoints HAL knows, and the row that
+// creates one.
+//
+// The last row is always there: an operator who needs a new endpoint
+// should not have to remember the command for it and come back.
+func (m *Model) endpointPickerItems() []manageItem {
+	items := m.endpointItems()
+	detail := "add an endpoint and come back here"
+	if len(items) == 0 {
+		detail = "there is no endpoint yet — HAL needs one before a model can be added"
+	}
+	return append(items, manageItem{
+		name:   "Create an endpoint",
+		detail: detail,
+		value:  manageCreateEndpoint,
+	})
+}
+
+// endpointRowOf is the row of an endpoint in the picker.
+func (m *Model) endpointRowOf(endpointID string) int {
+	for i, item := range m.manage.items {
+		if item.endpoint == endpointID {
+			return i
+		}
+	}
+	return 0
+}
+
+// openChoice opens a list of choices.
+//
+// The list is a step of its own: Esc leaves it and returns to the step
+// that asked for the choice.
+func (m *Model) openChoice(title, message string, items []manageItem,
+	then func(*Model, manageItem) tea.Cmd) {
+	m.manage.screen = managePick
+	m.manage.title = title
+	m.manage.message = message
+	m.manage.items = items
+	m.manage.cursor = 0
+	m.manage.chosen = then
+	m.manage.notice = ""
+	m.manage.actions = nil
+	m.manage.keys = ""
+	m.manage.lines = nil
 	m.panelOffset = 0
 	m.enterManage()
 }
 
 // openForm opens a form with the given fields.
+//
+// The form is a step of its own: Esc leaves it and returns to the step
+// that asked for the values.
 func (m *Model) openForm(title, message string, fields []manageField, save func(*Model) tea.Cmd) {
 	m.manage.screen = manageForm
-	m.manage.back = manageMenu
 	m.manage.title = title
 	m.manage.message = message
 	m.manage.fields = fields
 	m.manage.focus = 0
 	m.manage.save = save
 	m.manage.notice = ""
+	m.manage.chosen = nil
+	m.manage.actions = nil
+	m.manage.keys = ""
 	m.manage.cursor = 0
 	m.panelOffset = 0
 	m.enterManage()
@@ -940,26 +1438,76 @@ func (m *Model) manageFocus(delta int) {
 	m.manage.fields[m.manage.focus].input.Focus()
 }
 
-// manageBack returns to the step the operator came from.
+// manageBack returns to the previous logical screen.
 //
 // Nothing is changed on the way back: a cancelled form keeps the
-// configuration exactly as it was.
+// configuration exactly as it was. What the operator typed is kept in
+// the step they came from, so a form that is left and come back to
+// still holds it.
+//
+// At the top of the hierarchy there is no step below: Esc leaves the
+// management interface and returns to the conversation.
 func (m *Model) manageBack() {
-	switch m.manage.back {
-	case managePick, manageForm, manageConfirm:
-		m.manage.screen = m.manage.back
-		m.manage.back = manageMenu
-		m.manage.cursor = 0
-		m.manage.notice = ""
-		m.panelOffset = 0
-	default:
+	// The values of a form belong to the step below it.
+	if m.manage.screen == manageForm && len(m.manageStack) > 0 {
+		m.manageStack[len(m.manageStack)-1].draft = m.manageValues()
+	}
+	if !m.managePop() {
 		m.closeManage("")
+		return
+	}
+	m.manage.notice = ""
+	m.panelOffset = 0
+	m.refreshPendingRows()
+	m.sizeManageFields()
+}
+
+// refreshPendingRows shows the changes the operator has staged.
+//
+// The row of a setting shows what the setting will be once the changes
+// are written, so the operator sees the result of their work before
+// they save it.
+func (m *Model) refreshPendingRows() {
+	if len(m.manage.pending) == 0 {
+		return
+	}
+	for i := range m.manage.actions {
+		action := &m.manage.actions[i]
+		switch action.key {
+		case "L":
+			if change, ok := m.manage.pending["label"]; ok {
+				action.value = labelValue(change.value)
+			}
+		case "E":
+			if change, ok := m.manage.pending["effort"]; ok {
+				if change.reset {
+					action.value = "the model's default"
+				} else {
+					action.value = change.value
+				}
+			}
+		case "O":
+			if change, ok := m.manage.pending["output"]; ok {
+				if change.reset {
+					action.value = "the provider's default"
+				} else {
+					action.value = change.value + " tokens"
+				}
+			}
+		case "C":
+			if change, ok := m.manage.pending["context_mode"]; ok {
+				action.value = change.value
+			} else if change, ok := m.manage.pending["context_window"]; ok {
+				action.value = "manual, " + change.value + " tokens"
+			}
+		}
 	}
 }
 
 // closeManage leaves the management interface.
 func (m *Model) closeManage(notice string) {
 	m.manage = manageState{}
+	m.manageStack = nil
 	m.view = viewChat
 	if notice != "" {
 		m.notice = notice
@@ -971,13 +1519,16 @@ func (m *Model) closeManage(notice string) {
 // The rows of a screen start below its title, so the chosen row is not
 // at the index of the list it belongs to.
 func (m *Model) manageScroll() {
-	row := 2 + m.manage.cursor
-	total := 2 + len(m.manage.items)
-	if m.manage.screen == manageMenu {
-		total = 2 + len(m.manage.actions) + 3
+	row := 2 + len(m.manage.lines) + m.manage.cursor
+	total := 2 + len(m.manage.lines)
+	switch m.manage.screen {
+	case manageMenu:
+		total += len(m.manage.actions) + 3
 		if m.manage.kind == manageModels {
 			total++
 		}
+	case managePick:
+		total += len(m.manage.items)
 	}
 	m.ensureVisible(row, total, contentHeight(m.height))
 }
@@ -1022,27 +1573,137 @@ func (m *Model) modelItems() []manageItem {
 			detail:   detail,
 			endpoint: info.Endpoint,
 			model:    info.ID,
-			active:   info.Active,
+			mark:     markActive(info.Active),
 		})
 	}
 	return out
 }
 
 // endpointItems lists the configured endpoints.
+//
+// Every row names the endpoint's id and its address: they are different
+// things, and the operator has to be able to tell them apart.
 func (m *Model) endpointItems() []manageItem {
 	var out []manageItem
 	if m.hooks.Endpoints == nil {
 		return nil
 	}
 	for _, endpoint := range m.hooks.Endpoints() {
+		detail := "id " + endpoint.ID
+		if endpoint.Protocol != "" {
+			detail += " · " + endpoint.Protocol
+		}
+		if endpoint.BaseURL != "" {
+			detail += " · " + endpoint.BaseURL
+		}
 		out = append(out, manageItem{
 			name:     endpoint.Name,
-			detail:   endpoint.ID + " · " + endpoint.Protocol,
+			detail:   detail,
 			endpoint: endpoint.ID,
-			active:   endpoint.Active,
+			mark:     markActive(endpoint.Active),
 		})
 	}
 	return out
+}
+
+// endpointLines describe one endpoint for a form.
+//
+// The id, the address and the protocol are three different things, and
+// the form shows all three: a URL typed where an id belongs is the
+// mistake this screen exists to prevent.
+func (m *Model) endpointLines(endpointID string) []string {
+	lines := []string{}
+	if m.hooks.Endpoints != nil {
+		for _, endpoint := range m.hooks.Endpoints() {
+			if endpoint.ID != endpointID {
+				continue
+			}
+			lines = append(lines, "  endpoint      "+endpoint.ID+"  ("+endpoint.Name+")")
+			if endpoint.Protocol != "" {
+				lines = append(lines, "  protocol      "+endpoint.Protocol)
+			}
+			if endpoint.BaseURL != "" {
+				lines = append(lines, "  base url      "+endpoint.BaseURL)
+			}
+			return lines
+		}
+	}
+	return append(lines, "  endpoint      "+endpointID)
+}
+
+// modelIdentityLines say what a model is and what may not be changed.
+//
+// The model id and the endpoint are the model's identity, and they never
+// change. A model that belongs to the wrong endpoint is moved by adding
+// it to the right one, and the screen says so instead of pretending an
+// ordinary edit can do it.
+func (m *Model) modelIdentityLines(item manageItem, detail ModelDetail) []string {
+	lines := []string{
+		"  " + padTo("id", 16) + item.model,
+		"  " + padTo("endpoint", 16) + item.endpoint,
+		"  " + padTo("identity", 16) + "the model id and its endpoint never change — to move a model, add it to the other endpoint",
+	}
+	return append(lines, detail.Provenance...)
+}
+
+// endpointKnown reports whether HAL knows an endpoint with this id.
+//
+// A configuration that cannot be listed is not refused here: the
+// handler that stores the change is the one that decides whether the
+// endpoint exists.
+func (m *Model) endpointKnown(id string) bool {
+	if m.hooks.Endpoints == nil {
+		return true
+	}
+	for _, endpoint := range m.hooks.Endpoints() {
+		if endpoint.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointIDs are the ids of the endpoints HAL knows.
+func (m *Model) endpointIDs() []string {
+	var out []string
+	if m.hooks.Endpoints == nil {
+		return out
+	}
+	for _, endpoint := range m.hooks.Endpoints() {
+		out = append(out, endpoint.ID)
+	}
+	return out
+}
+
+// unknownEndpointNotice explains that HAL does not know this endpoint.
+//
+// A URL typed where an endpoint id belongs is the common mistake, and
+// the message says so and names the endpoints that do exist.
+func (m *Model) unknownEndpointNotice(value string) string {
+	known := m.endpointIDs()
+	if looksLikeURL(value) {
+		if len(known) == 0 {
+			return fmt.Sprintf("%q is an API URL, not an endpoint id, and no endpoint is configured yet. Add one with /endpoint add.", value)
+		}
+		return fmt.Sprintf("%q is an API URL, not an endpoint id. The endpoints HAL knows are: %s.",
+			value, strings.Join(known, ", "))
+	}
+	if len(known) == 0 {
+		return fmt.Sprintf("There is no endpoint with the id %q, and none is configured yet. Add one with /endpoint add.", value)
+	}
+	return fmt.Sprintf("There is no endpoint with the id %q. The endpoints HAL knows are: %s.",
+		value, strings.Join(known, ", "))
+}
+
+// looksLikeURL reports whether a value is an address rather than a name.
+func looksLikeURL(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	return strings.Contains(value, "://") ||
+		strings.HasPrefix(strings.ToLower(value), "http:") ||
+		strings.HasPrefix(strings.ToLower(value), "https:")
 }
 
 // replacementItems lists the models that can take the place of the one
@@ -1074,33 +1735,6 @@ func (m *Model) replacementItems() []manageItem {
 	return out
 }
 
-// defaultEndpoint is the endpoint a new model goes under.
-func (m *Model) defaultEndpoint() string {
-	if m.hooks.Endpoints == nil {
-		return ""
-	}
-	endpoints := m.hooks.Endpoints()
-	for _, endpoint := range endpoints {
-		if endpoint.Active {
-			return endpoint.ID
-		}
-	}
-	if len(endpoints) == 1 {
-		return endpoints[0].ID
-	}
-	return ""
-}
-
-// manageChanged reports whether the operator changed a field.
-//
-// An empty field keeps the current value: the configuration handlers
-// change the settings they are given, and an empty value is not one of
-// them.
-func manageChanged(now, before string) bool {
-	now = strings.TrimSpace(now)
-	return now != "" && now != strings.TrimSpace(before)
-}
-
 // limitValue is a token limit as the operator sees it.
 //
 // Zero is the provider's own default, so it is shown as nothing to
@@ -1112,6 +1746,85 @@ func limitValue(tokens int) string {
 	return strconv.Itoa(tokens)
 }
 
+// labelValue is a display label as the operator sees it.
+func labelValue(label string) string {
+	if strings.TrimSpace(label) == "" {
+		return "(none)"
+	}
+	return label
+}
+
+// effortValue is the reasoning level as the operator sees it.
+//
+// An unnamed effort is the model's own default, and the screen says so
+// instead of showing nothing.
+func effortValue(effort string) string {
+	if strings.TrimSpace(effort) == "" {
+		return "the model's default"
+	}
+	return effort
+}
+
+// effortDefaultDetail says what the model's own default is.
+func effortDefaultDetail(defaults string) string {
+	if defaults == "" {
+		return "this model has no effort control of its own"
+	}
+	return "HAL sends " + defaults + " for this model"
+}
+
+// outputValue is the output limit as the operator sees it.
+//
+// A zero limit is the provider's own default, and the screen says so
+// instead of showing nothing.
+func outputValue(tokens int) string {
+	if tokens <= 0 {
+		return "the provider's default"
+	}
+	return strconv.Itoa(tokens) + " tokens"
+}
+
+// contextValue is the context limit as the operator sees it.
+func contextValue(detail ModelDetail) string {
+	mode := detail.Settings.ContextMode
+	if mode == "" {
+		mode = "auto"
+	}
+	if mode == "manual" && detail.Settings.ContextWindow > 0 {
+		return "manual, " + strconv.Itoa(detail.Settings.ContextWindow) + " tokens"
+	}
+	return mode
+}
+
+// manageHasCommands reports whether a menu's actions are also commands.
+//
+// The top-level menus are; the menus inside a workflow are not, and
+// saying otherwise would name a command that does not exist.
+func manageHasCommands(actions []manageAction) bool {
+	for _, action := range actions {
+		if action.command != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// markFor says whether a row is the setting that is in force.
+func markFor(current bool) string {
+	if current {
+		return "current"
+	}
+	return ""
+}
+
+// markActive says whether a row is the model or endpoint in use.
+func markActive(active bool) string {
+	if active {
+		return "active"
+	}
+	return ""
+}
+
 // onOffValue is a flag as the operator sees it.
 //
 // A flag that was never named is shown as "on": it is the endpoint's own
@@ -1121,14 +1834,6 @@ func onOffValue(on *bool) string {
 		return "on"
 	}
 	return "off"
-}
-
-// discoveryEnabled is the value of a flag that may never have been named.
-func discoveryEnabled(on *bool) bool {
-	if on == nil {
-		return true
-	}
-	return *on
 }
 
 // parseOnOff reads a flag the operator typed.
@@ -1168,6 +1873,48 @@ func contextSummary(spec ModelSpec, before ModelDetail) string {
 	return "manual."
 }
 
+// manageValueWidth is the width of the column the values are shown in.
+//
+// The column is as wide as the longest value it holds, so a value never
+// runs into the description that follows it. The description keeps a
+// share of the line of its own, and a terminal too narrow for both
+// gives the room to the value.
+func (m Model) manageValueWidth() int {
+	width := 0
+	for _, action := range m.manage.actions {
+		if w := lipgloss.Width(oneLine(action.value)); w > width {
+			width = w
+		}
+	}
+	width += 2
+	room := m.width - 24 - 30
+	if room < 12 {
+		room = 12
+	}
+	if width > room {
+		width = room
+	}
+	return width
+}
+
+// clipTo shortens a text to a width.
+//
+// A value that does not fit is cut with an ellipsis: the operator sees
+// that there is more of it, and the row keeps its shape.
+func clipTo(text string, width int) string {
+	if width < 2 {
+		return ""
+	}
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	runes := []rune(text)
+	for len(runes) > 0 && lipgloss.Width(string(runes))+1 > width {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes) + "…"
+}
+
 // manageRows renders the management interface.
 //
 // Every name that can come from the provider is flattened before it is
@@ -1184,29 +1931,44 @@ func (m Model) manageRows() []string {
 	}
 	switch m.manage.screen {
 	case manageMenu:
+		width := m.manageValueWidth()
 		for i, action := range m.manage.actions {
 			marker := "  "
 			if i == m.manage.cursor {
 				marker = "▸ "
 			}
-			line := marker + action.key + "  " + padTo(action.name, 9) + action.what
+			line := marker + action.key + "  " + padTo(oneLine(action.name), 19)
+			value := oneLine(action.value)
+			if value == "" {
+				value = oneLine(action.empty)
+			}
+			if value != "" {
+				line += padTo(clipTo(value, width), width)
+			}
+			what := action.what
+			if action.whatFn != nil {
+				what = action.whatFn(action.value)
+			}
+			line += oneLine(what)
 			if i == m.manage.cursor {
 				line = st.active.Render(line)
 			}
 			rows = append(rows, line)
 		}
-		rows = append(rows, "")
-		rows = append(rows, "  "+st.footer.Render("Every action is also a command:"))
-		commands := ""
-		for _, action := range m.manage.actions {
-			if commands != "" {
-				commands += " · "
+		if manageHasCommands(m.manage.actions) {
+			rows = append(rows, "")
+			rows = append(rows, "  "+st.footer.Render("Every action is also a command:"))
+			commands := ""
+			for _, action := range m.manage.actions {
+				if commands != "" {
+					commands += " · "
+				}
+				commands += action.command
 			}
-			commands += action.command
-		}
-		rows = append(rows, "  "+st.footer.Render(commands))
-		if m.manage.kind == manageModels {
-			rows = append(rows, "  "+st.footer.Render("Settings: label, effort, context_mode, context_window, max_output_tokens"))
+			rows = append(rows, "  "+st.footer.Render(commands))
+			if m.manage.kind == manageModels {
+				rows = append(rows, "  "+st.footer.Render("Settings: label, effort, context_mode, context_window, max_output_tokens"))
+			}
 		}
 	case managePick:
 		if len(m.manage.items) == 0 {
@@ -1221,8 +1983,8 @@ func (m Model) manageRows() []string {
 			if item.detail != "" {
 				line += " · " + oneLine(item.detail)
 			}
-			if item.active {
-				line += " (active)"
+			if item.mark != "" {
+				line += " (" + item.mark + ")"
 			}
 			if i == m.manage.cursor {
 				line = st.active.Render(line)
@@ -1254,6 +2016,9 @@ func (m Model) manageRows() []string {
 
 // manageKeys says what the keys of the current screen do.
 func (m Model) manageKeys() string {
+	if m.manage.keys != "" {
+		return m.manage.keys
+	}
 	switch m.manage.screen {
 	case managePick:
 		return "Up and down choose · Enter picks · Esc back"

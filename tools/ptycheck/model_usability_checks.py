@@ -270,13 +270,21 @@ def scenario_edit(harness):
         screen = session.screen()
         check("the form names the model", "Edit model primary · deepseek" in screen, screen)
         check("the form shows the current output limit", "4096" in screen, screen)
-        check("the form says that an empty field keeps the value",
-              "empty field keeps the current value" in screen, screen)
+        check("the form shows the current effort", "the model's default" in screen, screen)
+        check("the form shows the current context", "manual" in screen, screen)
+        check("the form says that Esc leaves the changes unwritten",
+              "Esc leaves them unwritten" in screen, screen)
 
-        # A label is typed and the form is saved.
+        # A label is typed and the changes are saved.
+        session.send(b"l")
+        session.wait(0.8)
+        screen = session.screen()
+        check("the label screen asks for the label", "Label of primary" in screen, screen)
         session.send(b"DeepSeek EU")
         session.wait(0.6)
         session.send(b"\x13")
+        session.wait(0.8)
+        session.send(b"s")
         session.wait(1.5)
         screen = session.screen()
         check("the edit is reported", "updated" in screen, screen)
@@ -306,21 +314,25 @@ def scenario_refused_and_cancelled(harness):
         session.wait(0.4)
         session.send(b"\r")
         session.wait(1.2)
-        session.send(b"\t")          # the effort field
-        session.wait(0.4)
-        session.send(b"turbo")
+        session.send(b"c")           # the context
+        session.wait(0.8)
+        session.send(b"w")           # the window
+        session.wait(0.8)
+        session.send(b"not a number")
         session.wait(0.6)
         session.send(b"\x13")
-        session.wait(1.5)
+        session.wait(1.2)
         screen = session.screen()
-        check("a refused value is reported", "effort level" in screen, screen)
+        check("a refused value is reported", "number of tokens" in screen, screen)
         check("the form stays open after a refusal",
               "Ctrl+S saves" in screen, screen)
         check("the refused change was not stored",
-              model_of(config, "deepseek").get("effort") == before.get("effort"),
+              model_of(config, "deepseek").get("context_window") == before.get("context_window"),
               json.dumps(model_of(config, "deepseek")))
 
         # A cancelled form.
+        session.send(b"\x1b")
+        session.wait(1.0)
         session.send(b"\x1b")
         session.wait(1.0)
         session.send(b"\x1b")
@@ -331,6 +343,8 @@ def scenario_refused_and_cancelled(harness):
         session.wait(0.4)
         session.send(b"\r")
         session.wait(1.2)
+        session.send(b"l")
+        session.wait(0.8)
         session.send(b"never saved")
         session.wait(0.6)
         session.send(b"\x1b")
@@ -351,12 +365,14 @@ def scenario_refused_and_cancelled(harness):
         session.wait(0.4)
         session.send(b"\r")
         session.wait(1.2)
-        session.send(b"\t\t")
-        session.wait(0.4)
+        session.send(b"o")
+        session.wait(0.8)
+        session.send(b"t")
+        session.wait(0.8)
         session.send(b"0")
         session.wait(0.6)
         session.send(b"\x13")
-        session.wait(1.5)
+        session.wait(1.2)
         screen = session.screen()
         check("a limit of zero is refused", "provider's own default" in screen, screen)
         check("the refused limit kept the form open",
@@ -378,9 +394,13 @@ def scenario_reopen_and_restart(harness, root):
         session.wait(0.4)
         session.send(b"\r")
         session.wait(1.2)
+        session.send(b"l")
+        session.wait(0.8)
         session.send(b"Kept")
         session.wait(0.6)
         session.send(b"\x13")
+        session.wait(0.8)
+        session.send(b"s")
         session.wait(1.5)
 
         # The screen of the model shows the new label.
@@ -429,14 +449,22 @@ def scenario_remove(harness):
         check("the confirmation says what happens",
               "active model" in screen, screen)
 
-        # Esc keeps the model.
+        # Esc keeps the model and returns to the list it came from.
         session.send(b"\x1b")
         session.wait(1.2)
+        screen = session.screen()
         check("a cancelled removal keeps the model",
               any(m.get("id") == "deepseek" for m in models_of(config)),
               json.dumps(models_of(config)))
+        check("a cancelled removal returns to the list",
+              "Choose a model" in screen, screen)
 
         # The active model is never removed without a replacement.
+        # Esc walks back one level at a time: the list, then the menu.
+        session.send(b"\x1b")
+        session.wait(0.8)
+        session.send(b"\x1b")
+        session.wait(1.0)
         session.send(b"/model remove\r")
         session.wait(1.2)
         session.send(b"\r")
@@ -460,18 +488,26 @@ def scenario_remove(harness):
 
 
 def scenario_add(harness):
-    """The add screen asks for the fields of the model."""
+    """The add screen asks for the endpoint and then for the model."""
     session, config = harness
     try:
         session.send(b"/model add\r")
         session.wait(1.2)
         screen = session.screen()
-        check("the add screen asks for the endpoint", "Endpoint" in screen, screen)
-        check("the add screen asks for the model id", "Model id" in screen, screen)
-        check("the add screen asks for the label", "Label" in screen, screen)
+        check("the add screen asks which endpoint", "Choose the endpoint" in screen, screen)
+        check("the add screen names the endpoints", "primary" in screen, screen)
+        check("the add screen offers to create an endpoint",
+              "Create an endpoint" in screen, screen)
 
-        session.send(b"\t")
-        session.wait(0.4)
+        # The endpoint is chosen and the model form opens.
+        session.send(b"\r")
+        session.wait(1.2)
+        screen = session.screen()
+        check("the form asks for the model id", "Model id" in screen, screen)
+        check("the form asks for the label", "Label" in screen, screen)
+        check("the form names the endpoint it belongs to",
+              "endpoint      primary" in screen, screen)
+
         session.send(b"new-model")
         session.wait(0.6)
         session.send(b"\x13")
@@ -546,28 +582,36 @@ def scenario_endpoints(harness):
         session.send(b"/endpoint add\r")
         session.wait(1.2)
         screen = session.screen()
-        check("the endpoint form asks for an id", "Id" in screen, screen)
-        check("the endpoint form asks for a url", "Base url" in screen, screen)
-        check("the endpoint form never asks for the key itself",
-              "API key" not in screen and "credential" not in screen.lower().replace(
-                  "credential env", ""), screen)
+        check("the endpoint screen asks for an id", "Id" in screen, screen)
+        check("the endpoint screen asks for a url", "Base url" in screen, screen)
+        check("the endpoint screen asks where the credential comes from",
+              "Credential source" in screen, screen)
+        check("the endpoint screen never asks for the key itself",
+              "API key" not in screen and "the key" not in screen.lower(), screen)
 
+        # The endpoint is described.
+        session.send(b"i")
+        session.wait(0.8)
         session.send(b"third")
         session.wait(0.4)
-        session.send(b"\t")
-        session.wait(0.4)
+        session.send(b"\x13")
+        session.wait(0.8)
+        session.send(b"n")
+        session.wait(0.8)
         session.send(b"Third")
         session.wait(0.4)
-        session.send(b"\t")
-        session.wait(0.4)
-        session.send(b"\t")
-        session.wait(0.4)
+        session.send(b"\x13")
+        session.wait(0.8)
+        session.send(b"u")
+        session.wait(0.8)
         session.send(b"https://api.third.example.com/v1")
         session.wait(0.6)
         session.send(b"\x13")
+        session.wait(0.8)
+        session.send(b"s")
         session.wait(1.5)
         screen = session.screen()
-        check("the endpoint was added", "Added endpoint" in screen, screen)
+        check("the endpoint was added", "Endpoint third saved" in screen, screen)
         endpoints = {e.get("id"): e for e in stored(config).get("endpoints") or []}
         check("the endpoint is on disk", "third" in endpoints, json.dumps(list(endpoints)))
         if "third" in endpoints:
@@ -583,10 +627,14 @@ def scenario_endpoints(harness):
         session.send(b"\r")
         session.wait(1.2)
         screen = session.screen()
-        check("the endpoint form names the endpoint", "Edit endpoint primary" in screen, screen)
+        check("the endpoint screen names the endpoint", "Edit endpoint primary" in screen, screen)
+        session.send(b"n")
+        session.wait(0.8)
         session.send(b"Renamed")
         session.wait(0.6)
         session.send(b"\x13")
+        session.wait(0.8)
+        session.send(b"s")
         session.wait(1.5)
         endpoints = {e.get("id"): e for e in stored(config).get("endpoints") or []}
         check("the endpoint was renamed", endpoints["primary"].get("name") == "Renamed",
