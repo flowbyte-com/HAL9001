@@ -173,6 +173,13 @@ type EndpointInfo struct {
 	// "env:NAME" when it comes from an environment variable, "set" when
 	// a literal secret is stored, "unset" when there is none.
 	Credential string
+	// CredentialEnv is the name of the environment variable that holds
+	// the credential, when the endpoint names one.
+	//
+	// It is the reference, never the secret: the operator may point
+	// another endpoint at the same variable, and the screens offer that
+	// choice.
+	CredentialEnv string
 	// Active marks the endpoint that holds the active model.
 	Active bool
 	// Review is a note for the operator, when the endpoint needs
@@ -217,6 +224,13 @@ type ModelDetail struct {
 	Settings ModelSpec
 	// Context describes the context window and where it came from.
 	Context []string
+	// Provenance says where the record itself came from: who confirmed
+	// the identifier and when.
+	//
+	// It is kept apart from the context, because the two answer
+	// different questions: the window is a limit, the provenance is the
+	// story of the record.
+	Provenance []string
 }
 
 // EndpointDetail describes one endpoint: its settings and its models.
@@ -233,12 +247,25 @@ type ModelSpec struct {
 	Label string
 	// Effort is the reasoning level.
 	Effort string
+	// ResetEffort restores the model's built-in default reasoning level.
+	//
+	// It is a flag of its own because the configuration keeps an unnamed
+	// effort as the default: "the operator did not name one" and "the
+	// operator asked for the default again" have to be told apart, or a
+	// reset would be impossible to express.
+	ResetEffort bool
 	// ContextMode is "auto" or "manual".
 	ContextMode string
 	// ContextWindow is an explicit context limit in tokens.
 	ContextWindow int
 	// MaxOutputTokens is an explicit output limit.
 	MaxOutputTokens int
+	// ResetOutputTokens restores the provider's own default output limit.
+	//
+	// It is a flag of its own for the same reason as ResetEffort: a zero
+	// output limit is the provider's default, so a reset cannot be
+	// expressed by a value.
+	ResetOutputTokens bool
 }
 
 // Hooks connect the interface to the application. Every hook is optional
@@ -290,6 +317,18 @@ type Hooks struct {
 	ModelDetail func(endpointID, modelID string) (ModelDetail, error)
 	// EndpointDetail describes one endpoint: its settings and its models.
 	EndpointDetail func(endpointID string) (EndpointDetail, error)
+	// TestEndpoint probes one endpoint and reports what it found.
+	//
+	// It is never called on its own: the operator asks for the test, and
+	// only then does anything reach the network. The report never
+	// carries a credential.
+	TestEndpoint func(spec EndpointSpec) (string, error)
+	// CredentialEnvSet reports whether an environment variable holds a
+	// value.
+	//
+	// It never returns the value: the screens only need to know whether
+	// the variable the endpoint names is there.
+	CredentialEnvSet func(name string) bool
 	// Discover probes the provider's catalogue and returns its model
 	// identifiers.
 	Discover func(endpointID string) ([]string, error)
@@ -688,6 +727,12 @@ type Model struct {
 	pickerNotice string
 	// manage is the state of the endpoint and model management interface.
 	manage manageState
+	// manageStack holds the steps the management interface came from.
+	//
+	// Esc returns to the step below the one on screen, and the step is
+	// kept whole: what the operator typed in a form is still there when
+	// they come back to it.
+	manageStack []manageState
 	// panelOffset is the first visible row of the active overlay. It
 	// keeps long panels usable in short windows.
 	panelOffset int

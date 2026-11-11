@@ -915,7 +915,10 @@ func TestModelCommandOpensTheManagementInterface(t *testing.T) {
 }
 
 func TestTheManagementInterfaceOpensThePicker(t *testing.T) {
-	hooks := Hooks{ListModels: func() []ModelInfo { return []ModelInfo{{ID: "a", Active: true}} }}
+	hooks := Hooks{
+		ListModels:  func() []ModelInfo { return []ModelInfo{{ID: "a", Active: true}} },
+		SwitchModel: func(string, string) (Engine, error) { return nil, nil },
+	}
 	m := NewWithHooks(&scriptEngine{}, hooks)
 	m.SetColor(false)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -924,8 +927,13 @@ func TestTheManagementInterfaceOpensThePicker(t *testing.T) {
 	m = sendCurrent(m)
 	// The letter of an action runs it.
 	m = pressKey(m, 'u', 0, "u")
-	if view := string(m.View().Content); !strings.Contains(view, "Models (Enter switches") {
+	if view := string(m.View().Content); !strings.Contains(view, "Choose the model to use") {
 		t.Errorf("the picker must open:\n%s", view)
+	}
+	// Esc walks back to the menu the picker came from.
+	m = pressKey(m, tea.KeyEscape, 0, "")
+	if view := string(m.View().Content); !strings.Contains(view, "Every action is also a command") {
+		t.Errorf("Esc must return to the menu:\n%s", view)
 	}
 }
 

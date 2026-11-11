@@ -138,15 +138,30 @@ func TestTheEditScreenAsksForTheModelAndThenForItsSettings(t *testing.T) {
 	// The second model is chosen.
 	m = pressKey(m, tea.KeyDown, 0, "")
 	m = pressKey(m, tea.KeyEnter, 0, "")
+	if m.manage.screen != manageMenu {
+		t.Fatalf("the screen = %v, want the settings menu", m.manage.screen)
+	}
+	view := manageView(m)
+	if !strings.Contains(view, "Edit model primary · deepseek") {
+		t.Errorf("the screen must name the model:\n%s", view)
+	}
+	// The current values are shown next to the settings they belong to.
+	for _, want := range []string{"Label", "Effort", "Output limit", "Context", "Flash", "medium"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the screen must show %q:\n%s", want, view)
+		}
+	}
+	// The label is changed and the changes are saved.
+	m = pressKey(m, 'l', 0, "l")
 	if m.manage.screen != manageForm {
-		t.Fatalf("the screen = %v, want the form", m.manage.screen)
+		t.Fatalf("the screen = %v, want the label form", m.manage.screen)
 	}
-	if !strings.Contains(manageView(m), "Edit model primary · deepseek") {
-		t.Errorf("the form must name the model:\n%s", manageView(m))
-	}
-	// The label is changed and the form is saved.
 	m = typeText(m, "DeepSeek EU")
 	m = pressKey(m, 's', tea.ModCtrl, "")
+	if edited != "" {
+		t.Fatal("the label was written before the operator saved the changes")
+	}
+	m = pressKey(m, 's', 0, "s")
 	if edited != "primary/deepseek" {
 		t.Fatalf("the hook was called with %q", edited)
 	}
@@ -166,6 +181,7 @@ func TestTheEditScreenAsksForTheModelAndThenForItsSettings(t *testing.T) {
 	}
 }
 
+// A settings screen that is left without saving writes nothing.
 func TestACancelledEditChangesNothing(t *testing.T) {
 	called := false
 	hooks := manageHooks()
@@ -176,17 +192,19 @@ func TestACancelledEditChangesNothing(t *testing.T) {
 	m := manageModel(t, hooks)
 	m = runCommand(m, "/model edit")
 	m = pressKey(m, tea.KeyEnter, 0, "")
+	m = pressKey(m, 'l', 0, "l")
 	m = typeText(m, "never saved")
 	m = pressKey(m, tea.KeyEscape, 0, "")
 	if called {
 		t.Error("a cancelled edit changed the configuration")
 	}
-	if m.view == viewManage && m.manage.screen == manageForm {
+	if m.manage.screen == manageForm {
 		t.Error("the cancelled form stayed open")
 	}
 }
 
-func TestARefusedEditKeepsTheFormOpenAndTheSettings(t *testing.T) {
+// A change the configuration refuses keeps the screen open and says why.
+func TestARefusedEditKeepsTheSettingsOpen(t *testing.T) {
 	hooks := manageHooks()
 	hooks.EditModel = func(string, string, ModelSpec) error {
 		return errOnboard("model \"deepseek\" has an unknown effort level \"turbo\"")
@@ -195,11 +213,12 @@ func TestARefusedEditKeepsTheFormOpenAndTheSettings(t *testing.T) {
 	m = runCommand(m, "/model edit")
 	m = pressKey(m, tea.KeyDown, 0, "")
 	m = pressKey(m, tea.KeyEnter, 0, "")
-	m = pressKey(m, tea.KeyTab, 0, "")
-	m = typeText(m, "turbo")
+	m = pressKey(m, 'l', 0, "l")
+	m = typeText(m, "kept")
 	m = pressKey(m, 's', tea.ModCtrl, "")
-	if m.manage.screen != manageForm {
-		t.Fatalf("the screen = %v, want the form to stay open", m.manage.screen)
+	m = pressKey(m, 's', 0, "s")
+	if m.view != viewManage {
+		t.Fatalf("the view = %v, want the management interface", m.view)
 	}
 	if !strings.Contains(m.manage.notice, "unknown effort level") {
 		t.Errorf("the notice = %q", m.manage.notice)
@@ -252,9 +271,9 @@ func TestATypedWindowMakesTheModeManual(t *testing.T) {
 	}
 }
 
-// Zero is the provider's own default, and the configuration keeps a zero
-// unnamed: the screen says so instead of reporting a change that did not
-// happen.
+// A limit of zero is the provider's own default, and the configuration
+// keeps a zero unnamed: the screen says so instead of reporting a
+// change that did not happen.
 func TestTheOutputLimitRefusesZero(t *testing.T) {
 	called := false
 	hooks := manageHooks()
@@ -266,8 +285,14 @@ func TestTheOutputLimitRefusesZero(t *testing.T) {
 	m = runCommand(m, "/model edit")
 	m = pressKey(m, tea.KeyDown, 0, "")
 	m = pressKey(m, tea.KeyEnter, 0, "")
-	m = pressKey(m, tea.KeyTab, 0, "")
-	m = pressKey(m, tea.KeyTab, 0, "")
+	m = pressKey(m, 'o', 0, "o")
+	if m.manage.screen != manageMenu {
+		t.Fatalf("the screen = %v, want the output menu", m.manage.screen)
+	}
+	m = pressKey(m, 't', 0, "t")
+	if m.manage.screen != manageForm {
+		t.Fatalf("the screen = %v, want the number form", m.manage.screen)
+	}
 	m = typeText(m, "0")
 	m = pressKey(m, 's', tea.ModCtrl, "")
 	if called {
@@ -365,7 +390,9 @@ func TestRemovingTheActiveModelAsksForTheReplacement(t *testing.T) {
 	}
 }
 
-func TestTheAddScreenAsksForTheFieldsOfTheModel(t *testing.T) {
+// The endpoint is chosen from the endpoints HAL knows: a URL is never
+// typed where an endpoint id belongs.
+func TestTheAddScreenChoosesTheEndpointBeforeTheModel(t *testing.T) {
 	var endpoint, id string
 	hooks := manageHooks()
 	hooks.AddModel = func(e string, spec ModelSpec) error {
@@ -374,17 +401,27 @@ func TestTheAddScreenAsksForTheFieldsOfTheModel(t *testing.T) {
 	}
 	m := manageModel(t, hooks)
 	m = runCommand(m, "/model add")
-	if m.manage.screen != manageForm {
-		t.Fatalf("the screen = %v, want the form", m.manage.screen)
+	if m.manage.screen != managePick {
+		t.Fatalf("the screen = %v, want the endpoint list", m.manage.screen)
 	}
 	view := manageView(m)
-	for _, want := range []string{"Endpoint", "Model id", "Label"} {
+	for _, want := range []string{"primary", "secondary", "Create an endpoint"} {
 		if !strings.Contains(view, want) {
-			t.Errorf("the form must ask for %q:\n%s", want, view)
+			t.Errorf("the screen must offer %q:\n%s", want, view)
 		}
 	}
-	// The endpoint is the active one, the model id is typed.
-	m = pressKey(m, tea.KeyTab, 0, "")
+	// The endpoint is chosen and the model form opens.
+	m = pressKey(m, tea.KeyEnter, 0, "")
+	if m.manage.screen != manageForm {
+		t.Fatalf("the screen = %v, want the model form", m.manage.screen)
+	}
+	view = manageView(m)
+	for _, want := range []string{"Model id", "Label", "endpoint      primary"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the form must show %q:\n%s", want, view)
+		}
+	}
+	// The model id is typed and the form is saved.
 	m = typeText(m, "new-model")
 	m = pressKey(m, 's', tea.ModCtrl, "")
 	if endpoint != "primary" || id != "new-model" {
@@ -392,6 +429,8 @@ func TestTheAddScreenAsksForTheFieldsOfTheModel(t *testing.T) {
 	}
 }
 
+// The endpoint screens ask for what they need, and keep the credential
+// a reference and never the key itself.
 func TestTheEndpointScreensAskForWhatTheyNeed(t *testing.T) {
 	var spec EndpointSpec
 	called := false
@@ -403,22 +442,32 @@ func TestTheEndpointScreensAskForWhatTheyNeed(t *testing.T) {
 	}
 	m := manageModel(t, hooks)
 	m = runCommand(m, "/endpoint add")
-	if m.manage.screen != manageForm {
-		t.Fatalf("the screen = %v, want the form", m.manage.screen)
+	if m.manage.screen != manageMenu {
+		t.Fatalf("the screen = %v, want the endpoint menu", m.manage.screen)
 	}
 	view := manageView(m)
-	for _, want := range []string{"Id", "Name", "Protocol", "Base url", "Credential env"} {
+	for _, want := range []string{"Id", "Name", "Protocol", "Base url", "Credential source"} {
 		if !strings.Contains(view, want) {
-			t.Errorf("the form must ask for %q:\n%s", want, view)
+			t.Errorf("the screen must ask for %q:\n%s", want, view)
 		}
 	}
+	// The id is typed.
+	m = pressKey(m, 'i', 0, "i")
+	if m.manage.screen != manageForm {
+		t.Fatalf("the screen = %v, want the id form", m.manage.screen)
+	}
 	m = typeText(m, "second")
-	m = pressKey(m, tea.KeyTab, 0, "")
+	m = pressKey(m, 's', tea.ModCtrl, "")
+	// The name is typed.
+	m = pressKey(m, 'n', 0, "n")
 	m = typeText(m, "Second")
-	m = pressKey(m, tea.KeyTab, 0, "")
-	m = pressKey(m, tea.KeyTab, 0, "")
+	m = pressKey(m, 's', tea.ModCtrl, "")
+	// The address is typed.
+	m = pressKey(m, 'u', 0, "u")
 	m = typeText(m, "https://api.example.com/v1")
 	m = pressKey(m, 's', tea.ModCtrl, "")
+	// The endpoint is saved.
+	m = pressKey(m, 's', 0, "s")
 	if !called {
 		t.Fatal("the endpoint was not stored")
 	}
@@ -445,11 +494,14 @@ func TestTheEndpointEditScreenKeepsTheSettingsItWasNotAskedToChange(t *testing.T
 	m := manageModel(t, hooks)
 	m = runCommand(m, "/endpoint edit")
 	m = pressKey(m, tea.KeyEnter, 0, "")
-	if m.manage.screen != manageForm {
-		t.Fatalf("the screen = %v, want the form", m.manage.screen)
+	if m.manage.screen != manageMenu {
+		t.Fatalf("the screen = %v, want the endpoint menu", m.manage.screen)
 	}
+	// The name is changed.
+	m = pressKey(m, 'n', 0, "n")
 	m = typeText(m, "Renamed")
 	m = pressKey(m, 's', tea.ModCtrl, "")
+	m = pressKey(m, 's', 0, "s")
 	if spec.Name != "Renamed" {
 		t.Errorf("the name = %q", spec.Name)
 	}

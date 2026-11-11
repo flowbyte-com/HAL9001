@@ -227,6 +227,35 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/model_usability_checks.py
 ```
 
+The model repair checks start their own local provider on port 8290 (the
+port is `HAL9001_REPAIR_PORT`) and own their config, home, workspace and
+session store. They drive the operator's own journey through one
+pseudo-terminal, because the three defects they cover are defects of the
+interaction and not of the data. They prove that the endpoint a model
+belongs to is chosen from the endpoints HAL knows — an address is refused
+as an endpoint id and the refusal names the endpoints that exist — that an
+endpoint can be created from inside Add Model and that the operator comes
+back to the model they were adding, that the model is found under the
+right endpoint in List and Show, that the active model never changes, that
+every setting of a model can be changed and saved while the settings that
+were not touched keep their values, that the reasoning effort and the
+output limit can be restored to their defaults and that an empty field is
+never read as a reset, that a refused value and a cancelled screen change
+nothing, that Esc walks back one level at a time and that the top of the
+interface is the conversation, that the interface stays usable in a small
+terminal, that a change survives a restart, that Discover, Show, Remove
+and the quick switch still work, that an answer that arrives while the
+interface is open still reaches the conversation, that the screens keep
+the 444 read-only mode and never show a credential, and that a first-time
+journey ends with an endpoint whose credential is a reference to an
+environment variable and a file that holds no secret:
+
+```sh
+go build -o /tmp/opencode/hal9001 ./cmd/hal9001
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/model_repair_checks.py
+```
+
 The discovery checks start their own hostile provider on port 8263 and own
 their config, home, workspace and session store. The provider answers with
 a model catalogue that carries every trick a broken or hostile endpoint can
@@ -351,6 +380,24 @@ python3 tools/ptycheck/steering_checks.py
   the context window and where it came from, `/model discover` asks the
   provider only when the operator names the endpoint, and none of the
   screens changes the active model.
+- The model-repair suite drives the operator's journey through the
+  management interface: the endpoint a model belongs to is chosen from the
+  endpoints HAL knows, an address typed where an endpoint id belongs is
+  refused and the refusal names the endpoints that exist, an endpoint can
+  be created from inside Add Model and the operator comes back to the
+  model they were adding, the model is found under the right endpoint in
+  List and Show, the active model never changes, every setting of a model
+  can be changed and saved while the settings that were not touched keep
+  their values, the effort and the output limit can be restored to their
+  defaults and an empty field is never a reset, a refused value and a
+  cancelled screen change nothing, Esc walks back one level at a time and
+  the top of the interface is the conversation, the interface stays usable
+  in a small terminal, a change survives a restart, Discover, Show, Remove
+  and the quick switch still work, an answer that arrives while the
+  interface is open still reaches the conversation, the screens keep the
+  444 read-only mode and never show a credential, and a first-time journey
+  ends with an endpoint whose credential is a reference to an environment
+  variable and a file that holds no secret.
 - The web-research suite runs the unified `web_search` path and the
   Firecrawl scrape path. It checks Firecrawl success, empty results,
   Firecrawl -> Exa fallback, Exa -> DuckDuckGo fallback, malformed-primary
@@ -509,6 +556,7 @@ by hand in a real terminal.
 | `holding_provider.py` | a local provider that holds a request and records every request it receives |
 | `stop_resume_checks.py` | isolated lifecycle checks: `/stop` abandons the turn, `/resume` continues it, and a side effect is never repeated |
 | `model_usability_checks.py` | isolated model-management checks: the interactive screens ask for what a change needs, and a cancelled or refused change stores nothing |
+| `model_repair_checks.py` | isolated model-management checks for the repaired workflow: the endpoint is chosen from the endpoints HAL knows, the settings show their values and can be restored, and Esc walks back one level at a time |
 | `pty_session.py` | the shared pseudo-terminal driver: one HAL process, driven step by step |
 | `panel_completion_checks.py` | isolated panel checks: a turn that completes behind a panel keeps its answer |
 | `budget_checks.py` | isolated context-budget checks: the transmitted request honours the operator's limit, or nothing is sent |
