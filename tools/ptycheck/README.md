@@ -241,7 +241,12 @@ smaller, that every request the compaction itself made fits the window, that
 the compaction happens only when the operator asks for it, that a
 conversation with nothing to compact says so, that `/stop` cancels a running
 compaction and stores nothing, that the compaction is there after a restart,
-and that the active model did not change:
+and that the active model did not change. One scenario seeds a conversation
+with an injected instruction and proves that the summary that quotes it
+travels as labelled reference data in a lower-trust role, that it is absent
+from every system-role message, that the permission instruction is unchanged,
+that the operator's current request is the last message and is untouched, that
+no tool result was replayed, and that the request is inside the window:
 
 The model repair checks start their own local provider on port 8290 (the
 port is `HAL9001_REPAIR_PORT`) and own their config, home, workspace and
@@ -405,7 +410,12 @@ python3 tools/ptycheck/steering_checks.py
   only when the operator asks for it, a conversation with nothing to
   compact says so, `/stop` cancels a running compaction and stores
   nothing, the compaction is there after a restart, and the active model
-  did not change.
+  did not change. The trust-boundary scenario seeds a conversation with an
+  injected instruction: the summary that quotes it stays out of the system
+  instruction, travels as labelled reference data in a lower-trust role,
+  leaves the permission instruction unchanged, keeps the operator's
+  current request last and untouched, replays no tool result, and stays
+  inside the window.
 
 - The model-repair suite drives the operator's journey through the
   management interface: the endpoint a model belongs to is chosen from the

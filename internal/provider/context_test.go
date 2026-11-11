@@ -175,6 +175,45 @@ func TestTrimToBudgetRefusesWhenTheInstructionsAloneDoNotFit(t *testing.T) {
 	}
 }
 
+func TestTrimToBudgetKeepsTheReferenceData(t *testing.T) {
+	// The reference data stands in for the exchanges a compaction
+	// covered: dropping it would leave the model with less of the
+	// conversation than it had before the compaction.
+	messages := []Message{
+		{Role: "system", Content: "system instructions that must never be dropped"},
+		{Role: "user", Content: "the summary of the compacted conversation", Reference: true},
+		{Role: "user", Content: strings.Repeat("an older exchange ", 40)},
+		{Role: "assistant", Content: strings.Repeat("an older answer ", 40)},
+		{Role: "user", Content: "the current request"},
+	}
+	budget := ContextBudget{Limit: 100, ReservedOutput: 20, Source: ContextSourceOperator}
+	trimmed, report, err := TrimToBudget(messages, nil, budget)
+	if err != nil {
+		t.Fatalf("TrimToBudget: %v", err)
+	}
+	if report.DroppedExchanges == 0 {
+		t.Fatalf("nothing was dropped: %#v", report)
+	}
+	found := false
+	for _, m := range trimmed {
+		if m.Reference {
+			found = true
+			if m.Content != "the summary of the compacted conversation" {
+				t.Fatalf("the reference data changed: %#v", m)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the reference data was dropped: %#v", trimmed)
+	}
+	// It sits with the instructions, at the head of the request.
+	if !trimmed[0].Reference && trimmed[1].Reference {
+		if trimmed[0].Role != "system" {
+			t.Fatalf("the instructions lost their place: %#v", trimmed[0])
+		}
+	}
+}
+
 func TestTrimToBudgetCountsTheToolDefinitions(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "instructions"},

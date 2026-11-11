@@ -221,6 +221,10 @@ The rules of the trim:
 
 - the safety instructions are never dropped;
 - the operator's current request is never dropped;
+- the reference data of a compaction is never dropped: it stands in for
+  the exchanges the compaction covered, so losing it would leave the
+  model with less of the conversation than it had before the compaction.
+  The oldest kept exchanges are dropped instead;
 - older context is dropped only at exchange boundaries — a user
   message with the assistant and tool messages that answer it — so a
   tool call is never separated from its result;

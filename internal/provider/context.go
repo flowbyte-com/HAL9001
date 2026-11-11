@@ -22,6 +22,11 @@ import (
 //   - a tool call is never separated from its result. The two belong to
 //     the same exchange, and an exchange is dropped whole or not at all.
 //
+// One more thing is never dropped either: the reference data a
+// compaction left behind. It stands in for the exchanges the
+// compaction covered, so losing it would leave the model with less of
+// the conversation than it had before the compaction.
+//
 // Nothing is summarised and nothing is rewritten: older context is
 // dropped, not compacted, and no retry is attempted.
 
@@ -384,16 +389,22 @@ func TrimToBudget(messages []Message, tools []Tool, budget ContextBudget) ([]Mes
 // messages that answer it. Dropping an exchange therefore never
 // separates a tool call from its result.
 //
-// A system message is protected: it is never dropped. The engine
-// assembles the safety instructions as the leading message, and the
-// protected messages are put back in front of the kept exchanges, so
-// the instructions keep their place at the head of the request.
+// A system message is protected: it is never dropped. A message marked
+// as reference data is protected for the same reason: it stands in for
+// the exchanges a compaction covered, and losing it would leave the
+// model with less of the conversation than it had before the
+// compaction. The engine assembles the safety instructions as the
+// leading message, and the protected messages are put back in front of
+// the kept exchanges, so the instructions keep their place at the head
+// of the request.
 func splitExchanges(messages []Message) ([]Message, [][]Message) {
 	var protected []Message
 	var exchanges [][]Message
 	for _, m := range messages {
-		if m.Role == "system" {
-			// The safety instructions are never dropped.
+		if m.Role == "system" || m.Reference {
+			// The safety instructions are never dropped, and neither
+			// is the reference data that stands in for the exchanges
+			// a compaction covered.
 			protected = append(protected, m)
 			continue
 		}
