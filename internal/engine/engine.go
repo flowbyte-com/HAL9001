@@ -277,10 +277,12 @@ func (e *Engine) UseStore(sessions *session.Store) {
 // text being carried through the conversation.
 //
 // compaction is the record of a manual compaction, if there is one. The
-// exchanges it covers are not sent: the summary is. The verified record
-// of what ran is built from the whole history either way, so a
-// compaction never drops the evidence of an operation that really
-// happened.
+// exchanges it covers are not sent: the summary is. The summary is
+// reference data — it travels in the conversation, not in the system
+// instruction, because it is written from material that may carry
+// text written to mislead. The verified record of what ran is built
+// from the whole history either way, so a compaction never drops the
+// evidence of an operation that really happened.
 func (e *Engine) requestMessages(history []session.Message, guidance string, expandTurn string,
 	compaction *session.Compaction) []provider.Message {
 	messages := make([]provider.Message, 0, len(history)+2)
@@ -292,7 +294,7 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 			system = block
 		}
 	}
-	if block := compactionBlock(compaction); block != "" {
+	if block := compactionSystemBlock(compaction); block != "" {
 		if system != "" {
 			system += "\n\n" + block
 		} else {
@@ -340,6 +342,26 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 	}
 	if system != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: system})
+	}
+	// The compacted conversation travels as reference data, in the
+	// conversation and not in the privileged system instruction.
+	//
+	// It is placed at the head of the conversation, where the
+	// exchanges it covers used to be, and it is labelled as reference
+	// data. The system instruction carries the guidance — what a
+	// summary is — and holds nothing of the summary itself.
+	//
+	// The block is delimited with a token that is fresh for this
+	// request, so nothing inside the summary can forge the end of it.
+	// The delimiter is a convenience, not the boundary: the boundary
+	// is that the summary is not an instruction, and the permission
+	// gate is checked by the program at every operation.
+	if block := compactionReference(compaction, compactionBoundary()); block != "" {
+		messages = append(messages, provider.Message{
+			Role:      "user",
+			Content:   block,
+			Reference: true,
+		})
 	}
 	// The conversation is what is left after the compaction: the
 	// exchanges the summary replaces are not sent again.

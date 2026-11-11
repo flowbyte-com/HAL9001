@@ -30,6 +30,17 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
+
+	// Reference marks a message that carries lower-trust reference
+	// data: historical material that stands in for something else, and
+	// is not something the operator said.
+	//
+	// A reference message is never dropped to satisfy a context
+	// budget, for the same reason the safety instructions are never
+	// dropped: the request would otherwise be a different request. The
+	// flag never reaches the wire — the role and the content carry the
+	// message there.
+	Reference bool `json:"-"`
 }
 
 // ToolCall is a provider-requested operation. The engine enforces the 444
