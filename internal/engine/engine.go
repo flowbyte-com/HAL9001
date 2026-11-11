@@ -275,10 +275,24 @@ func (e *Engine) UseStore(sessions *session.Store) {
 // their contents. Older exchanges keep their attachment references, so
 // the model still knows which file was discussed without every file's
 // text being carried through the conversation.
-func (e *Engine) requestMessages(history []session.Message, guidance string, expandTurn string) []provider.Message {
-	messages := make([]provider.Message, 0, len(history)+1)
+//
+// compaction is the record of a manual compaction, if there is one. The
+// exchanges it covers are not sent: the summary is. The verified record
+// of what ran is built from the whole history either way, so a
+// compaction never drops the evidence of an operation that really
+// happened.
+func (e *Engine) requestMessages(history []session.Message, guidance string, expandTurn string,
+	compaction *session.Compaction) []provider.Message {
+	messages := make([]provider.Message, 0, len(history)+2)
 	system := e.systemPrompt
 	if block := permissionBlock(e.permissionMode()); block != "" {
+		if system != "" {
+			system += "\n\n" + block
+		} else {
+			system = block
+		}
+	}
+	if block := compactionBlock(compaction); block != "" {
 		if system != "" {
 			system += "\n\n" + block
 		} else {
@@ -327,10 +341,16 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 	if system != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: system})
 	}
+	// The conversation is what is left after the compaction: the
+	// exchanges the summary replaces are not sent again.
+	conversation := history
+	if compaction != nil && compaction.CoveredMessages > 0 && compaction.CoveredMessages <= len(history) {
+		conversation = history[compaction.CoveredMessages:]
+	}
 	// The boundary that delimits the untrusted attachment blocks is
 	// fresh for this request, so nothing inside a file can forge it.
 	boundary := attachmentBoundary()
-	for _, msg := range history {
+	for _, msg := range conversation {
 		content := msg.Content
 		if len(msg.Attachments) > 0 {
 			content = e.attachmentRequest(msg, msg.TurnID == expandTurn, boundary)
@@ -628,7 +648,7 @@ func (e *Engine) respondTurn(ctx context.Context, op lifecycle.Operation, input 
 		d := decision
 		emit(Event{Skill: &d, Attribution: attribution, TurnID: turnID})
 	}
-	messages := e.requestMessages(history, skillBlock(loaded), turnID)
+	messages := e.requestMessages(history, skillBlock(loaded), turnID, e.sessions.ReadCompaction())
 	turn := userTurns(history)
 	tools := e.offeredTools()
 	resp, reply, proposal, evidence, ran, err := e.toolTurn(ctx, messages, tools, turn, turnID, emit)
@@ -1092,18 +1112,9 @@ func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []
 // the provider, so the output cap on the wire is the room this budget
 // reserved for the answer.
 func (e *Engine) applyContextBudget(messages []provider.Message, tools []provider.Tool, emit func(Event)) ([]provider.Message, provider.ContextBudget, error) {
-	budget := e.model.Budget
-	if e.budgetResolver != nil {
-		// The application resolves the budget per request: an endpoint
-		// may report a model's context window after the engine was
-		// built, and the operator's own limit never changes. A
-		// budget that cannot be resolved is refused: the turn stops
-		// with the reason, and nothing is guessed.
-		resolved, err := e.budgetResolver()
-		if err != nil {
-			return nil, budget, err
-		}
-		budget = resolved
+	budget, err := e.resolveBudget()
+	if err != nil {
+		return nil, e.model.Budget, err
 	}
 	if budget.Limit <= 0 {
 		return messages, budget, nil
@@ -1117,6 +1128,27 @@ func (e *Engine) applyContextBudget(messages []provider.Message, tools []provide
 		emit(Event{Context: &notice})
 	}
 	return trimmed, budget, nil
+}
+
+// resolveBudget answers the context budget a request is held to.
+//
+// The budget is resolved per request: an endpoint may report a model's
+// context window after the engine was built, and the operator's own
+// limit never changes. A budget that cannot be resolved is refused: the
+// request stops with the reason, and nothing is guessed.
+//
+// Without a resolver the budget on the model is the budget in force,
+// which is the same number the application resolved.
+func (e *Engine) resolveBudget() (provider.ContextBudget, error) {
+	budget := e.model.Budget
+	if e.budgetResolver == nil {
+		return budget, nil
+	}
+	resolved, err := e.budgetResolver()
+	if err != nil {
+		return budget, err
+	}
+	return resolved, nil
 }
 
 // userTurns counts the user messages in the history: the turn number the

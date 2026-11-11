@@ -1727,6 +1727,36 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// already written without being asked.
 		m.endQueueItems()
 		return m, nil
+	case compactionMsg:
+		if !m.currentTurn(msg.id) {
+			// A late message from a cancelled compaction must never
+			// touch the current one.
+			return m, nil
+		}
+		m.sending = false
+		m.stopStream()
+		m.endActivity()
+		m.reasoningSeen = false
+		m.pending = ""
+		m.expandAfterTurn()
+		m.notice = compactionNotice(msg.report)
+		m.appendNote("assistant", compactionNote(msg.report))
+		return m, nil
+	case compactionErrMsg:
+		if !m.currentTurn(msg.id) {
+			return m, nil
+		}
+		m.sending = false
+		m.stopStream()
+		m.endActivity()
+		m.reasoningSeen = false
+		m.pending = ""
+		m.expandAfterTurn()
+		// A failed compaction stores nothing, so the usable context is
+		// exactly what it was. The operator is told so.
+		m.notice = compactionFailureNotice(msg.err)
+		m.appendNote("assistant", "The conversation was not compacted: "+compactionFailureNotice(msg.err))
+		return m, nil
 	}
 	if m.ready {
 		var cmds []tea.Cmd

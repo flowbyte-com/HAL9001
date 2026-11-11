@@ -227,6 +227,28 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/model_usability_checks.py
 ```
 
+The compaction checks start their own recording provider on port 8281 and own
+their config, home, workspace and session store. The provider enforces an 8K
+total context window: a request whose content is larger than that is
+refused, the way a provider with a real window would refuse it, and every
+request is recorded so the checks can measure what actually left the
+machine. The model in the configuration declares no window of its own, so
+the provisional window of 8192 tokens applies, 1024 of them reserved for the
+answer. The suite proves that `/compact` summarises the older exchanges
+and keeps the recent ones, that the transcript on disk is byte for byte the
+same afterwards, that the requests that follow carry the summary and are
+smaller, that every request the compaction itself made fits the window, that
+the compaction happens only when the operator asks for it, that a
+conversation with nothing to compact says so, that `/stop` cancels a running
+compaction and stores nothing, that the compaction is there after a restart,
+and that the active model did not change:
+
+```sh
+go build -o /tmp/opencode/hal9001 ./cmd/hal9001
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/compaction_checks.py
+```
+
 The discovery checks start their own hostile provider on port 8263 and own
 their config, home, workspace and session store. The provider answers with
 a model catalogue that carries every trick a broken or hostile endpoint can
@@ -351,6 +373,15 @@ python3 tools/ptycheck/steering_checks.py
   the context window and where it came from, `/model discover` asks the
   provider only when the operator names the endpoint, and none of the
   screens changes the active model.
+- The compaction suite covers the operator path end to end: `/compact`
+  summarises the older exchanges and keeps the recent ones, the transcript
+  on disk is byte for byte the same afterwards, the requests that follow
+  carry the summary and are smaller, every request the compaction itself
+  made fits the 8K window the provider enforces, the compaction happens
+  only when the operator asks for it, a conversation with nothing to
+  compact says so, `/stop` cancels a running compaction and stores
+  nothing, the compaction is there after a restart, and the active model
+  did not change.
 - The web-research suite runs the unified `web_search` path and the
   Firecrawl scrape path. It checks Firecrawl success, empty results,
   Firecrawl -> Exa fallback, Exa -> DuckDuckGo fallback, malformed-primary
@@ -509,6 +540,7 @@ by hand in a real terminal.
 | `holding_provider.py` | a local provider that holds a request and records every request it receives |
 | `stop_resume_checks.py` | isolated lifecycle checks: `/stop` abandons the turn, `/resume` continues it, and a side effect is never repeated |
 | `model_usability_checks.py` | isolated model-management checks: the interactive screens ask for what a change needs, and a cancelled or refused change stores nothing |
+| `compaction_checks.py` | isolated compaction checks: the older exchanges are summarised, the transcript is byte for byte the same, every compaction request fits the 8K window, and a stopped compaction stores nothing |
 | `pty_session.py` | the shared pseudo-terminal driver: one HAL process, driven step by step |
 | `panel_completion_checks.py` | isolated panel checks: a turn that completes behind a panel keeps its answer |
 | `budget_checks.py` | isolated context-budget checks: the transmitted request honours the operator's limit, or nothing is sent |

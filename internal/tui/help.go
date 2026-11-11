@@ -45,6 +45,7 @@ var helpCommandSection = map[string]string{
 	"/clear":    "Conversation and editing",
 	"/expand":   "Conversation and editing",
 	"/collapse": "Conversation and editing",
+	"/compact":  "Conversation and editing",
 	"/steer":    "Conversation and editing",
 	"/queue":    "Conversation and editing",
 

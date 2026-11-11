@@ -386,7 +386,7 @@ func (e *Engine) continueExchange(ctx context.Context, op lifecycle.Operation, c
 		d := decision
 		emit(Event{Skill: &d, Attribution: attribution, TurnID: cp.turnID})
 	}
-	messages := e.requestMessages(history, skillBlock(loaded), cp.turnID)
+	messages := e.requestMessages(history, skillBlock(loaded), cp.turnID, e.sessions.ReadCompaction())
 	turn := userTurns(history)
 	tools := e.offeredTools()
 	resp, reply, proposal, evidence, ran, err := e.toolTurn(ctx, messages, tools, turn, cp.turnID, emit)
