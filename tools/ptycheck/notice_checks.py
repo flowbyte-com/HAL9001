@@ -16,6 +16,10 @@ What is checked:
     running;
   * a newer announcement replaces the older one, and the timer of the
     older one never clears the newer one;
+  * the warning of a reply that was cut at max_tokens survives the turn
+    that follows it;
+  * a turn without a visible answer reports only the numbers of its own
+    turn, never the numbers of the turn before it;
   * the turn itself is unchanged: the queued message is sent when the
     turn ends, and its answer arrives.
 
@@ -314,6 +318,41 @@ def scenario_the_warning_survives_the_next_turn(harness):
         session.close()
 
 
+def scenario_the_empty_answer_reports_only_its_own_turn(harness):
+    """A turn without a visible answer reports only what it knows.
+
+    The turn before it reached its output limit. The numbers of that
+    turn are not evidence about this one: the interface must not tell
+    the operator that this turn exhausted its output budget.
+    """
+    session = open_session(harness)
+    try:
+        check("the provider received the question", ask(session, harness),
+              len(harness.requests()))
+        # The first answer is cut at the output limit.
+        harness.release_first()
+        session.until(lambda: "max_tokens" in session.screen(), 25.0)
+        check("the first reply was cut at the output limit",
+              "max_tokens" in session.screen(), session.screen())
+
+        # The second turn ends without a visible answer.
+        session.send(b"and now?\r")
+        session.until(lambda: "no visible answer" in session.screen(), 25.0)
+        screen = session.screen()
+        flat = " ".join(screen.split())
+        check("the second turn is told that it produced no visible answer",
+              "no visible answer" in flat, screen[-1200:])
+        check("the second turn does not claim that it exhausted its output budget",
+              "output budget was exhausted" not in flat, screen[-1200:])
+        check("the second turn does not borrow the finish reason of the first",
+              "finish_reason=length" not in flat, screen[-1200:])
+        # The first turn keeps its own warning, written once.
+        check("the truncation warning of the first turn is still there",
+              flat.count("cut at max_tokens") == 1, screen[-1600:])
+    finally:
+        session.close()
+
+
 def main():
     if not os.path.isfile(BINARY):
         print("missing HAL9001 binary:", BINARY)
@@ -346,6 +385,15 @@ def main():
         scenario_the_warning_survives_the_next_turn(cut)
     finally:
         cut.close()
+
+    print("== a turn without a visible answer reports only its own turn ==")
+    empty = Harness(root, "notice-empty", PORT + 3, session="notice4",
+                    mode="release-length-empty")
+    empty.start()
+    try:
+        scenario_the_empty_answer_reports_only_its_own_turn(empty)
+    finally:
+        empty.close()
         shutil.rmtree(root, ignore_errors=True)
 
     print()

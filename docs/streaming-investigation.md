@@ -198,11 +198,17 @@ so a late error can no longer clear or cancel the next turn.
   success.
 - A reply that is entirely reasoning is **not** stored as an assistant
   message. The turn fails with `ErrNoVisibleAnswer`, the interface shows
-  one explanatory line built from the diagnostics (`no visible answer ·
-  the output budget was exhausted during reasoning · finish_reason=length
-  · completion tokens 15000 · see /diag`), and the next request's context
-  contains the user message but no fabricated answer. Nothing is retried
-  automatically and the output cap is never raised silently.
+  one explanatory line built from the diagnostics of that turn (`no visible
+  answer · the output budget was exhausted during reasoning ·
+  finish_reason=length · completion tokens 15000 · see /diag`), and the
+  next request's context contains the user message but no fabricated
+  answer. Nothing is retried automatically and the output cap is never
+  raised silently.
+- The diagnostics in that line belong to the turn that failed. A turn
+  that reports no statistics of its own gets a neutral line
+  (`no visible answer · see /diag`): the numbers of the turn before it
+  are not evidence about this one, so no budget, finish reason or token
+  count is read from them.
 
 ## Tests
 

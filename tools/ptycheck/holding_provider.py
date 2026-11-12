@@ -25,6 +25,9 @@ Modes:
     release-length
             like release, but the first answer is cut at the output
             limit: it arrives with finish_reason "length";
+    release-length-empty
+            like release-length, and every answer after it carries no
+            visible text at all: the turn produces no answer;
     release-fail
             like release, but the first request fails with a server
             error instead of answering.
@@ -189,6 +192,9 @@ class Handler(BaseHTTPRequestHandler):
             if MODE == "release-length":
                 self.answer_cut(ANSWER)
                 return
+            if MODE == "release-length-empty":
+                self.answer_cut(ANSWER)
+                return
             if MODE == "release-fail":
                 self.fail_request()
                 return
@@ -198,6 +204,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self.await_release(RELEASE2):
                 return
             self.answer(ANSWER2)
+            return
+        if MODE == "release-length-empty" and count >= 2:
+            self.answer_empty()
             return
         self.answer(ANSWER2)
 
@@ -267,6 +276,15 @@ class Handler(BaseHTTPRequestHandler):
         self.begin()
         self.event({"choices": [{"delta": {"content": text}, "index": 0}]})
         self.event({"choices": [{"delta": {}, "finish_reason": "length"}]})
+
+    def answer_empty(self):
+        """Stream an answer that carries no visible text at all.
+
+        The stream ends without a finish reason: the provider produced
+        nothing the operator can read, and the turn says so.
+        """
+        self.begin()
+        self.event({"choices": [{"delta": {"content": ""}, "index": 0}]})
 
     def propose_tool(self, name, arguments, content=None):
         """Stream one tool call whose arguments arrive in two pieces.

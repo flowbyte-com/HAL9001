@@ -1775,6 +1775,19 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.endActivity()
 		m.reasoningSeen = false
 		m.pending = ""
+		// The statistics of this turn are taken before the failure path
+		// clears them. They belong to this turn and to no other: the
+		// numbers of the turn before it are not evidence about this
+		// one, and a conclusion another turn's numbers support is not
+		// this turn's conclusion.
+		//
+		// The copy is deliberate: the failure hook is handed the same
+		// numbers, and the note must not change when it does.
+		var failed *provider.TurnStats
+		if m.turnStats != nil {
+			stats := *m.turnStats
+			failed = &stats
+		}
 		m.recordFailed()
 		switch {
 		case errors.Is(msg.err, context.Canceled):
@@ -1786,7 +1799,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "No provider configured — message stored in this session."
 		case errors.Is(msg.err, engine.ErrNoVisibleAnswer):
 			m.notice = "no visible answer — see /diag"
-			m.appendNote("assistant", m.emptyAnswerNote(msg.err))
+			m.appendNote("assistant", m.emptyAnswerNote(failed))
 		case errors.Is(msg.err, provider.ErrStreamIdle):
 			m.notice = "the provider went silent — the request was closed to avoid a silent charge"
 			m.appendNote("assistant", "(the provider stopped sending data; the request was closed)")
@@ -1975,27 +1988,33 @@ func (m Model) startTurn(input string, atts []attachments.Meta, entry int) (tea.
 	return m, cmd
 }
 
-// emptyAnswerNote explains a turn that produced no visible text. It uses
-// the diagnostics already collected: no retry, no invented answer, just
-// what the provider reported.
-func (m Model) emptyAnswerNote(err error) string {
+// emptyAnswerNote explains a turn that produced no visible text.
+//
+// The statistics are the ones of the turn that failed, captured before
+// the failure path cleared them. They belong to that turn and to no
+// other: the numbers of the turn before it are not evidence about this
+// one, and a conclusion another turn's numbers support is not this
+// turn's conclusion.
+//
+// A turn that reported nothing about itself gets a neutral explanation:
+// there is nothing to say about its budget, its finish reason or its
+// token counts, and saying so plainly is better than borrowing the
+// figures of the turn before it.
+func (m Model) emptyAnswerNote(stats *provider.TurnStats) string {
 	parts := []string{"no visible answer"}
-	s := m.lastStats
-	if s != nil {
-		if s.OutputLimitHit {
+	if stats != nil {
+		if stats.OutputLimitHit {
 			parts = append(parts, "the output budget was exhausted during reasoning")
 		}
-		if s.FinishReason != "" {
-			parts = append(parts, "finish_reason="+s.FinishReason)
+		if stats.FinishReason != "" {
+			parts = append(parts, "finish_reason="+stats.FinishReason)
 		}
-		if s.HasUsage && s.Usage.CompletionTokens > 0 {
-			parts = append(parts, fmt.Sprintf("completion tokens %d", s.Usage.CompletionTokens))
+		if stats.HasUsage && stats.Usage.CompletionTokens > 0 {
+			parts = append(parts, fmt.Sprintf("completion tokens %d", stats.Usage.CompletionTokens))
 		}
-		if s.ReasoningChunks > 0 {
-			parts = append(parts, fmt.Sprintf("reasoning events %d", s.ReasoningChunks))
+		if stats.ReasoningChunks > 0 {
+			parts = append(parts, fmt.Sprintf("reasoning events %d", stats.ReasoningChunks))
 		}
-	} else if err != nil {
-		parts = append(parts, err.Error())
 	}
 	parts = append(parts, "see /diag")
 	return "(" + strings.Join(parts, " · ") + ")"
