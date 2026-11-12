@@ -171,7 +171,11 @@ func (m *Model) resumeTurn() tea.Cmd {
 	m.reasoningSeen = false
 	m.turnStats = nil
 	m.beginActivity()
-	m.notice = m.activityNotice()
+	m.setActivity()
+	// The notice that was on screen belongs to what came before: this
+	// turn has a status of its own, and the row is better off showing
+	// it than a message about a turn that is over.
+	m.notice = ""
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	cmd := m.resumeCmd(id, eng, ctx)

@@ -28,7 +28,7 @@ func startActivity(m Model, now time.Time) Model {
 	m.sending = true
 	m.streamStarted = now
 	m.beginActivity()
-	m.notice = m.activityNotice()
+	m.setActivity()
 	return m
 }
 
@@ -289,7 +289,7 @@ func TestAnimationSmallTerminal(t *testing.T) {
 	m = startActivity(m, *now)
 	m.activityPhase = activityStreaming
 	m.lastProviderEvent = now.Add(-6 * time.Second)
-	m.notice = m.activityNotice()
+	m.setActivity()
 	if width := lipgloss.Width(m.Notice()); width > 80 {
 		t.Fatalf("activity line is %d cells: %q", width, m.Notice())
 	}
@@ -348,7 +348,7 @@ func TestAnimationFiveThemes(t *testing.T) {
 			m.SetTheme(theme)
 			m = startActivity(m, *now)
 			m.activityPhase = activityThinking
-			m.notice = m.activityNotice()
+			m.setActivity()
 			if !strings.Contains(stripANSI(m.noticeRow()), "Thinking") {
 				t.Fatalf("%s: activity missing: %q", theme.Name, stripANSI(m.noticeRow()))
 			}

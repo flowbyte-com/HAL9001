@@ -745,9 +745,18 @@ Status notices live in one row under the footer that is always part of
 the frame, so a notice appearing or expiring never shifts anything. A new
 notice replaces the old one, and every notice is put on a one-shot timer;
 the timer carries the notice's generation, so the expiry of a notice that
-has already been replaced is ignored. A notice set while a turn is in
-flight is the turn's live status, refreshed every second and cleared when
-the turn ends, so it does not expire on its own.
+has already been replaced is ignored.
+
+A notice and the live status of a turn are different things, and they have
+different fields. The live status — the phase, the elapsed time, the tool
+that is running — is redrawn every 140 milliseconds; a notice is a message
+the operator has to read. The notice holds the row while it is there, and
+the live status takes the row back when the notice is gone. Every notice
+expires on its own, whether a turn is running or not: a notice that was
+set while HAL was working disappears instead of staying for the whole
+turn, and a repaint of the live status can never take it away. The status
+of a new turn clears the notice that was on screen, because that notice
+belongs to the turn that came before.
 
 Short conversations are bottom-aligned in the presentation layer: the
 viewport pads its rendered rows above the content, leaving the viewport

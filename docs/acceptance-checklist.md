@@ -66,9 +66,13 @@ go build -o /tmp/hal9001 ./cmd/hal9001
 
 ## Activity heartbeat
 
-- [ ] During a live turn the notice row shows a moving clock and the
+- [ ] During a live turn the status row shows a moving clock and the
       current phase (`Waiting for model`, `Thinking`, `Streaming` or
       `Tool`) with elapsed time.
+- [ ] A transient notice set while a turn is running stays on the screen
+      until it expires; the heartbeat of the turn never takes it away.
+- [ ] A transient notice expires on its own, and the live status of the
+      turn takes the row back.
 - [ ] The clock advances while the provider is quiet; a lack of tokens is
       never presented as a failed connection.
 - [ ] After five quiet seconds the line shows `no new data for Ns`.

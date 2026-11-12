@@ -584,6 +584,15 @@ type Model struct {
 	// replaced is ignored.
 	notice    string
 	noticeSeq int
+	// activity is the live status of the turn that is running: the
+	// heartbeat, the elapsed time and what HAL is waiting for.
+	//
+	// It has a field of its own because a notice and a status are
+	// different things. A notice is a message the operator has to
+	// read, and the status is redrawn every few frames: when they
+	// shared one field, the redraw of the status overwrote a notice
+	// that had just been set, and the operator never saw it.
+	activity string
 	// queue holds the operator's messages that HAL has not acted on yet.
 	// It is a pointer because it is shared: the engine asks it for a
 	// steering message while a turn is running.
@@ -1337,6 +1346,11 @@ func (m Model) runTurn(id int, ctx context.Context, runner func(context.Context,
 // moment or quietly overwrite a newer message. The expiry is a one-shot
 // tick whose generation is compared, so a replaced notice can never be
 // cleared by the timer of the notice it replaced.
+//
+// A notice expires whether a turn is running or not. The live status of
+// a turn lives in a field of its own, so a repaint of that status can
+// no longer keep a notice alive, and a notice that was set while HAL
+// was working still disappears on its own.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if exp, ok := msg.(noticeExpireMsg); ok {
 		if exp.seq == m.noticeSeq {
@@ -1352,10 +1366,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if out.notice != before {
 		out.noticeSeq++
-		// While a turn is in flight the notice is the live status of
-		// that turn: it is refreshed every second and cleared when the
-		// turn ends, so it does not expire on its own.
-		if out.notice != "" && !out.sending {
+		if out.notice != "" {
 			cmd = tea.Batch(cmd, noticeExpiryCmd(out.noticeSeq))
 		}
 	}
@@ -1608,7 +1619,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reasoningSeen = true
 		m.activityPhase = activityThinking
 		m.noteProviderEvent()
-		m.notice = m.activityNotice()
+		m.setActivity()
 		return m, nil
 	case streamToolStartMsg:
 		if !m.currentTurn(msg.id) {
@@ -1617,7 +1628,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activityTool = msg.activity
 		m.activityPhase = activityTool
 		m.noteProviderEvent()
-		m.notice = m.activityNotice()
+		m.setActivity()
 		return m, nil
 	case streamToolMsg:
 		if !m.currentTurn(msg.id) {
@@ -1627,7 +1638,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activityTool = msg.activity
 		m.activityPhase = activityTool
 		m.noteProviderEvent()
-		m.notice = m.activityNotice()
+		m.setActivity()
 		return m, nil
 	case streamDeltaMsg:
 		if !m.currentTurn(msg.id) {
@@ -1637,7 +1648,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pending += msg.text
 		m.activityPhase = activityStreaming
 		m.noteProviderEvent()
-		m.notice = m.activityNotice()
+		m.setActivity()
 		m.renderConversation()
 		if stick {
 			m.viewport.GotoBottom()
@@ -1658,7 +1669,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.activityFrame = (m.activityFrame + 1) % len(animationFrames)
-		m.notice = m.activityNotice()
+		m.setActivity()
 		return m, m.animationTickCmd()
 	case responseMsg:
 		if !m.currentTurn(msg.id) {
@@ -1924,7 +1935,11 @@ func (m Model) startTurn(input string, atts []attachments.Meta, entry int) (tea.
 	m.reasoningSeen = false
 	m.turnStats = nil
 	m.beginActivity()
-	m.notice = m.activityNotice()
+	m.setActivity()
+	// The notice that was on screen belongs to what came before: this
+	// turn has a status of its own, and the row is better off showing
+	// it than a message about a turn that is over.
+	m.notice = ""
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	cmd := m.sendCmd(id, input, atts, ctx)
@@ -3827,14 +3842,22 @@ func (m Model) hintVariants() []string {
 
 // noticeRow renders the status line under the footer. The row is always
 // present so the layout never shifts when a notice appears.
+//
+// A notice comes first: it is a message for the operator, and it holds
+// the row until it expires. The live status of a turn takes the row
+// back when there is no notice to show.
 func (m Model) noticeRow() string {
-	if m.notice == "" {
+	text := m.notice
+	if text == "" {
+		text = m.activity
+	}
+	if text == "" {
 		return ""
 	}
 	if !m.color {
-		return m.notice
+		return text
 	}
-	return m.theme.styles().notice.Render(m.notice)
+	return m.theme.styles().notice.Render(text)
 }
 
 func (m Model) heading() string {
@@ -4082,8 +4105,15 @@ func (m Model) Entries() []entry { return append([]entry(nil), m.entries...) }
 // LastStats returns the telemetry of the last finished turn, for tests.
 func (m Model) LastStats() *provider.TurnStats { return m.lastStats }
 
-// Notice returns the current status notice, for tests.
-func (m Model) Notice() string { return m.notice }
+// Notice returns the status line under the footer, for tests. It is the
+// line the operator sees: the notice when there is one, and the live
+// status of the turn otherwise.
+func (m Model) Notice() string {
+	if m.notice != "" {
+		return m.notice
+	}
+	return m.activity
+}
 
 // Sending reports whether a response is in flight, for tests.
 func (m Model) Sending() bool { return m.sending }

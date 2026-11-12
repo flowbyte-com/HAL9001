@@ -169,6 +169,20 @@ HAL9001_BINARY=/tmp/opencode/hal9001 \
 python3 tools/ptycheck/heartbeat_checks.py
 ```
 
+The notice checks start their own holding provider on port 8286 and own
+their config, home, workspace and session store. They prove that a notice
+set while a turn is running stays on the screen — the heartbeat of the
+turn used to overwrite it within a tenth of a second — that the notice
+expires on its own and the live status of the turn takes the row back,
+that a newer notice replaces the older one and is not cleared by the
+timer of the older one, and that the turn itself is unchanged: the
+queued message is sent when the turn ends and its answer arrives:
+
+```sh
+HAL9001_BINARY=/tmp/opencode/hal9001 \
+python3 tools/ptycheck/notice_checks.py
+```
+
 The attachment checks start their own fake provider on port 8129 and own
 their config, home, workspace, session store and source files. They verify
 that `/attach` copies the chosen file into `~/HAL/uploads/`, that the
@@ -601,3 +615,4 @@ by hand in a real terminal.
 | `budget_checks.py` | isolated context-budget checks: the transmitted request honours the operator's limit, or nothing is sent |
 | `steering_provider.py` | a local provider that holds a turn open and records every request it receives |
 | `steering_checks.py` | isolated steering and queue checks: the request already sent is not rewritten, the waiting messages keep their order |
+| `notice_checks.py` | isolated notice checks: a notice set while a turn is running stays on the screen, expires on its own, and is replaced by a newer one |

@@ -86,6 +86,9 @@ func (m *Model) endActivity() {
 	m.activityPhase = activityIdle
 	m.activityTool = engine.ToolActivity{}
 	m.lastProviderEvent = time.Time{}
+	// The turn is over: there is no live status to show, and the row is
+	// free for a notice again.
+	m.activity = ""
 }
 
 // finishActivity stops the animation and returns the static completion
@@ -97,7 +100,19 @@ func (m *Model) finishActivity() string {
 	}
 	m.activityGen++
 	m.activityPhase = activityComplete
+	// The live status is over. The completion line is a notice of its
+	// own, and it expires like every other one.
+	m.activity = ""
 	return "✓ Complete · " + formatActivityElapsed(elapsed)
+}
+
+// setActivity refreshes the live status of the turn that is running.
+//
+// The live status has a field of its own: a notice is a message the
+// operator has to read, and a repaint of the status must never
+// overwrite it.
+func (m *Model) setActivity() {
+	m.activity = m.activityNotice()
 }
 
 // activityNotice renders the live heartbeat. It is deliberately a

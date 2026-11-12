@@ -189,7 +189,7 @@ var commandTable = []*command{
 				m.animation = true
 				m.activityGen++
 				if m.sending {
-					m.notice = m.activityNotice()
+					m.setActivity()
 					return m.animationTickCmd()
 				}
 				m.notice = "Animation: on."
@@ -201,7 +201,7 @@ var commandTable = []*command{
 				m.animation = false
 				m.activityGen++
 				if m.sending {
-					m.notice = m.activityNotice()
+					m.setActivity()
 				} else {
 					m.notice = "Animation: off."
 				}

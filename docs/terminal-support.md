@@ -117,6 +117,11 @@ marker. While a turn is in flight, the reserved notice row shows a
 about every 140 ms independently of provider tokens; the clock is a
 responsiveness signal, not evidence that the provider is making progress.
 
+A transient notice — a message that was queued, a copy that was made —
+holds that row while it is there. The heartbeat keeps running underneath
+and takes the row back when the notice expires, so a notice never hides
+the state of a turn for longer than its own lifetime.
+
 After five seconds without a meaningful provider event the line adds
 `no new data for Ns`. The provider's own idle and turn timeouts remain
 unchanged, and silence is never treated as a failed connection. While a

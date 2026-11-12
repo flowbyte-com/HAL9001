@@ -177,10 +177,13 @@ fires. The number matching is coincidence, not a restoration.
 
 ### Visible progress
 
-While a turn runs, the notice shows the phase and elapsed time:
+While a turn runs, the status row shows the phase and elapsed time:
 `waiting for the model… 2s`, `thinking… 47s`, `streaming… 51s`, each with
 `Esc cancels`. The thinking phase is driven by the presence of reasoning
-events; **the reasoning text is never displayed, stored or logged**.
+events; **the reasoning text is never displayed, stored or logged**. A
+transient notice holds that row while it is there — a message that was
+queued, a copy that was made — and the live status takes the row back
+when the notice expires.
 
 ### Cancellation and turn isolation
 
