@@ -22,6 +22,9 @@ Modes:
     release-tool
             like release, but the first request proposes a tool call
             instead of answering;
+    release-length
+            like release, but the first answer is cut at the output
+            limit: it arrives with finish_reason "length";
     release-fail
             like release, but the first request fails with a server
             error instead of answering.
@@ -183,6 +186,9 @@ class Handler(BaseHTTPRequestHandler):
             if MODE == "release-stream":
                 self.stream_answer(ANSWER)
                 return
+            if MODE == "release-length":
+                self.answer_cut(ANSWER)
+                return
             if MODE == "release-fail":
                 self.fail_request()
                 return
@@ -251,6 +257,16 @@ class Handler(BaseHTTPRequestHandler):
             self.event({"choices": [{"delta": {"content": text[i:i + step]}, "index": 0}]})
             time.sleep(0.15)
         self.event({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+
+    def answer_cut(self, text):
+        """Stream one answer that was cut at the output limit.
+
+        The finish reason is "length": the provider stopped because the
+        output budget was spent, and the answer is incomplete.
+        """
+        self.begin()
+        self.event({"choices": [{"delta": {"content": text}, "index": 0}]})
+        self.event({"choices": [{"delta": {}, "finish_reason": "length"}]})
 
     def propose_tool(self, name, arguments, content=None):
         """Stream one tool call whose arguments arrive in two pieces.

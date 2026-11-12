@@ -106,7 +106,7 @@ def status_line(screen):
 class Harness:
     """One isolated environment: config, home, store, workspace, provider."""
 
-    def __init__(self, root, name, port, session="notice"):
+    def __init__(self, root, name, port, session="notice", mode="release"):
         self.root = os.path.join(root, name)
         self.home = os.path.join(self.root, "home")
         self.store = os.path.join(self.home, "sessions")
@@ -115,6 +115,7 @@ class Harness:
         self.log = os.path.join(self.root, "requests.jsonl")
         self.port = port
         self.session = session
+        self.mode = mode
         # The file that releases the held request: the check decides
         # when the answer is given.
         self.release = os.path.join(self.root, "release-1")
@@ -136,7 +137,7 @@ class Harness:
         env = os.environ.copy()
         env["HAL9001_HOLDING_PORT"] = str(self.port)
         env["HAL9001_REQUEST_LOG"] = self.log
-        env["HAL9001_HOLDING_MODE"] = "release"
+        env["HAL9001_HOLDING_MODE"] = self.mode
         env["HAL9001_HOLDING_ANSWER"] = ANSWER
         env["HAL9001_HOLDING_ANSWER2"] = ANSWER2
         env["HAL9001_HOLDING_RELEASE"] = self.release
@@ -274,6 +275,45 @@ def scenario_a_newer_notice_replaces_the_older_one(harness):
         session.close()
 
 
+def scenario_the_warning_survives_the_next_turn(harness):
+    """A reply that was cut at max_tokens stays visible.
+
+    A queued message starts the next turn as soon as the reply arrives,
+    and the notice under the footer is replaced by the status of that
+    turn. The warning is a note in the conversation, so the operator can
+    still see that the reply was cut.
+    """
+    session = open_session(harness)
+    try:
+        check("the provider received the question", ask(session, harness),
+              len(harness.requests()))
+        # The operator writes the next message while HAL is working.
+        session.send(b"a queued message\r")
+        session.until(lambda: ANNOUNCEMENT in session.screen(), 10.0)
+
+        # The answer is cut at the output limit.
+        harness.release_first()
+        session.until(lambda: "max_tokens" in session.screen(), 25.0)
+        check("the reply was cut at the output limit",
+              "max_tokens" in session.screen(), session.screen())
+
+        # The queued turn starts on its own.
+        check("the queued message was sent when the turn ended",
+              session.until(lambda: len(harness.requests()) == 2, 25.0),
+              len(harness.requests()))
+        session.wait(1.0)
+        screen = session.screen()
+        flat = " ".join(screen.split())
+        check("the warning is still in the conversation",
+              "cut at max_tokens" in flat, screen[-1200:])
+        # The warning is recorded once, and not again by the turn that
+        # followed it.
+        check("the warning is recorded once",
+              flat.count("cut at max_tokens") == 1, screen[-1200:])
+    finally:
+        session.close()
+
+
 def main():
     if not os.path.isfile(BINARY):
         print("missing HAL9001 binary:", BINARY)
@@ -297,6 +337,15 @@ def main():
         scenario_a_newer_notice_replaces_the_older_one(second)
     finally:
         second.close()
+
+    print("== a reply that was cut at max_tokens keeps its warning ==")
+    cut = Harness(root, "notice-cut", PORT + 2, session="notice3",
+                  mode="release-length")
+    cut.start()
+    try:
+        scenario_the_warning_survives_the_next_turn(cut)
+    finally:
+        cut.close()
         shutil.rmtree(root, ignore_errors=True)
 
     print()

@@ -1442,6 +1442,15 @@ func conversationEvent(msg tea.Msg) bool {
 	return false
 }
 
+// outputLimitNote is what the conversation says about a reply that was
+// cut at the output limit.
+//
+// The notice under the footer is transient: the next queued turn starts
+// at once and takes the row with its status. The note is part of the
+// conversation, so the warning stays where the operator looks for it,
+// and it is written once, with the reply it belongs to.
+const outputLimitNote = "(the reply was cut at max_tokens — the output budget ended there, so the answer above may be incomplete)"
+
 // updateChat handles the conversation and the composer.
 func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -1685,7 +1694,16 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			reported = m.turnStats
 		}
 		m.recordTurn()
-		if m.lastStats != nil && m.lastStats.OutputLimitHit {
+		// The reply was cut at the output limit. The warning is a note
+		// in the conversation as well as the notice under the footer: a
+		// queued message starts the next turn at once, and a notice that
+		// is replaced before it was read is no warning at all.
+		//
+		// The stats of this turn decide it, not the stats of the turn
+		// before it: a reply that was complete is not a cut reply, and
+		// the warning is written once, with the reply it belongs to.
+		truncated := reported != nil && reported.OutputLimitHit
+		if truncated {
 			m.endActivity()
 			m.notice = "output limit reached — the reply was cut at max_tokens"
 		} else {
@@ -1712,6 +1730,11 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.attachMeta(i, turnFromStats(*reported))
 		}
 		m.attachAttribution(i)
+		// The warning belongs to the reply above it, and it stays in
+		// the conversation: the next turn does not take it away.
+		if truncated {
+			m.appendNote("assistant", outputLimitNote)
+		}
 		// The prompt was collapsed to make room for the answer. Now
 		// that the answer is here, the prompt opens again.
 		m.expandAfterTurn()

@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/flowbyte-com/HAL9001/internal/attachments"
 	"github.com/flowbyte-com/HAL9001/internal/engine"
+	"github.com/flowbyte-com/HAL9001/internal/provider"
 	"github.com/flowbyte-com/HAL9001/internal/queue"
 )
 
@@ -189,6 +190,54 @@ func TestACancelledTurnLeavesTheWaitingMessagesAlone(t *testing.T) {
 	}
 	if len(e.sent()) != 0 {
 		t.Fatalf("the cancelled turn sent the waiting message: %v", e.sent())
+	}
+}
+
+// The warning of a truncated reply survives the turn that follows it.
+//
+// A waiting message starts the next turn as soon as the reply arrives,
+// and the notice under the footer is replaced by the status of that
+// turn. The warning is therefore a note in the conversation: the
+// operator can still see that the reply was cut at max_tokens.
+func TestTheOutputLimitWarningSurvivesTheNextQueuedTurn(t *testing.T) {
+	e := &recordingEngine{}
+	m := busyModel(t, e)
+	m = paste(m, "first")
+	m = enterCurrent(m)
+	m = paste(m, "second")
+	m = enterCurrent(m)
+	if m.QueuePending() != 2 {
+		t.Fatalf("the queue holds %d pending messages", m.QueuePending())
+	}
+
+	// The running turn ends with a reply that was cut at the output
+	// limit.
+	updated, _ := m.Update(streamStatsMsg{id: m.streamID, stats: provider.TurnStats{
+		OutputLimitHit: true,
+		Status:         provider.StatusDone,
+	}})
+	m = updated.(Model)
+	updated, cmd := m.Update(responseMsg{id: m.streamID, text: "a cut off answer"})
+	m = updated.(Model)
+	m = draining(m, cmd)
+
+	// The waiting messages started the next turns on their own, in the
+	// order they were written.
+	if got := e.sent(); len(got) != 2 || got[0] != "first" || got[1] != "second" {
+		t.Fatalf("the waiting messages were sent in the wrong order: %v", got)
+	}
+	if m.QueuePending() != 0 {
+		t.Fatalf("the queue still holds %d pending messages", m.QueuePending())
+	}
+	// The warning is still there: it is a note in the conversation.
+	joined := strings.Join(m.Lines(), "\n")
+	if !strings.Contains(joined, "cut at max_tokens") {
+		t.Errorf("the warning is gone:\n%s", joined)
+	}
+	// The note is recorded once, and not again by the turns that
+	// followed it.
+	if n := strings.Count(joined, "cut at max_tokens"); n != 1 {
+		t.Errorf("the warning is recorded %d times:\n%s", n, joined)
 	}
 }
 
