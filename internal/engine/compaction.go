@@ -238,6 +238,18 @@ func (e *Engine) Compact(ctx context.Context, emit func(Event)) (CompactionRepor
 		Created:          time.Now().UTC(),
 	}
 	after := provider.EstimateTokens(e.requestMessages(history, "", "", &next), tools)
+	// The estimates belong to the record: they say how much of the
+	// stored context the compaction replaced, and a record without them
+	// cannot say whether it shrank anything.
+	//
+	// They are the same two numbers the operator is shown, measured with
+	// the same estimate every ordinary request is measured with. They
+	// are estimates of the context that would be sent, not measurements
+	// of the tokens that were transmitted: the cost of the compaction
+	// itself is the provider's own usage, and it is reported beside
+	// them.
+	next.BeforeTokens = before
+	next.AfterTokens = after
 
 	// The record is written last, and atomically. Everything before
 	// this point was in memory; nothing was committed until now.

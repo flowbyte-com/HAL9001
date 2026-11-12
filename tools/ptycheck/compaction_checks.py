@@ -32,6 +32,7 @@ Usage:
 """
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -347,6 +348,20 @@ def scenario_compact(harness, provider):
                   saved.get("summary", "")[:120])
             check("the record names what it covers",
                   saved.get("covered_messages", 0) > 0, saved)
+            # The record keeps the estimates the operator was shown.
+            check("the record carries the estimates",
+                  saved.get("before_tokens", 0) > 0 and
+                  saved.get("after_tokens", 0) > 0, saved)
+            check("the record shows a smaller context",
+                  saved.get("after_tokens", 0) < saved.get("before_tokens", 0),
+                  saved)
+            shown = re.search(r"est\.\s*(\d+)\s*→\s*(\d+)\s*tokens", screen)
+            check("the report names both estimates", shown is not None,
+                  screen[-400:])
+            if shown:
+                check("the record keeps the estimates the operator saw",
+                      saved.get("before_tokens") == int(shown.group(1)) and
+                      saved.get("after_tokens") == int(shown.group(2)), saved)
 
         # The next request carries the summary and is smaller.
         provider.requests.clear()

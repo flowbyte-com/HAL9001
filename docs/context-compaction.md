@@ -55,13 +55,22 @@ a summary.
 | `covered_messages` | how many leading messages of the transcript the summary replaces |
 | `covered_exchanges` | how many exchanges that is |
 | `first_turn_id`, `last_turn_id` | the provenance: the range of exchanges the summary covers |
-| `before_tokens`, `after_tokens` | the estimated size of the context before and after |
+| `before_tokens`, `after_tokens` | the estimated size of the stored context before and after |
 | `limit` | the context budget the request had to fit into |
 | `created` | when the compaction was made |
 
 The transcript is append-only, so a count of leading messages names an
 exact, stable part of it: the messages after the cut are the ones that
 were kept.
+
+The two token counts are the estimates the operator is shown, taken with
+the same estimate every ordinary request is measured with. They describe
+the context that **would be sent**, not the tokens that were transmitted,
+and they are not the provider's own usage: the cost of a compaction is
+the provider's usage, and it is reported beside them. A record written
+before the estimates were kept carries zeroes here; a zero means "not
+measured", never "empty", and such a record is read exactly like every
+other one.
 
 The write is **atomic**: the record goes into a temporary file in the
 same directory, the file is flushed, and it is renamed over the record.

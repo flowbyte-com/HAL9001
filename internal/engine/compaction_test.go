@@ -486,6 +486,13 @@ func TestASecondCompactionReplacesTheFirst(t *testing.T) {
 	if _, err := eng.Compact(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
+	first := st.ReadCompaction()
+	if first == nil {
+		t.Fatal("the first compaction was not recorded")
+	}
+	if first.BeforeTokens <= 0 || first.AfterTokens <= 0 {
+		t.Errorf("the first record carries no estimates: %+v", first)
+	}
 	compactConversation(t, st, 4, 40)
 	if _, err := eng.Compact(context.Background(), nil); err != nil {
 		t.Fatal(err)
@@ -500,6 +507,14 @@ func TestASecondCompactionReplacesTheFirst(t *testing.T) {
 	if record.CoveredMessages <= 8 {
 		t.Errorf("the covered messages = %d, want more than the first cut", record.CoveredMessages)
 	}
+	// The second record carries its own estimates, not the ones of the
+	// first compaction.
+	if record.BeforeTokens <= 0 || record.AfterTokens <= 0 {
+		t.Errorf("the second record carries no estimates: %+v", record)
+	}
+	if record.BeforeTokens == first.BeforeTokens && record.AfterTokens == first.AfterTokens {
+		t.Errorf("the second record repeats the estimates of the first: %+v", record)
+	}
 	// The request carries the newest summary and the recent exchanges.
 	if _, err := eng.Respond(context.Background(), "next?"); err != nil {
 		t.Fatal(err)
@@ -510,5 +525,82 @@ func TestASecondCompactionReplacesTheFirst(t *testing.T) {
 	}
 	if strings.Contains(text, "question 0:") {
 		t.Errorf("the request must not carry the covered exchanges:\n%s", text)
+	}
+}
+
+// The record keeps the estimates the operator was shown.
+//
+// A record without them cannot say what the compaction did to the
+// context, and the report is gone as soon as the screen is cleared.
+func TestTheRecordKeepsTheEstimatesTheOperatorWasShown(t *testing.T) {
+	st, err := session.Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactConversation(t, st, 8, 400)
+	spy := &compactSpy{replies: []string{"## Objective\nship the parser"}}
+	eng := compactEngine(t, st, spy, compactBudget(20000))
+	report, err := eng.Compact(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := st.ReadCompaction()
+	if record == nil {
+		t.Fatal("the compaction was not recorded")
+	}
+	if record.BeforeTokens != report.BeforeTokens {
+		t.Errorf("the record says %d tokens before, the report said %d",
+			record.BeforeTokens, report.BeforeTokens)
+	}
+	if record.AfterTokens != report.AfterTokens {
+		t.Errorf("the record says %d tokens after, the report said %d",
+			record.AfterTokens, report.AfterTokens)
+	}
+	// The numbers describe the stored context: the compaction made it
+	// smaller, and it fits the budget it was made against.
+	if record.AfterTokens >= record.BeforeTokens {
+		t.Errorf("the record does not show a smaller context: %d → %d",
+			record.BeforeTokens, record.AfterTokens)
+	}
+	if record.AfterTokens > report.Limit {
+		t.Errorf("the compacted context needs about %d tokens, the budget allows %d",
+			record.AfterTokens, report.Limit)
+	}
+}
+
+// The estimates are the context that would be sent, not the tokens that
+// were transmitted.
+//
+// The cost of a compaction is the provider's own usage, and it is
+// reported beside the estimates. The two are never the same number.
+func TestTheEstimatesAreNotTheProvidersUsage(t *testing.T) {
+	st, err := session.Open(t.TempDir(), "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactConversation(t, st, 6, 40)
+	// The provider reports a usage of its own for the compaction.
+	spy := &compactSpy{
+		replies: []string{"## Objective\nship the parser"},
+		usage:   provider.Usage{PromptTokens: 11, CompletionTokens: 13},
+	}
+	eng := compactEngine(t, st, spy, compactBudget(4000))
+	report, err := eng.Compact(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.InputTokens != 11 || report.OutputTokens != 13 {
+		t.Fatalf("the provider's usage was not reported: %+v", report)
+	}
+	record := st.ReadCompaction()
+	if record == nil {
+		t.Fatal("the compaction was not recorded")
+	}
+	// The record holds the estimates of the context, not the usage.
+	if record.BeforeTokens == 24 || record.AfterTokens == 24 {
+		t.Errorf("the record holds the provider's usage: %+v", record)
+	}
+	if record.BeforeTokens <= 0 || record.AfterTokens <= 0 {
+		t.Errorf("the record holds no estimates: %+v", record)
 	}
 }

@@ -106,7 +106,12 @@ func TestTheCompactionSurvivesAReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.WriteCompaction(Compaction{Summary: "a summary", CoveredMessages: 2}); err != nil {
+	if err := st.WriteCompaction(Compaction{
+		Summary:         "a summary",
+		CoveredMessages: 2,
+		BeforeTokens:    900,
+		AfterTokens:     120,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	// A new process opens the same conversation.
@@ -120,6 +125,55 @@ func TestTheCompactionSurvivesAReopen(t *testing.T) {
 	}
 	if record.Summary != "a summary" {
 		t.Errorf("the summary = %q", record.Summary)
+	}
+	// The estimates are part of the record: they survive the restart
+	// with the rest of it.
+	if record.BeforeTokens != 900 || record.AfterTokens != 120 {
+		t.Errorf("the estimates did not survive the reopen: %+v", record)
+	}
+}
+
+// A record written before the estimates were kept is read exactly like
+// every other one.
+//
+// The zeroes mean "not measured", never "empty", and they never make a
+// record unusable: the conversation runs on the summary either way.
+func TestARecordWithoutEstimatesIsStillRead(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(dir, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A v1 sidecar as it was written before the estimates were kept.
+	sidecar := `{
+  "version": 1,
+  "summary": "## Objective\nship the parser",
+  "covered_messages": 4,
+  "covered_exchanges": 2,
+  "before_tokens": 0,
+  "after_tokens": 0,
+  "created": "2026-11-10T09:00:00Z"
+}`
+	path := st.CompactionPath()
+	if err := os.WriteFile(path, []byte(sidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := st.ReadCompaction()
+	if record == nil {
+		t.Fatal("a record without estimates must still be read")
+	}
+	if record.Summary != "## Objective\nship the parser" {
+		t.Errorf("the summary = %q", record.Summary)
+	}
+	if record.CoveredMessages != 4 || record.CoveredExchanges != 2 {
+		t.Errorf("the record = %+v", record)
+	}
+	if record.BeforeTokens != 0 || record.AfterTokens != 0 {
+		t.Errorf("the estimates = %d → %d, want the zeroes the sidecar carries",
+			record.BeforeTokens, record.AfterTokens)
+	}
+	if record.Version != CompactionVersion {
+		t.Errorf("the version = %d", record.Version)
 	}
 }
 
