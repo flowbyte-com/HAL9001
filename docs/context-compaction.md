@@ -55,7 +55,7 @@ a summary.
 | `covered_messages` | how many leading messages of the transcript the summary replaces |
 | `covered_exchanges` | how many exchanges that is |
 | `first_turn_id`, `last_turn_id` | the provenance: the range of exchanges the summary covers |
-| `before_tokens`, `after_tokens` | the estimated size of the stored context before and after |
+| `before_tokens`, `after_tokens` | the estimated assembled context, before budget trimming, before and after |
 | `limit` | the context budget the request had to fit into |
 | `created` | when the compaction was made |
 
@@ -65,12 +65,26 @@ were kept.
 
 The two token counts are the estimates the operator is shown, taken with
 the same estimate every ordinary request is measured with. They describe
-the context that **would be sent**, not the tokens that were transmitted,
-and they are not the provider's own usage: the cost of a compaction is
-the provider's usage, and it is reported beside them. A record written
-before the estimates were kept carries zeroes here; a zero means "not
-measured", never "empty", and such a record is read exactly like every
-other one.
+the **assembled context, before budget trimming**, and nothing else: they
+are not the tokens that were transmitted to the model, and they are not
+the provider's own usage (the cost of a compaction is the provider's
+usage, and it is reported beside them).
+
+The budget trims the request *after* it is assembled, so the request that
+goes on the wire is usually smaller than the estimate. The two are not
+the same number, and the record never claims that they are: after a
+compaction the summary is protected and never dropped by the trimming, so
+the transmitted request can occasionally be *larger* than the request that
+came before it, even though the assembled context got smaller.
+
+A repeated compaction measures the context HAL assembles *now*: the
+summary of the previous compaction together with the exchanges that are
+still kept — not the whole original transcript, which HAL no longer
+sends.
+
+A record written before the estimates were kept carries zeroes here; a
+zero means "not measured", never "empty", and such a record is read
+exactly like every other one.
 
 The write is **atomic**: the record goes into a temporary file in the
 same directory, the file is flushed, and it is renamed over the record.
@@ -195,7 +209,7 @@ can never be larger than the budget allows.
 The status line says what happened:
 
 ```
-compacted — 6 earlier exchanges summarised, 2 kept · est. 36679 → 13492 tokens
+compacted — 6 earlier exchanges summarised, 2 kept · est. 36679 → 13492 tokens (assembled context, before trimming)
 ```
 
 The conversation shows a note with the same numbers, the budget, and
@@ -203,13 +217,21 @@ what the compaction means:
 
 > Context compacted: the model now receives a summary of 6 earlier
 > exchanges instead of the exchanges themselves. 2 recent exchange(s) were
-> left as they are. The estimated context went from about 36679 to about
-> 13492 tokens. The request itself is fitted to the 7168-token budget, so
-> the older exchanges are now summarised rather than dropped. The
+> left as they are. The estimated assembled context went from about 36679
+> to about 13492 tokens, before budget trimming. Those numbers describe the
+> context HAL assembles; they are not the tokens actually transmitted to
+> the model. The request is fitted to the 7168-token budget afterwards, and
+> trimming usually makes the transmitted request smaller than the estimate
+> — and after a compaction, whose summary is never dropped, it can
+> occasionally be larger than the request that came before it. The
 > conversation above is unchanged, and every message is still on disk.
 
 The numbers are **estimates**. HAL does not know the provider's
-tokenizer, and it never claims to.
+tokenizer, and it never claims to. They are estimates of the **assembled
+context, before budget trimming** — not of the tokens that went on the
+wire, and not of the provider's usage. The interface never says that the
+transmitted request got smaller, because that is only true when it has
+been measured.
 
 The conversation the operator sees is not changed by a compaction: the
 interface keeps showing every message, and the transcript on disk is
@@ -255,10 +277,17 @@ tokens applies with 1,024 of them reserved for the answer — a budget of
 
 | | |
 |---|---|
-| The estimated context before | about 36,679 tokens |
-| The estimated context after | about 13,492 tokens |
+| The estimated assembled context before (before budget trimming) | about 36,679 tokens |
+| The estimated assembled context after (before budget trimming) | about 13,492 tokens |
 | The compaction requests | 7, the largest about 3,340 tokens |
 | The window the stub enforces | 8,192 tokens |
+
+The two estimates are taken on the assembled context, before the budget
+trims it, and they are not the size of the request that went on the wire:
+the request is trimmed to the 7,168-token budget afterwards, so what is
+transmitted is smaller than the estimate — and, because the summary is
+protected and never dropped, occasionally larger than the request that
+came before the compaction.
 
 The compaction requests are far below the window because they carry no
 tool definitions and no persona: only the instruction and the material.

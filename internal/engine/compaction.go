@@ -94,7 +94,8 @@ Rules:
 
 // CompactionReport says what a compaction did.
 //
-// The token counts are estimates, and they are never presented as
+// The token counts are estimates of the assembled context, taken before
+// the budget trims the request, and they are never presented as
 // measurements: HAL does not know the provider's tokenizer.
 type CompactionReport struct {
 	// CoveredExchanges counts the exchanges the summary replaces.
@@ -107,7 +108,13 @@ type CompactionReport struct {
 	// Summary is the compacted representation itself.
 	Summary string
 	// BeforeTokens and AfterTokens are the estimated sizes of the
-	// request before and after the compaction.
+	// assembled context, before budget trimming, before and after the
+	// compaction.
+	//
+	// They are not the tokens that go on the wire: the budget trims the
+	// request afterwards, and the trimmed request may be smaller than
+	// the estimate, or - after a compaction, whose summary is never
+	// dropped - occasionally larger than the request that preceded it.
 	BeforeTokens int
 	AfterTokens  int
 	// Limit is the context budget the request had to fit into.
@@ -223,10 +230,16 @@ func (e *Engine) Compact(ctx context.Context, emit func(Event)) (CompactionRepor
 		return report, err
 	}
 
-	// The sizes, before and after. They are estimates of the request as
-	// it will be sent, and they are what the operator is shown.
+	// The sizes, before and after. They are estimates of the assembled
+	// context, before budget trimming, and they are what the operator is
+	// shown.
 	tools := e.offeredTools()
-	before := provider.EstimateTokens(e.requestMessages(history, "", "", nil), tools)
+	// The "before" is the context HAL assembles right now: the summary
+	// of the previous compaction together with the exchanges that are
+	// still kept, built through the same request construction the next
+	// turn uses. Measuring the whole transcript instead would describe
+	// a context HAL no longer sends.
+	before := provider.EstimateTokens(e.requestMessages(history, "", "", record), tools)
 	next := session.Compaction{
 		Version:          session.CompactionVersion,
 		Summary:          summary,
@@ -239,15 +252,15 @@ func (e *Engine) Compact(ctx context.Context, emit func(Event)) (CompactionRepor
 	}
 	after := provider.EstimateTokens(e.requestMessages(history, "", "", &next), tools)
 	// The estimates belong to the record: they say how much of the
-	// stored context the compaction replaced, and a record without them
-	// cannot say whether it shrank anything.
+	// assembled context the compaction replaced, and a record without
+	// them cannot say whether it shrank anything.
 	//
 	// They are the same two numbers the operator is shown, measured with
 	// the same estimate every ordinary request is measured with. They
-	// are estimates of the context that would be sent, not measurements
-	// of the tokens that were transmitted: the cost of the compaction
-	// itself is the provider's own usage, and it is reported beside
-	// them.
+	// describe the context that is assembled, before the budget trims
+	// it: they are not the tokens that were transmitted, and they are
+	// not the provider's own usage. The cost of the compaction itself
+	// is the provider's usage, and it is reported beside them.
 	next.BeforeTokens = before
 	next.AfterTokens = after
 

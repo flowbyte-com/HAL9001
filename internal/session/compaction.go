@@ -59,13 +59,19 @@ type Compaction struct {
 	FirstTurnID string `json:"first_turn_id,omitempty"`
 	LastTurnID  string `json:"last_turn_id,omitempty"`
 	// BeforeTokens and AfterTokens are the estimated sizes of the
-	// stored context before and after the compaction.
+	// assembled context, before budget trimming, before and after the
+	// compaction.
 	//
-	// They are estimates of the context a request would carry, taken
-	// with the same estimate every ordinary request is measured with.
-	// They are not measurements of the tokens that were transmitted, and
-	// they are not the provider's own usage: the cost of a compaction is
-	// the provider's usage, and it is reported beside them.
+	// They are estimates of the context a request is assembled from,
+	// taken with the same estimate every ordinary request is measured
+	// with. They are not the tokens that were transmitted, and they are
+	// not the provider's own usage: the cost of a compaction is the
+	// provider's usage, and it is reported beside them.
+	//
+	// The budget trims the request after it is assembled, so the
+	// request that goes on the wire may be smaller than the estimate -
+	// or, after a compaction, whose summary is never dropped, larger
+	// than the request that preceded it.
 	//
 	// A record written before the estimates were kept carries zeroes
 	// here. A zero means "not measured", never "empty", and such a

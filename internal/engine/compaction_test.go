@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -106,6 +108,86 @@ func compactEngine(t *testing.T, st *session.Store, spy provider.Provider, budge
 	t.Helper()
 	return New(st, spy, provider.Model{ID: "mock", Budget: budget}).
 		WithSystemPrompt("You are HAL9001.")
+}
+
+// compactWindow is the budget of a model with a window of its own: the
+// limit is what is left for the request once the answer has been
+// reserved.
+func compactWindow(limit, total, reserved int) provider.ContextBudget {
+	return provider.ContextBudget{
+		Limit:          limit,
+		Total:          total,
+		ReservedOutput: reserved,
+		Source:         provider.ContextSourceOperator,
+		Mode:           provider.ContextModeConfigured,
+		Verified:       true,
+	}
+}
+
+// compactSizedExchange appends one exchange whose question and answer
+// have the given sizes.
+func compactSizedExchange(t *testing.T, st *session.Store, index, question, answer int) {
+	t.Helper()
+	turn := session.Turn{ID: session.NewTurnID()}
+	if _, err := st.AppendTurn(session.RoleUser,
+		fmt.Sprintf("question %d: %s", index, strings.Repeat("q", question)), turn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendTurn(session.RoleAssistant,
+		fmt.Sprintf("answer %d: %s", index, strings.Repeat("a", answer)), turn); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// compactStoreCopy copies a session store into a directory of its own.
+//
+// A measurement that needs the request the provider receives must not
+// change the conversation it measures, so the measurement runs on a
+// copy.
+func compactStoreCopy(t *testing.T, dir, name string) *session.Store {
+	t.Helper()
+	target := t.TempDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, entry.Name()), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copied, err := session.Open(target, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return copied
+}
+
+// compactWireSize is the size of the request the provider receives for
+// an ordinary turn.
+//
+// It is measured on a copy of the conversation, so the measurement does
+// not change the conversation: the number is the one the wire carries.
+func compactWireSize(t *testing.T, dir, name string, budget provider.ContextBudget) int {
+	t.Helper()
+	copied := compactStoreCopy(t, dir, name)
+	spy := &compactSpy{replies: []string{"## Objective\nthe answer"}}
+	eng := compactEngine(t, copied, spy, budget)
+	if _, err := eng.Respond(context.Background(), "what now?"); err != nil {
+		t.Fatal(err)
+	}
+	wire := spy.last(t)
+	if len(wire) == 0 {
+		t.Fatal("the provider received nothing")
+	}
+	return provider.EstimateTokens(wire, nil)
 }
 
 func TestCompactionReplacesTheOlderExchangesInTheRequest(t *testing.T) {
@@ -568,8 +650,8 @@ func TestTheRecordKeepsTheEstimatesTheOperatorWasShown(t *testing.T) {
 	}
 }
 
-// The estimates are the context that would be sent, not the tokens that
-// were transmitted.
+// The estimates are the assembled context, not the tokens that were
+// transmitted.
 //
 // The cost of a compaction is the provider's own usage, and it is
 // reported beside the estimates. The two are never the same number.
@@ -602,5 +684,192 @@ func TestTheEstimatesAreNotTheProvidersUsage(t *testing.T) {
 	}
 	if record.BeforeTokens <= 0 || record.AfterTokens <= 0 {
 		t.Errorf("the record holds no estimates: %+v", record)
+	}
+}
+
+// A second compaction measures the context HAL assembles now.
+//
+// After a compaction, the context HAL assembles is the summary of that
+// compaction together with the exchanges that are kept. The whole
+// original transcript is not sent any more: measuring it would
+// describe a context that never reaches the provider.
+func TestASecondCompactionMeasuresTheContextThatIsAssembledNow(t *testing.T) {
+	dir := t.TempDir()
+	st, err := session.Open(dir, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactConversation(t, st, 8, 800)
+	spy := &compactSpy{replies: []string{
+		"## Objective\nthe first summary",
+		"## Objective\nthe second summary",
+	}}
+	eng := compactEngine(t, st, spy, compactBudget(20000))
+	first, err := eng.Compact(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The conversation grows after the first compaction.
+	compactConversation(t, st, 3, 800)
+
+	// The context that is assembled now is measured on a copy of the
+	// conversation, so the measurement does not change it. It is the
+	// request the provider receives for the next ordinary turn,
+	// without the question that turn adds at the end.
+	copied := compactStoreCopy(t, dir, "chat")
+	measure := &compactSpy{replies: []string{"## Objective\nthe answer"}}
+	measuring := compactEngine(t, copied, measure, compactBudget(20000))
+	if _, err := measuring.Respond(context.Background(), "next?"); err != nil {
+		t.Fatal(err)
+	}
+	wire := measure.last(t)
+	if len(wire) < 2 {
+		t.Fatal("the provider received nothing")
+	}
+	assembled := provider.EstimateTokens(wire[:len(wire)-1], nil)
+
+	second, err := eng.Compact(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.BeforeTokens != assembled {
+		t.Errorf("the second compaction measured %d tokens, the assembled context is %d",
+			second.BeforeTokens, assembled)
+	}
+	// It is not the whole original transcript: the first measurement
+	// described that transcript, and the transcript only grew since.
+	if second.BeforeTokens >= first.BeforeTokens {
+		t.Errorf("the second compaction measured the whole transcript again: %d, then %d",
+			first.BeforeTokens, second.BeforeTokens)
+	}
+}
+
+// The estimates are the assembled context, and the request that goes on
+// the wire is fitted to the budget.
+//
+// The budget trims the request after the context is assembled, so the
+// two numbers are not the same. The record holds the assembled one, and
+// it says so.
+func TestTheEstimatesAreTheAssembledContextAndNotTheRequestOnTheWire(t *testing.T) {
+	dir := t.TempDir()
+	st, err := session.Open(dir, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A conversation whose assembled context does not fit the window:
+	// the older exchanges and the recent ones are both large.
+	budget := compactWindow(7168, 8192, 1024)
+	for i := 0; i < 4; i++ {
+		compactSizedExchange(t, st, i, 2000, 2000)
+	}
+	for i := 4; i < 6; i++ {
+		compactSizedExchange(t, st, i, 8000, 8000)
+	}
+	spy := &compactSpy{replies: []string{"## Objective\nship the parser"}}
+	eng := compactEngine(t, st, spy, budget)
+	report, err := eng.Compact(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := st.ReadCompaction()
+	if record == nil {
+		t.Fatal("the compaction was not recorded")
+	}
+	// The assembled context did not fit the window, and the record says
+	// how big it was.
+	if record.BeforeTokens <= budget.Limit {
+		t.Errorf("the assembled context fitted the window: %d tokens, the limit is %d",
+			record.BeforeTokens, budget.Limit)
+	}
+	// The request that goes on the wire is fitted to the window.
+	wire := compactWireSize(t, dir, "chat", budget)
+	if wire > budget.Limit {
+		t.Errorf("the request on the wire is %d tokens, the limit is %d", wire, budget.Limit)
+	}
+	// The record holds the assembled context, not the request on the
+	// wire: the two are different numbers, and the record is the
+	// larger one.
+	if record.AfterTokens == wire {
+		t.Errorf("the record holds the size of the request on the wire: %d", wire)
+	}
+	if record.AfterTokens < wire {
+		t.Errorf("the record holds %d tokens, the request on the wire is %d",
+			record.AfterTokens, wire)
+	}
+	if report.AfterTokens != record.AfterTokens {
+		t.Errorf("the report says %d tokens, the record says %d",
+			report.AfterTokens, record.AfterTokens)
+	}
+}
+
+// A compaction can shrink the assembled context while the request that
+// goes on the wire grows.
+//
+// The trim drops the oldest exchanges and stops as soon as the request
+// fits, so a conversation whose newest exchanges are small can be
+// trimmed to a very small request. After a compaction the summary is
+// protected and is never dropped, so the request that follows carries
+// it — and it can be larger than the request that came before.
+//
+// This is why the two numbers are never described as a reduction of the
+// tokens that were transmitted.
+func TestTheCompactionCanReduceTheAssembledContextWhileTheRequestOnTheWireGrows(t *testing.T) {
+	dir := t.TempDir()
+	st, err := session.Open(dir, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := compactWindow(7168, 8192, 1024)
+	// The older exchanges are large enough to be summarised, the
+	// second-newest is large enough to be dropped by the trim, and the
+	// newest is small.
+	for i := 0; i < 7; i++ {
+		compactSizedExchange(t, st, i, 1000, 15000)
+	}
+	compactSizedExchange(t, st, 7, 100, 24000)
+	compactSizedExchange(t, st, 8, 100, 100)
+
+	// The request that goes on the wire before the compaction.
+	before := compactWireSize(t, dir, "chat", budget)
+
+	// The compaction. The summary is protected and is never dropped.
+	summary := "## Objective\n" + strings.Repeat("the older work was done and verified. ", 60)
+	spy := &compactSpy{replies: []string{summary}}
+	eng := compactEngine(t, st, spy, budget)
+	report, err := eng.Compact(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := st.ReadCompaction()
+	if record == nil {
+		t.Fatal("the compaction was not recorded")
+	}
+	// The request that goes on the wire after the compaction.
+	after := compactWireSize(t, dir, "chat", budget)
+
+	t.Logf("assembled context: %d → %d tokens; request on the wire: %d → %d tokens",
+		record.BeforeTokens, record.AfterTokens, before, after)
+	// The assembled context got smaller.
+	if record.AfterTokens >= record.BeforeTokens {
+		t.Errorf("the assembled context did not get smaller: %d → %d",
+			record.BeforeTokens, record.AfterTokens)
+	}
+	// The request on the wire grew: the summary is protected and the
+	// trim had dropped far more before the compaction.
+	if after <= before {
+		t.Errorf("the request on the wire did not grow: %d → %d", before, after)
+	}
+	// Both requests fit the window: the trim did its work.
+	if before > budget.Limit || after > budget.Limit {
+		t.Errorf("a request on the wire did not fit the window: %d and %d, the limit is %d",
+			before, after, budget.Limit)
+	}
+	// The numbers the operator sees are the assembled ones, and they
+	// are not the size of the request that was transmitted.
+	if report.BeforeTokens != record.BeforeTokens || report.AfterTokens != record.AfterTokens {
+		t.Errorf("the report and the record disagree: %+v and %+v", report, record)
+	}
+	if record.AfterTokens == after {
+		t.Errorf("the record holds the size of the request on the wire: %d", after)
 	}
 }

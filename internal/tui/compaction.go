@@ -142,7 +142,7 @@ func (m Model) runCompactInline(id int, eng CompactEngine, ctx context.Context) 
 // The numbers are estimates: HAL does not know the provider's
 // tokenizer, and it never claims to.
 func compactionNotice(r engine.CompactionReport) string {
-	return fmt.Sprintf("compacted — %s summarised, %d kept · est. %d → %d tokens",
+	return fmt.Sprintf("compacted — %s summarised, %d kept · est. %d → %d tokens (assembled context, before trimming)",
 		compactExchangeCount(r.CoveredExchanges), r.KeptExchanges,
 		r.BeforeTokens, r.AfterTokens)
 }
@@ -152,14 +152,22 @@ func compactionNotice(r engine.CompactionReport) string {
 // It says what the model now receives, and it says that the
 // conversation above is unchanged: a compaction changes what is sent,
 // never what was said.
+//
+// The two estimates are named for what they are: the assembled context,
+// before the budget trims it. They are not the number of tokens that go
+// on the wire, and the note does not claim that the transmitted request
+// got smaller.
 func compactionNote(r engine.CompactionReport) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(
 		"Context compacted: the model now receives a summary of %s instead of the exchanges themselves. "+
-			"%d recent exchange(s) were left as they are. The estimated context went from about %d to "+
-			"about %d tokens. The request itself is fitted to the %d-token budget, so the older exchanges "+
-			"are now summarised rather than dropped. The conversation above is unchanged, and every "+
-			"message is still on disk.",
+			"%d recent exchange(s) were left as they are. The estimated assembled context went from about %d "+
+			"to about %d tokens, before budget trimming. Those numbers describe the context HAL assembles; "+
+			"they are not the tokens actually transmitted to the model. The request is fitted to the "+
+			"%d-token budget afterwards, so the older exchanges are summarised rather than dropped: "+
+			"trimming usually makes the transmitted request smaller than the estimate — and after a "+
+			"compaction, whose summary is never dropped, it can occasionally be larger than the request "+
+			"that came before it. The conversation above is unchanged, and every message is still on disk.",
 		compactExchangeCount(r.CoveredExchanges), r.KeptExchanges,
 		r.BeforeTokens, r.AfterTokens, r.Limit))
 	if r.Steps > 1 {

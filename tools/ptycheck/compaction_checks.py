@@ -292,6 +292,35 @@ def stored(config):
         return json.load(fh)
 
 
+def read_json_lines(path):
+    """The JSON documents of a file, one per line."""
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path, "r", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                pass
+    return out
+
+
+def record_of(session_file):
+    """The record of the compaction, if there is one."""
+    path = os.path.join(os.path.dirname(session_file), "compact.compaction.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except ValueError:
+        return None
+
+
 def scenario_compact(harness, provider):
     """The compaction happens, and the transcript is unchanged."""
     session, config, session_file = harness
@@ -333,6 +362,16 @@ def scenario_compact(harness, provider):
         # The report the operator sees names both estimates.
         check("the report names the before estimate",
               "est." in screen and "→" in screen, screen[-400:])
+        # The estimates are named for what they are: the assembled
+        # context, before the budget trims it. The text is read without
+        # the line breaks of the terminal: a sentence that wraps is one
+        # sentence.
+        flat = " ".join(screen.split())
+        check("the report names the assembled context",
+              "before trimming" in flat, screen[-600:])
+        check("the conversation says the estimates are not wire tokens",
+              "before budget trimming" in flat and
+              "not the tokens actually transmitted" in flat, screen[-1600:])
         if provider.requests:
             biggest = max(provider.size(r) for r in provider.requests)
             print("    measurements: the biggest request was about %d tokens" % biggest)
@@ -340,6 +379,7 @@ def scenario_compact(harness, provider):
         # The record of the compaction is beside the transcript.
         record = os.path.join(os.path.dirname(session_file), "compact.compaction.json")
         check("the record was written", os.path.isfile(record), record)
+        saved = {}
         if os.path.isfile(record):
             with open(record) as fh:
                 saved = json.load(fh)
@@ -378,6 +418,18 @@ def scenario_compact(harness, provider):
                   provider.size(request) <= WINDOW, provider.size(request))
             check("the request is smaller than the conversation",
                   provider.size(request) < 20000, provider.size(request))
+            # The request that went on the wire was fitted to the
+            # window, and it is not the number the record holds: the
+            # record holds the assembled context, before the trim.
+            check("the request on the wire is smaller than the assembled context",
+                  provider.size(request) < saved.get("before_tokens", 0),
+                  "%d on the wire, the record says %d" %
+                  (provider.size(request), saved.get("before_tokens", 0)))
+            check("the request on the wire was trimmed",
+                  len(request.get("messages") or []) <
+                  len(read_json_lines(session_file)),
+                  "%d message(s) on the wire" %
+                  len(request.get("messages") or []))
 
         # The active model did not change.
         check("the active model did not change",
@@ -581,6 +633,76 @@ def scenario_trust_boundary(harness, provider):
         session.close()
 
 
+def scenario_second_compaction(harness, provider):
+    """A second compaction measures the context that is assembled now.
+
+    The first compaction replaced the older exchanges with a summary. The
+    context HAL assembles now is that summary together with the
+    exchanges that are kept: the whole transcript is not sent any more,
+    and a compaction that measured it would describe a context that
+    never reaches the provider.
+    """
+    session, config, session_file = harness
+    try:
+        provider.requests.clear()
+        session.send(b"/compact\r")
+        session.until(lambda: "compacted" in session.screen(), 90.0)
+        first = record_of(session_file)
+        check("the first compaction was recorded", first is not None,
+              session_file)
+        if first is None:
+            return
+
+        # The conversation grows: the operator asks something else.
+        session.send(b"what next?\r")
+        session.until(lambda: "recorded request" in session.screen(), 60.0)
+
+        # The second compaction.
+        provider.requests.clear()
+        session.send(b"/compact\r")
+        session.until(lambda: (record_of(session_file) or {}).get("before_tokens")
+                      != first.get("before_tokens"), 90.0)
+        second = record_of(session_file)
+        check("the second compaction was recorded", second is not None,
+              session_file)
+        if second is None:
+            return
+
+        # The second compaction measured the context that is assembled
+        # now: the transcript only grew, so the whole transcript would
+        # have been a larger number than the first one.
+        check("the second compaction measured the assembled context",
+              second.get("before_tokens", 0) < first.get("before_tokens", 0),
+              "first %s, second %s" % (first.get("before_tokens"),
+                                       second.get("before_tokens")))
+        # The compaction still made the assembled context smaller.
+        check("the second compaction still shrank the context",
+              second.get("after_tokens", 0) < second.get("before_tokens", 0),
+              second)
+        # The estimates the operator saw are the ones that were stored.
+        shown = re.findall(r"est\.\s*(\d+)\s*→\s*(\d+)\s*tokens",
+                           session.screen())
+        if shown:
+            check("the second report agrees with the record",
+                  shown[-1][0] == str(second.get("before_tokens")) and
+                  shown[-1][1] == str(second.get("after_tokens")),
+                  "%s and %s" % (shown[-1], second))
+        # The request that follows the second compaction is fitted to the
+        # window, and it carries the newest summary.
+        provider.requests.clear()
+        session.send(b"and after that?\r")
+        session.until(lambda: "recorded request" in session.screen(), 60.0)
+        if provider.requests:
+            request = provider.requests[-1]
+            check("the request after the second compaction is inside the window",
+                  provider.size(request) <= WINDOW, provider.size(request))
+            check("the request after the second compaction carries the summary",
+                  "COMPACTION-SUMMARY-MARKER" in json.dumps(request),
+                  json.dumps(request)[:300])
+    finally:
+        session.close()
+
+
 def main():
     if not os.path.isfile(BINARY):
         print("missing HAL9001 binary:", BINARY)
@@ -618,6 +740,13 @@ def main():
         session, config, session_file = start(root, "poisoned", inject=True)
         try:
             scenario_trust_boundary((session, config, session_file), provider)
+        finally:
+            session.close()
+
+        print("== a second compaction measures the context that is assembled now ==")
+        session, config, session_file = start(root, "second")
+        try:
+            scenario_second_compaction((session, config, session_file), provider)
         finally:
             session.close()
 

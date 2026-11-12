@@ -84,6 +84,19 @@ func TestTheCompactionRunsWhenTheOperatorAsks(t *testing.T) {
 	if !strings.Contains(joined, "summarised rather than dropped") {
 		t.Errorf("the conversation must say what the compaction means:\n%s", joined)
 	}
+	// The numbers are named for what they are: the assembled context,
+	// before the budget trims it, and not the tokens that were
+	// transmitted.
+	if !strings.Contains(joined, "before budget trimming") {
+		t.Errorf("the conversation must say the estimates are pre-trim:\n%s", joined)
+	}
+	if !strings.Contains(joined, "not the tokens actually transmitted") {
+		t.Errorf("the conversation must say the estimates are not wire tokens:\n%s", joined)
+	}
+	if strings.Contains(joined, "fewer tokens were sent") ||
+		strings.Contains(joined, "transmitted tokens went down") {
+		t.Errorf("the conversation must not claim a wire-token reduction:\n%s", joined)
+	}
 	// The conversation shows what the model now receives.
 	if !strings.Contains(joined, "Context compacted") {
 		t.Errorf("the conversation must say what was compacted:\n%s", joined)
