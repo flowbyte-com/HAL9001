@@ -120,6 +120,47 @@ class RecordingOpenAIProvider:
             return self.requests[-1] if self.requests else None
 
 
+class KeyRecordingProvider:
+    """A local OpenAI-compatible endpoint that records the authorization
+    of catalogue probes. It proves an explicit Test sends the newly
+    staged key: the header carries it, and nothing else does."""
+
+    def __init__(self, port, models):
+        self.port = port
+        self.models = models
+        self.auths = []
+        self.lock = threading.Lock()
+        self.server = None
+
+    def start(self):
+        provider = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.path.rstrip("/").endswith("/models"):
+                    with provider.lock:
+                        provider.auths.append(self.headers.get("Authorization", ""))
+                    body = json.dumps({"data": [{"id": i} for i in provider.models]}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def stop(self):
+        if self.server:
+            self.server.shutdown()
+
+
 class HTMLProvider:
     """A provider that answers discovery with HTML (the DeepSeek defect)."""
 
@@ -180,6 +221,19 @@ def ask(session, text):
     session.wait(1.0)
 
 
+def reopen_session(root, name, path, home, cols=120, rows=40):
+    """Attach to an existing home without rewriting its configuration.
+
+    A restart must keep working with what is on disk: the saved
+    credential stays usable without being typed again."""
+    store = os.path.join(home, "sessions")
+    workspace = os.path.join(home, "HAL")
+    session = Session(BINARY, path, home, store, "fix-%s" % name, workspace, cols=cols, rows=rows)
+    session.start()
+    session.wait_for("Enter send", 25.0)
+    return session
+
+
 def main():
     root = tempfile.mkdtemp(prefix="hal-fix-")
     os.environ["DEEPSEEK_API_KEY"] = DEEPSEEK_KEY
@@ -191,6 +245,8 @@ def main():
     deepseek.start()
     html = HTMLProvider(BASE_PORT + 2)
     html.start()
+    lit = KeyRecordingProvider(BASE_PORT + 3, ["lit-model"])
+    lit.start()
     try:
         # --- Starting point: only MiniMax configured. ---
         config = {
@@ -427,6 +483,81 @@ def main():
         finally:
             session3.close()
 
+        # --- Successful literal save + explicit Test + restart. ---
+        session4, path4, home4 = open_session(root, "s4", config)
+        try:
+            session4.send(b"/endpoint add\r")
+            session4.wait(1.2)
+            for key, value in [(b"i", b"lit-ep"), (b"n", b"Lit EP"),
+                               (b"u", ("http://127.0.0.1:%d/v1" % (BASE_PORT + 3)).encode())]:
+                session4.send(key)
+                session4.wait(0.7)
+                session4.send(value)
+                session4.wait(0.3)
+                session4.send(b"\x13")
+                session4.wait(0.7)
+            # Stage the literal key through the masked field.
+            session4.send(b"k")
+            session4.wait(1.0)
+            session4.send(b"\x1b[B")
+            session4.wait(0.3)
+            session4.send(b"\x1b[B")
+            session4.wait(0.3)
+            session4.send(b"\r")
+            session4.wait(0.8)
+            session4.send(b"\x1b[200~" + PASTED_KEY.encode() + b"\x1b[201~")
+            session4.wait(0.8)
+            check("pasted key stays masked", PASTED_KEY not in session4.screen(), session4.screen()[-400:])
+            session4.send(b"\x13")
+            session4.wait(0.8)
+            screen = session4.screen()
+            check("key is staged, not discarded", "save to store it" in screen, screen[-500:])
+            check("staged key never shown", PASTED_KEY not in screen, screen[-400:])
+            # Explicit Test sends the staged key, not an older saved one.
+            session4.send(b"t")
+            session4.wait(2.0)
+            screen = session4.screen()
+            check("test reaches the endpoint", "reachable" in screen, screen[-400:])
+            with lit.lock:
+                auths = list(lit.auths)
+            check("test sent the staged key", len(auths) > 0 and auths[-1] == "Bearer " + PASTED_KEY,
+                  "authorization header mismatch")
+            # Save persists the exact value with the reference cleared.
+            session4.send(b"s")
+            session4.wait(1.5)
+            with open(path4) as fh:
+                saved4 = json.load(fh)
+            ep4 = {e["id"]: e for e in saved4.get("endpoints", [])}.get("lit-ep", {})
+            check("literal saved exactly", ep4.get("credential") == PASTED_KEY, "stored credential mismatch")
+            check("reference cleared on literal save", not ep4.get("credential_env"), ep4.get("credential_env"))
+            check("configuration mode 0600", (os.stat(path4).st_mode & 0o777) == 0o600,
+                  oct(os.stat(path4).st_mode & 0o777))
+            check("saved key never echoed", PASTED_KEY not in session4.screen(), session4.screen()[-400:])
+        finally:
+            session4.close()
+        # Restart on the same home: the saved key stays usable.
+        session5 = reopen_session(root, "s4b", path4, home4)
+        try:
+            session5.send(b"/endpoint edit\r")
+            session5.wait(1.2)
+            session5.send(b"\x1b[B")
+            session5.wait(0.4)
+            session5.send(b"\r")
+            session5.wait(1.0)
+            screen = session5.screen()
+            check("restart keeps the stored-key indicator", "(a stored key)" in screen, screen[-500:])
+            check("restart never shows the key", PASTED_KEY not in screen, screen[-400:])
+            with lit.lock:
+                before = len(lit.auths)
+            session5.send(b"t")
+            session5.wait(2.0)
+            with lit.lock:
+                after = list(lit.auths)
+            check("restarted test sends the saved key",
+                  len(after) > before and after[-1] == "Bearer " + PASTED_KEY, "authorization header mismatch")
+        finally:
+            session5.close()
+
         # --- No leak: key appears nowhere on disk, in session data or in other endpoints. ---
         with open(path) as fh:
             content = fh.read()
@@ -436,6 +567,7 @@ def main():
         minimax.stop()
         deepseek.stop()
         html.stop()
+        lit.stop()
         shutil.rmtree(root, ignore_errors=True)
 
     print()

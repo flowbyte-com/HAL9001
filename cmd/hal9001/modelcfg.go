@@ -595,6 +595,16 @@ func (a *app) testEndpoint(spec tui.EndpointSpec) (string, error) {
 	if spec.ClearCredential {
 		record.CredentialEnv = ""
 		record.Credential = ""
+	} else if record.CredentialEnv == "" && record.Credential == "" {
+		// The editor names only what changed. When it names no
+		// credential, the test probes with the stored one: reopening
+		// an endpoint and pressing Test must work without retyping
+		// the key. A staged key or reference always wins over the
+		// stored one, and an explicit removal stays removed.
+		if stored, ok := a.stored.EndpointByID(spec.ID); ok {
+			record.CredentialEnv = stored.CredentialEnv
+			record.Credential = stored.Credential
+		}
 	}
 	client, err := provider.NewForProtocol(wire, record.BaseURL, record.CredentialValue(), provider.Options{
 		DefaultMaxTokens: a.cfg.MaxTokens,

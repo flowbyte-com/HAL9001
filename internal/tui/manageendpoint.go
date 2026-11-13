@@ -93,11 +93,11 @@ func (m *Model) openNewEndpoint(after func(*Model, string) tea.Cmd) tea.Cmd {
 	m.manage.title = "Add an endpoint"
 	m.manage.message = "The endpoint is added. The active model does not change."
 	m.manage.keys = "Up and down choose · Enter opens · Ctrl+S saves · Esc back"
-	m.manage.actions = m.endpointRows(values)
 	m.manage.endpointBefore = nil
 	m.manage.endpointCredential = ""
 	m.manage.endpointHasLiteral = false
 	m.manage.endpointClearCredential = false
+	m.manage.actions = m.endpointRows(values)
 	m.manage.after = after
 	m.manage.save = func(m *Model) tea.Cmd { return m.saveEndpointValues(m.endpointValues(), nil, m.manage.after) }
 	m.manage.notice = ""
@@ -142,11 +142,11 @@ func (m *Model) openEndpointSettings(item manageItem) tea.Cmd {
 	m.manage.lines = append(m.endpointLines(item.endpoint),
 		"  affects       every model of this endpoint shares the address, protocol, wire and credential",
 		"  identity      the id never changes — to move, add a new endpoint and add its models there")
-	m.manage.actions = m.endpointRows(values)
 	m.manage.endpointBefore = &before
 	m.manage.endpointCredential = ""
 	m.manage.endpointHasLiteral = detail.HasLiteralCredential
 	m.manage.endpointClearCredential = false
+	m.manage.actions = m.endpointRows(values)
 	m.manage.save = func(m *Model) tea.Cmd { return m.saveEndpointValues(m.endpointValues(), &before, nil) }
 	m.manage.notice = ""
 	m.manage.cursor = 0
@@ -346,16 +346,29 @@ func (m *Model) openCredentialChoice() tea.Cmd {
 			case manageEnterKey:
 				return m.openCredentialKeyForm()
 			case manageNoCredential:
+				m.manageSetValue(endpointKeyCredential, "")
+				// The choice is recorded on the endpoint editor below:
+				// the choice screen itself is discarded on the way back.
+				// The current flags feed the row display refresh.
 				m.manage.endpointCredential = ""
 				m.manage.endpointClearCredential = true
-				m.manageSetValue(endpointKeyCredential, "")
+				if len(m.manageStack) > 0 {
+					m.manageStack[len(m.manageStack)-1].endpointCredential = ""
+					m.manageStack[len(m.manageStack)-1].endpointClearCredential = true
+				}
 				m.refreshCredentialRow()
 				m.manageBack()
 				return nil
 			default:
 				m.manageSetValue(endpointKeyCredential, choice.value)
+				// An explicit variable replaces any staged key: the old
+				// literal must not survive beside it, here or below.
 				m.manage.endpointCredential = ""
 				m.manage.endpointClearCredential = false
+				if len(m.manageStack) > 0 {
+					m.manageStack[len(m.manageStack)-1].endpointCredential = ""
+					m.manageStack[len(m.manageStack)-1].endpointClearCredential = false
+				}
 				m.refreshCredentialRow()
 				m.manageBack()
 				return nil
@@ -388,10 +401,20 @@ func (m *Model) openCredentialKeyForm() tea.Cmd {
 			// survive in the form or in a draft.
 			m.scrubManageFields()
 			if typed != "" {
-				m.manage.endpointCredential = typed
-				m.manage.endpointClearCredential = false
-				m.manageSetValueBelow(endpointKeyCredential, "")
-				m.refreshCredentialRow()
+				// The key is staged on the endpoint editor below, two
+				// levels down: the password form itself is scrubbed
+				// and discarded on the way back, so anything kept
+				// here would be lost. The value is never displayed.
+				if len(m.manageStack) >= 2 {
+					parent := &m.manageStack[len(m.manageStack)-2]
+					parent.endpointCredential = typed
+					parent.endpointClearCredential = false
+					for i := range parent.actions {
+						if parent.actions[i].key == endpointKeyCredential {
+							parent.actions[i].value = "(a new key was typed — save to store it)"
+						}
+					}
+				}
 			}
 			m.manageBack()
 			m.manageBack()
@@ -455,11 +478,13 @@ func (m *Model) openCredentialNameForm() tea.Cmd {
 			m.scrubManageFields()
 			if typed != "" {
 				// The name belongs to the endpoint screen, and the
-				// list of choices is only the way to reach it.
+				// list of choices is only the way to reach it. Naming
+				// a variable replaces any staged key below.
 				m.manageSetValueBelow(endpointKeyCredential, typed)
-				m.manage.endpointCredential = ""
-				m.manage.endpointClearCredential = false
-				m.refreshCredentialRow()
+				if len(m.manageStack) >= 2 {
+					m.manageStack[len(m.manageStack)-2].endpointCredential = ""
+					m.manageStack[len(m.manageStack)-2].endpointClearCredential = false
+				}
 			}
 			m.manageBack()
 			m.manageBack()
