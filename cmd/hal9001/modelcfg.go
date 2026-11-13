@@ -145,13 +145,18 @@ func (a *app) saveEndpoint(spec tui.EndpointSpec) error {
 		if spec.BaseURL != "" {
 			e.BaseURL = spec.BaseURL
 		}
-		if spec.CredentialEnv != "" {
-			e.CredentialEnv = spec.CredentialEnv
-			e.Credential = ""
-		}
-		if spec.Credential != "" {
-			e.Credential = spec.Credential
+		if spec.ClearCredential {
 			e.CredentialEnv = ""
+			e.Credential = ""
+		} else {
+			if spec.CredentialEnv != "" {
+				e.CredentialEnv = spec.CredentialEnv
+				e.Credential = ""
+			}
+			if spec.Credential != "" {
+				e.Credential = spec.Credential
+				e.CredentialEnv = ""
+			}
 		}
 		// The flag has three states: a new endpoint may leave it alone,
 		// and an edit may change it. An edit that named nothing else
@@ -450,7 +455,8 @@ func (a *app) modelDetail(endpointID, modelID string) (tui.ModelDetail, error) {
 // endpointDetail describes one endpoint: its settings and its models.
 //
 // The credential is described, never shown: the screen offers the name
-// of the environment variable that holds it, never its value.
+// of the environment variable that holds it, never its value. A literal
+// key is reported only as present, never as a value.
 func (a *app) endpointDetail(endpointID string) (tui.EndpointDetail, error) {
 	endpoint, ok := a.stored.EndpointByID(endpointID)
 	if !ok {
@@ -465,6 +471,7 @@ func (a *app) endpointDetail(endpointID string) (tui.EndpointDetail, error) {
 			BaseURL:       endpoint.BaseURL,
 			CredentialEnv: endpoint.CredentialEnv,
 		},
+		HasLiteralCredential: strings.TrimSpace(endpoint.Credential) != "",
 	}
 	if detail.Settings.Name == "" {
 		detail.Settings.Name = endpoint.Display()
@@ -565,8 +572,8 @@ func (a *app) discover(endpointID string) ([]string, error) {
 //
 // The probe lists the endpoint's catalogue: it asks the provider a
 // question, but it runs no conversation and it spends nothing. The
-// credential is read from the environment the endpoint names, and it
-// never appears in the report.
+// credential is read from the environment the endpoint names or from a
+// just-typed key, and it never appears in the report.
 func (a *app) testEndpoint(spec tui.EndpointSpec) (string, error) {
 	protocol := config.Protocol(spec.Protocol)
 	if protocol == "" {
@@ -583,6 +590,11 @@ func (a *app) testEndpoint(spec tui.EndpointSpec) (string, error) {
 		WireProtocol:  config.WireProtocol(spec.WireProtocol),
 		BaseURL:       spec.BaseURL,
 		CredentialEnv: spec.CredentialEnv,
+		Credential:    spec.Credential,
+	}
+	if spec.ClearCredential {
+		record.CredentialEnv = ""
+		record.Credential = ""
 	}
 	client, err := provider.NewForProtocol(wire, record.BaseURL, record.CredentialValue(), provider.Options{
 		DefaultMaxTokens: a.cfg.MaxTokens,

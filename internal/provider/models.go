@@ -127,6 +127,43 @@ func modelFetchedAt() time.Time { return time.Now() }
 
 // --- OpenAI-compatible listing ----------------------------------------
 
+// catalogueError reports an endpoint that answered but did not return a
+// usable model list.
+//
+// The endpoint is reachable: the failure is in discovery, not in
+// connectivity. The status, the content type and a truncated snippet of
+// what came back are reported so the operator can tell a proxy error
+// page from a provider that simply does not implement discovery. The
+// credential never appears: it travels only in a header and is never
+// read back. The error wraps ErrNoModelListing so a caller that only
+// needs to know "reachable, but no catalogue" can test for it, while a
+// caller that shows the message gets the actionable detail. A model can
+// always be added by hand.
+func catalogueError(status int, contentType string, body []byte) error {
+	ctype := strings.TrimSpace(contentType)
+	if ctype == "" {
+		ctype = "unknown content type"
+	} else if semi := strings.Index(ctype, ";"); semi >= 0 {
+		ctype = strings.TrimSpace(ctype[:semi])
+	}
+	snippet := strings.TrimSpace(string(body))
+	if snippet == "" {
+		snippet = "empty body"
+	} else if len(snippet) > 200 {
+		snippet = snippet[:200] + "…"
+	}
+	// A snippet that could forge a terminal row is flattened: it is
+	// evidence, not a row.
+	snippet = strings.ReplaceAll(snippet, "\n", " ")
+	snippet = strings.ReplaceAll(snippet, "\r", " ")
+	what := "did not return a model list"
+	if strings.Contains(strings.ToLower(ctype), "html") || strings.HasPrefix(strings.TrimSpace(string(body)), "<") {
+		what = "returned HTML instead of a model list"
+	}
+	return fmt.Errorf("provider: catalogue unavailable (HTTP %d, %s): the endpoint answered but %s (%s); add the model id by hand: %w",
+		status, ctype, what, snippet, ErrNoModelListing)
+}
+
 // ListModels implements ModelCatalog for an OpenAI-compatible endpoint.
 func (o *OpenAICompatible) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	listURL := strings.TrimRight(o.Endpoint, "/") + "/models"
@@ -153,6 +190,7 @@ func (o *OpenAICompatible) ListModels(ctx context.Context) ([]ModelInfo, error) 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("provider: %s", readErrorBody(resp))
 	}
+	contentType := resp.Header.Get("Content-Type")
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxModelListBytes))
 	if err != nil {
 		return nil, fmt.Errorf("provider: %w", err)
@@ -161,7 +199,7 @@ func (o *OpenAICompatible) ListModels(ctx context.Context) ([]ModelInfo, error) 
 		Data []map[string]any `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &listing); err != nil {
-		return nil, fmt.Errorf("provider: bad model list: %w", err)
+		return nil, catalogueError(resp.StatusCode, contentType, raw)
 	}
 	return modelInfos(listing.Data), nil
 }
@@ -255,6 +293,7 @@ func (a *AnthropicCompatible) ListModels(ctx context.Context) ([]ModelInfo, erro
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
 			return nil, ErrNoModelListing
 		}
+		contentType := resp.Header.Get("Content-Type")
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, fmt.Errorf("provider: HTTP %d: %s", resp.StatusCode, truncateText(string(raw)))
 		}
@@ -264,7 +303,7 @@ func (a *AnthropicCompatible) ListModels(ctx context.Context) ([]ModelInfo, erro
 			LastID  string           `json:"last_id"`
 		}
 		if err := json.Unmarshal(raw, &listing); err != nil {
-			return nil, fmt.Errorf("provider: bad model list: %w", err)
+			return nil, catalogueError(resp.StatusCode, contentType, raw)
 		}
 		out = append(out, modelInfos(listing.Data)...)
 		if len(out) >= maxDiscoveredModels {

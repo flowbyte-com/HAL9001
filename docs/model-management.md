@@ -405,18 +405,44 @@ configuration refuses keeps the screen open, says why, and changes nothing.
 
 #### The credential of an endpoint
 
-The credential of an endpoint is a **reference to an environment variable**,
-never the secret itself. The endpoint screens offer the variables the other
-endpoints already use — each labelled with the endpoint that uses it — the
-variable the endpoint's own name suggests, and any other name the operator
-types. The screens say whether a variable holds a value ("is set in this
-environment", "is not set in this environment") and never what the value is.
+The credential of an endpoint is **preferred as a reference to an
+environment variable**, never the secret itself. The endpoint screens
+offer the variables the other endpoints already use — each labelled
+with the endpoint that uses it — the variable the provider suggests
+for this endpoint, and any other name the operator types. The provider
+is identified from the endpoint's address (a known API host) and its
+configured id or name (a leading provider name), never from a model
+name and never from the full display name: an endpoint called
+DeepSeek-Flash on `https://api.deepseek.com/anthropic` suggests
+`DEEPSEEK_API_KEY`, never `DEEPSEEK_FLASH_API_KEY`. MiniMax suggests
+`MINIMAX_API_KEY` and OpenCode Go suggests `OPENCODE_GO_API_KEY`. An
+endpoint no provider claims offers an editable name-based suggestion
+instead of assuming one is correct. The screens say whether a variable
+holds a value ("is set in this environment", "is not set in this
+environment") and never what the value is. An explicit choice always
+wins, and a custom name never silently changes the credential.
 
-Editing an endpoint keeps its credential unless the operator names another
-one, and a new endpoint never takes the credential of another endpoint. A
-connection test is available (`T Test`), but it happens only when the
-operator asks for it, it reads the catalogue rather than running a
-conversation, and its report never carries the credential.
+A literal key may be typed once into a masked field instead. It is
+stored locally in **plaintext in the configuration file (mode 0600)**:
+the file permission keeps other users out, but anyone who can read the
+file or its backup can read the key. An environment variable is
+preferred for exactly this reason. The field is masked, it accepts a
+paste, the value is never shown again, never logged, never put into a
+diagnostic and never transmitted to the wrong endpoint. A literal key
+is never typed as `key=value`: it would stay in the conversation
+history. Leaving the screen without saving — or saving — clears the
+field, and a cancelled entry never reaches the disk.
+
+Editing an endpoint keeps its credential unless the operator names
+another one, types a new key or explicitly removes it, and a new
+endpoint never takes the credential of another endpoint. A connection
+test is available (`T Test`), but it happens only when the operator
+asks for it, it reads the catalogue rather than running a conversation,
+and its report never carries the credential. The catalogue and the
+connection are told apart: a reachable endpoint that returns HTML
+instead of a model list reports "catalogue unavailable (HTTP 200,
+text/html) ... add the model id by hand", never a raw JSON parsing
+failure, and a model can always be added by hand.
 
 #### What the screens never do
 

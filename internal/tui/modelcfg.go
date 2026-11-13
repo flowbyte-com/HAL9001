@@ -247,6 +247,7 @@ func (m *Model) editModel(args []string) tea.Cmd {
 		return nil
 	}
 	m.refreshEngine()
+	m.syncEffortFromHooks()
 	m.notice = fmt.Sprintf("Model %s of endpoint %s updated.", id, endpoint)
 	return nil
 }
@@ -370,6 +371,8 @@ func (m *Model) modelContext(args []string) tea.Cmd {
 		m.notice = "Cannot change the context limits: " + err.Error()
 		return nil
 	}
+	m.refreshEngine()
+	m.syncEffortFromHooks()
 	if mode == "manual" {
 		m.notice = fmt.Sprintf("Context limit for %s: manual, %d tokens.", id, spec.ContextWindow)
 		return nil
@@ -703,7 +706,7 @@ func endpointSpecFromPairs(args []string) (EndpointSpec, error) {
 		case "credential_env", "credential-env", "env":
 			spec.CredentialEnv = value
 		case "credential", "key":
-			spec.Credential = value
+			return spec, fmt.Errorf("a literal key is never typed as key=value: it would stay in the conversation history. Use /endpoint edit to enter it in a masked field, or set credential_env to name a variable.")
 		case "discovery":
 			on, err := parseOnOff(value)
 			if err != nil {
