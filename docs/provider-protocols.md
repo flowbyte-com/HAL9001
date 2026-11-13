@@ -78,18 +78,48 @@ limit can raise it.
   identifier or the label, and **bounded** by a count.
 - An endpoint **without a listing** is reported as such
   (`ErrNoModelListing`), not as a bare status code. The operator can
-  then add a model identifier by hand.
+  then add a model identifier by hand. A 404 or 405 from the catalogue
+  path means the endpoint does not implement discovery.
+- An endpoint that **answers without a usable list** — for example an
+  HTML error page with status 200 — reports catalogue unavailable with
+  the HTTP status, the content type and a truncated snippet, and wraps
+  `ErrNoModelListing`: the endpoint was reachable (connectivity works),
+  the catalogue is not (discovery is unsupported), and inference may
+  still work. The message never contains a raw JSON parsing failure and
+  never carries the credential. A model can always be added by hand.
 - **Authentication and HTTP errors** are reported with the endpoint's
   own explanation, bounded in length, and the credential never appears
-  in them.
+  in them. A 401 or 403 reports authentication failure and never looks
+  like missing discovery.
 - The identifiers are the endpoint's **exact** strings. HAL never
   rewrites, trims, lower-cases or otherwise tidies them — it either
   uses them as they are or refuses them (see *Discovery metadata is
   untrusted* below).
 - A listed model is **not claimed to work**. `ModelInfo.Access` is
   `unknown` until a request to that model has actually succeeded.
+  Discovery, connectivity and inference are three different claims.
 - Discovery **never changes the active model**. Adding a model and
   choosing one are separate, explicit acts.
+
+### DeepSeek's documented endpoints
+
+DeepSeek documents two base URLs for the same models
+(`deepseek-flash`, `deepseek-v4-pro`):
+
+- OpenAI-compatible: `https://api.deepseek.com`, catalogue at
+  `GET https://api.deepseek.com/models`;
+- Anthropic-compatible: `https://api.deepseek.com/anthropic`, the SDK
+  appends `/v1/messages`, so HAL posts to
+  `https://api.deepseek.com/anthropic/v1/messages` and probes the
+  catalogue at `https://api.deepseek.com/anthropic/v1/models`.
+
+An Anthropic-compatible DeepSeek endpoint that does not implement the
+catalogue path answers without a usable list. That is reported as
+catalogue unavailable — reachable, but no catalogue — and the operator
+adds `deepseek-flash` by hand. The base URL `…/anthropic` (with or
+without `/v1`) and the catalogue `…/models` are the documented shapes;
+HAL never assumes every compatible endpoint implements discovery
+identically.
 
 ## Context discovery
 

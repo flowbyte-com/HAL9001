@@ -203,8 +203,14 @@ type EndpointSpec struct {
 	// CredentialEnv names an environment variable holding the credential.
 	CredentialEnv string
 	// Credential is a literal credential, used only when no environment
-	// variable is named.
+	// variable is named. It travels only from a masked form to the
+	// configuration writer: it is never displayed, logged or stored in
+	// a draft.
 	Credential string
+	// ClearCredential removes any credential: both the environment
+	// reference and a stored literal are cleared. It is how an endpoint
+	// that needs none is recorded.
+	ClearCredential bool
 	// Discovery allows the provider's catalogue to be probed.
 	//
 	// It is a pointer because the flag has three states: a new endpoint
@@ -235,8 +241,13 @@ type ModelDetail struct {
 
 // EndpointDetail describes one endpoint: its settings and its models.
 type EndpointDetail struct {
-	// Settings are the endpoint's current settings.
+	// Settings are the endpoint's current settings. The literal
+	// credential is never carried here: only whether one is stored.
 	Settings EndpointSpec
+	// HasLiteralCredential reports whether the endpoint holds a literal
+	// key. The value itself is never returned: the screens show that a
+	// key is stored, never what it is.
+	HasLiteralCredential bool
 	// Models are the endpoint's own models.
 	Models []ModelInfo
 }

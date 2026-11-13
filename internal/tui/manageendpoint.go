@@ -93,8 +93,11 @@ func (m *Model) openNewEndpoint(after func(*Model, string) tea.Cmd) tea.Cmd {
 	m.manage.title = "Add an endpoint"
 	m.manage.message = "The endpoint is added. The active model does not change."
 	m.manage.keys = "Up and down choose · Enter opens · Ctrl+S saves · Esc back"
-	m.manage.actions = m.endpointRows(values)
 	m.manage.endpointBefore = nil
+	m.manage.endpointCredential = ""
+	m.manage.endpointHasLiteral = false
+	m.manage.endpointClearCredential = false
+	m.manage.actions = m.endpointRows(values)
 	m.manage.after = after
 	m.manage.save = func(m *Model) tea.Cmd { return m.saveEndpointValues(m.endpointValues(), nil, m.manage.after) }
 	m.manage.notice = ""
@@ -108,7 +111,9 @@ func (m *Model) openNewEndpoint(after func(*Model, string) tea.Cmd) tea.Cmd {
 //
 // The endpoint keeps everything it is not asked to change: an edit that
 // names the name alone leaves the address, the credential and the
-// models exactly as they were.
+// models exactly as they were. The id never changes: it is the stable
+// reference other records point at. To move an endpoint, add a new one
+// and add its models there.
 func (m *Model) openEndpointSettings(item manageItem) tea.Cmd {
 	if m.hooks.EndpointDetail == nil {
 		m.manage.notice = "Endpoint management is not wired up."
@@ -132,11 +137,16 @@ func (m *Model) openEndpointSettings(item manageItem) tea.Cmd {
 	m.managePush()
 	m.manage.screen = manageMenu
 	m.manage.title = "Edit endpoint " + item.endpoint
-	m.manage.message = "Enter opens a setting. Ctrl+S writes the changes. Esc leaves them unwritten."
+	m.manage.message = "Enter opens a setting. Ctrl+S writes the changes. Esc leaves them unwritten. The address, protocol, wire, credential and discovery belong to every model of this endpoint."
 	m.manage.keys = "Up and down choose · Enter opens · Ctrl+S saves · Esc back"
-	m.manage.lines = m.endpointLines(item.endpoint)
-	m.manage.actions = m.endpointRows(values)
+	m.manage.lines = append(m.endpointLines(item.endpoint),
+		"  affects       every model of this endpoint shares the address, protocol, wire and credential",
+		"  identity      the id never changes — to move, add a new endpoint and add its models there")
 	m.manage.endpointBefore = &before
+	m.manage.endpointCredential = ""
+	m.manage.endpointHasLiteral = detail.HasLiteralCredential
+	m.manage.endpointClearCredential = false
+	m.manage.actions = m.endpointRows(values)
 	m.manage.save = func(m *Model) tea.Cmd { return m.saveEndpointValues(m.endpointValues(), &before, nil) }
 	m.manage.notice = ""
 	m.manage.cursor = 0
@@ -150,10 +160,26 @@ func (m *Model) openEndpointSettings(item manageItem) tea.Cmd {
 // Every row shows what the endpoint currently holds, so the operator
 // never has to remember what they typed before.
 func (m *Model) endpointRows(values endpointValues) []manageAction {
+	credentialValue := values.credentialEnv
+	credentialEmpty := "(none)"
+	if m.manage.endpointCredential != "" {
+		credentialValue = "(a new key was typed — save to store it)"
+		credentialEmpty = ""
+	} else if m.manage.endpointClearCredential {
+		credentialValue = ""
+		credentialEmpty = "(will be removed)"
+	} else if m.manage.endpointHasLiteral && strings.TrimSpace(values.credentialEnv) == "" {
+		credentialValue = ""
+		credentialEmpty = "(a stored key)"
+	}
 	return []manageAction{
 		{key: endpointKeyID, name: "Id", value: values.id,
 			what: "the endpoint's own name; letters, digits, _ and -",
 			run: func(m *Model) tea.Cmd {
+				if m.manage.endpointBefore != nil {
+					m.manage.notice = "The id never changes: it is the stable reference. To move, add a new endpoint and add its models there."
+					return nil
+				}
 				return m.openEndpointValueForm("Id", endpointKeyID, m.endpointValue(endpointKeyID),
 					"letters, digits, _ and -; the id never changes once the endpoint exists")
 			}},
@@ -175,8 +201,8 @@ func (m *Model) endpointRows(values endpointValues) []manageAction {
 				return m.openEndpointValueForm("Base url", endpointKeyURL, m.endpointValue(endpointKeyURL),
 					"the address of the provider; this is not the endpoint's id")
 			}},
-		{key: endpointKeyCredential, name: "Credential source", value: values.credentialEnv,
-			empty: "(none)", whatFn: func(value string) string { return m.credentialStatus(value) },
+		{key: endpointKeyCredential, name: "Credential source", value: credentialValue,
+			empty: credentialEmpty, whatFn: func(value string) string { return m.credentialStatusForRow(value) },
 			run: func(m *Model) tea.Cmd { return m.openCredentialChoice() }},
 		{key: endpointKeyDiscovery, name: "Discovery", value: values.discovery,
 			what: "whether HAL may ask the provider for its catalogue",
@@ -297,24 +323,139 @@ func (m *Model) openDiscoveryChoice() tea.Cmd {
 
 // openCredentialChoice asks where the credential comes from.
 //
-// The choices are the environment variables the operator can point the
-// endpoint at: the ones other endpoints already use, the one this
-// endpoint's own name suggests, and any other name. The value of a
-// variable is never shown, only whether there is one.
+// The choices are the environment variable the endpoint points at —
+// / preferred, because the key itself never enters the file — or a
+// literal key typed into a masked field. The provider is identified
+// from the endpoint's address and its configured identity, never from
+// a model name and never from the full display name: an endpoint called
+// DeepSeek-Flash still suggests DEEPSEEK_API_KEY. The value of a
+// variable — and the value of a typed key — is never shown, only
+// whether there is one.
 func (m *Model) openCredentialChoice() tea.Cmd {
-	items := m.credentialCandidates(m.endpointValue(endpointKeyName))
+	items := m.credentialCandidates(
+		m.endpointValue(endpointKeyURL),
+		m.endpointValue(endpointKeyID),
+		m.endpointValue(endpointKeyName))
 	m.managePush()
 	m.openChoice("Credential of the endpoint",
-		"Enter chooses the variable that holds the key. The key itself never enters the file.",
+		"Enter chooses the variable that holds the key (preferred: the key itself never enters the file), or type a key. Esc keeps what is there.",
 		items, func(m *Model, choice manageItem) tea.Cmd {
-			if choice.value == manageOtherCredential {
+			switch choice.value {
+			case manageOtherCredential:
 				return m.openCredentialNameForm()
+			case manageEnterKey:
+				return m.openCredentialKeyForm()
+			case manageNoCredential:
+				m.manageSetValue(endpointKeyCredential, "")
+				// The choice is recorded on the endpoint editor below:
+				// the choice screen itself is discarded on the way back.
+				// The current flags feed the row display refresh.
+				m.manage.endpointCredential = ""
+				m.manage.endpointClearCredential = true
+				if len(m.manageStack) > 0 {
+					m.manageStack[len(m.manageStack)-1].endpointCredential = ""
+					m.manageStack[len(m.manageStack)-1].endpointClearCredential = true
+				}
+				m.refreshCredentialRow()
+				m.manageBack()
+				return nil
+			default:
+				m.manageSetValue(endpointKeyCredential, choice.value)
+				// An explicit variable replaces any staged key: the old
+				// literal must not survive beside it, here or below.
+				m.manage.endpointCredential = ""
+				m.manage.endpointClearCredential = false
+				if len(m.manageStack) > 0 {
+					m.manageStack[len(m.manageStack)-1].endpointCredential = ""
+					m.manageStack[len(m.manageStack)-1].endpointClearCredential = false
+				}
+				m.refreshCredentialRow()
+				m.manageBack()
+				return nil
 			}
-			m.manageSetValue(endpointKeyCredential, choice.value)
+		})
+	return nil
+}
+
+// openCredentialKeyForm asks for a literal API key in a masked field.
+//
+// The key is stored locally in plaintext in the configuration file
+// (mode 0600): the file permission keeps other users out, but the key
+// itself is readable by anyone who can read the file or its backup. An
+// environment variable is preferred for exactly this reason. The field
+// is masked, it accepts a paste, and the value is never shown again,
+// never logged and never put into a diagnostic. Leaving the screen
+// without saving — or saving — clears the field.
+func (m *Model) openCredentialKeyForm() tea.Cmd {
+	m.managePush()
+	fields := []manageField{{
+		label: "API key",
+		hint:  "paste the key — it is masked, it is stored in plaintext (mode 0600), and an environment variable is preferred",
+		input: namedInput("", "", true),
+	}}
+	m.openForm("API key of the endpoint",
+		"The key is masked and never shown again. It is stored locally in plaintext (mode 0600). Prefer an environment variable. Esc keeps what is there.",
+		fields, func(m *Model) tea.Cmd {
+			typed := strings.TrimSpace(m.manageValues()[0])
+			// Scrub the field before leaving it: the value must not
+			// survive in the form or in a draft.
+			m.scrubManageFields()
+			if typed != "" {
+				// The key is staged on the endpoint editor below, two
+				// levels down: the password form itself is scrubbed
+				// and discarded on the way back, so anything kept
+				// here would be lost. The value is never displayed.
+				if len(m.manageStack) >= 2 {
+					parent := &m.manageStack[len(m.manageStack)-2]
+					parent.endpointCredential = typed
+					parent.endpointClearCredential = false
+					for i := range parent.actions {
+						if parent.actions[i].key == endpointKeyCredential {
+							parent.actions[i].value = "(a new key was typed — save to store it)"
+						}
+					}
+				}
+			}
+			m.manageBack()
 			m.manageBack()
 			return nil
 		})
 	return nil
+}
+
+// scrubManageFields clears the values of the form on screen, so a
+// secret typed into it does not survive in memory longer than it must.
+func (m *Model) scrubManageFields() {
+	for i := range m.manage.fields {
+		m.manage.fields[i].input.SetValue("")
+	}
+	if len(m.manageStack) > 0 {
+		m.manageStack[len(m.manageStack)-1].draft = nil
+	}
+}
+
+// refreshCredentialRow redraws the credential row after the operator
+// chose a variable, typed a key or cleared the credential.
+func (m *Model) refreshCredentialRow() {
+	m.refreshPendingRows()
+	// Rebuild the endpoint rows so the credential row shows the new
+	// state: the row below the choice must say what will be saved.
+	if len(m.manageStack) == 0 {
+		return
+	}
+	frame := &m.manageStack[len(m.manageStack)-1]
+	for i := range frame.actions {
+		if frame.actions[i].key != endpointKeyCredential {
+			continue
+		}
+		if m.manage.endpointCredential != "" {
+			frame.actions[i].value = "(a new key was typed — save to store it)"
+		} else if m.manage.endpointClearCredential {
+			frame.actions[i].value = ""
+		} else {
+			// The value was already set by manageSetValue: keep it.
+		}
+	}
 }
 
 // openCredentialNameForm asks for the name of another variable.
@@ -334,10 +475,16 @@ func (m *Model) openCredentialNameForm() tea.Cmd {
 		"An empty field keeps the current value.",
 		fields, func(m *Model) tea.Cmd {
 			typed := strings.TrimSpace(m.manageValues()[0])
+			m.scrubManageFields()
 			if typed != "" {
 				// The name belongs to the endpoint screen, and the
-				// list of choices is only the way to reach it.
+				// list of choices is only the way to reach it. Naming
+				// a variable replaces any staged key below.
 				m.manageSetValueBelow(endpointKeyCredential, typed)
+				if len(m.manageStack) >= 2 {
+					m.manageStack[len(m.manageStack)-2].endpointCredential = ""
+					m.manageStack[len(m.manageStack)-2].endpointClearCredential = false
+				}
 			}
 			m.manageBack()
 			m.manageBack()
@@ -350,12 +497,16 @@ func (m *Model) openCredentialNameForm() tea.Cmd {
 // point at.
 //
 // The ones other endpoints already use come first: they are the ones
-// the operator already has. A new name is suggested from the
-// endpoint's own name, because that is what the operator would have
-// called it.
-func (m *Model) credentialCandidates(name string) []manageItem {
+// the operator already has. A provider-based suggestion comes next: the
+// endpoint's address names its provider, and the provider names its
+// variable. An endpoint whose address is unknown falls back to its
+// configured identity, and an endpoint no provider claims falls back to
+// a name-based suggestion that the operator edits. The suggestion is
+// never applied on its own: the operator chooses it explicitly.
+func (m *Model) credentialCandidates(baseURL, id, name string) []manageItem {
 	var out []manageItem
 	seen := map[string]bool{}
+	current := strings.TrimSpace(m.endpointValue(endpointKeyCredential))
 	if m.hooks.Endpoints != nil {
 		for _, endpoint := range m.hooks.Endpoints() {
 			ref := strings.TrimSpace(endpoint.CredentialEnv)
@@ -367,22 +518,131 @@ func (m *Model) credentialCandidates(name string) []manageItem {
 				name:   ref,
 				detail: "already used by endpoint " + endpoint.ID,
 				value:  ref,
+				mark:   markFor(ref == current),
 			})
 		}
 	}
-	suggested := suggestedCredentialEnv(name)
+	suggested := suggestedProviderCredentialEnv(baseURL, id, name)
 	if suggested != "" && !seen[suggested] {
 		out = append(out, manageItem{
 			name:   suggested,
-			detail: "suggested for this endpoint",
+			detail: "suggested for this provider",
 			value:  suggested,
+			mark:   markFor(suggested == current),
 		})
+	} else if suggested == "" {
+		// No provider claims this endpoint: offer an editable
+		// name-based suggestion rather than assuming one is correct.
+		fallback := suggestedCredentialEnv(name)
+		if fallback == "" {
+			fallback = suggestedCredentialEnv(id)
+		}
+		if fallback != "" && !seen[fallback] {
+			out = append(out, manageItem{
+				name:   fallback,
+				detail: "suggested for this endpoint — edit if it is wrong",
+				value:  fallback,
+				mark:   markFor(fallback == current),
+			})
+		}
 	}
-	return append(out, manageItem{
-		name:   "Another variable…",
-		detail: "name another environment variable",
-		value:  manageOtherCredential,
-	})
+	out = append(out,
+		manageItem{
+			name:   "Enter an API key…",
+			detail: "type or paste a key once — stored in plaintext (mode 0600); an environment variable is preferred",
+			value:  manageEnterKey,
+		},
+		manageItem{
+			name:   "Another variable…",
+			detail: "name another environment variable",
+			value:  manageOtherCredential,
+		},
+		manageItem{
+			name:   "No credential",
+			detail: "this endpoint needs no key (local servers)",
+			value:  manageNoCredential,
+		})
+	return out
+}
+
+// providerCredentialEnvs maps a recognised provider to the environment
+// variable that holds its key. The variable is a suggestion: the
+// operator may name any variable, and an explicit choice always wins.
+var providerCredentialEnvs = map[string]string{
+	"deepseek":    "DEEPSEEK_API_KEY",
+	"minimax":     "MINIMAX_API_KEY",
+	"opencode-go": "OPENCODE_GO_API_KEY",
+}
+
+// suggestedProviderCredentialEnv names the variable a provider suggests.
+//
+// The address comes first: a known API host names its provider no
+// matter what the endpoint is called. The configured identity comes
+// next: an endpoint whose address is local or not yet typed still names
+// its provider when its id or its display name starts with one. A full
+// display name is never turned into a variable: DeepSeek-Flash suggests
+// DEEPSEEK_API_KEY, never DEEPSEEK_FLASH_API_KEY.
+func suggestedProviderCredentialEnv(baseURL, id, name string) string {
+	if provider := providerFromBaseURL(baseURL); provider != "" {
+		if env, ok := providerCredentialEnvs[provider]; ok {
+			return env
+		}
+	}
+	if provider := providerFromIdentity(id); provider != "" {
+		if env, ok := providerCredentialEnvs[provider]; ok {
+			return env
+		}
+	}
+	if provider := providerFromIdentity(name); provider != "" {
+		if env, ok := providerCredentialEnvs[provider]; ok {
+			return env
+		}
+	}
+	return ""
+}
+
+// providerFromBaseURL identifies a recognised provider from its API
+// host. A local address identifies no provider: a fixture on 127.0.0.1
+// can stand in for any of them.
+func providerFromBaseURL(baseURL string) string {
+	host := strings.ToLower(strings.TrimSpace(baseURL))
+	// The value may be a full URL or a bare host: look for the provider
+	// name anywhere in it, so "https://api.deepseek.com/anthropic" and
+	// "api.deepseek.com" both match. A loopback address never does.
+	if strings.Contains(host, "127.0.0.1") || strings.Contains(host, "localhost") {
+		return ""
+	}
+	switch {
+	case strings.Contains(host, "deepseek"):
+		return "deepseek"
+	case strings.Contains(host, "minimax"):
+		return "minimax"
+	case strings.Contains(host, "opencode"):
+		return "opencode-go"
+	default:
+		return ""
+	}
+}
+
+// providerFromIdentity identifies a recognised provider from a
+// configured endpoint id or display name. Only a leading provider name
+// counts: "DeepSeek-Flash" is a DeepSeek endpoint, and "My DeepSeek
+// Proxy" is not claimed.
+func providerFromIdentity(text string) string {
+	lowered := strings.ToLower(strings.TrimSpace(text))
+	for _, provider := range []string{"deepseek", "minimax", "opencode"} {
+		if !strings.HasPrefix(lowered, provider) {
+			continue
+		}
+		rest := lowered[len(provider):]
+		if rest == "" || rest[0] < 'a' || rest[0] > 'z' {
+			if provider == "opencode" {
+				return "opencode-go"
+			}
+			return provider
+		}
+	}
+	return ""
 }
 
 // suggestedCredentialEnv names the environment variable an endpoint
@@ -426,6 +686,25 @@ func (m *Model) credentialStatus(name string) string {
 	}
 }
 
+// credentialStatusForRow says what the credential row holds.
+//
+// A typed key is never shown: the row says a new key was typed and
+// will be stored in plaintext (mode 0600) on save. A stored key is
+// never shown either: the row says one is stored. An environment
+// variable is named, never valued.
+func (m *Model) credentialStatusForRow(value string) string {
+	if m.manage.endpointCredential != "" {
+		return "a new key was typed — save stores it in plaintext (mode 0600); an environment variable is preferred"
+	}
+	if m.manage.endpointClearCredential {
+		return "the credential will be removed on save"
+	}
+	if m.manage.endpointHasLiteral && strings.TrimSpace(value) == "" {
+		return "a stored key is set (plaintext, mode 0600) — choosing a variable replaces it; it is never shown"
+	}
+	return m.credentialStatus(value)
+}
+
 // endpointValue reads one value of the endpoint the operator described.
 func (m *Model) endpointValue(key string) string {
 	return m.manageValue(key)
@@ -435,7 +714,9 @@ func (m *Model) endpointValue(key string) string {
 //
 // Only the fields that were named are filled in: an edit that changes
 // the name alone sends the name alone, and everything else the
-// endpoint holds stays where it is.
+// endpoint holds stays where it is. A typed key travels in
+// spec.Credential and never appears in a row; a removal travels in
+// spec.ClearCredential.
 func (m *Model) endpointSpecFromRows(before *EndpointDetail) EndpointSpec {
 	values := m.endpointValues()
 	spec := EndpointSpec{}
@@ -454,7 +735,11 @@ func (m *Model) endpointSpecFromRows(before *EndpointDetail) EndpointSpec {
 	if values.baseURL != "" && (before == nil || values.baseURL != before.Settings.BaseURL) {
 		spec.BaseURL = values.baseURL
 	}
-	if values.credentialEnv != "" && (before == nil || values.credentialEnv != before.Settings.CredentialEnv) {
+	if m.manage.endpointCredential != "" {
+		spec.Credential = m.manage.endpointCredential
+	} else if m.manage.endpointClearCredential {
+		spec.ClearCredential = true
+	} else if values.credentialEnv != "" && (before == nil || values.credentialEnv != before.Settings.CredentialEnv) {
 		spec.CredentialEnv = values.credentialEnv
 	}
 	if values.discovery != "" {
@@ -489,7 +774,9 @@ func (m *Model) endpointValues() endpointValues {
 //
 // A new endpoint needs an id, a name, a protocol and an address; the
 // configuration handlers say so when one of them is missing. An edit
-// sends only what changed.
+// sends only what changed. A typed key is cleared from memory on save,
+// whether the save worked or not: it must not survive longer than it
+// must.
 func (m *Model) saveEndpointValues(values endpointValues, before *EndpointDetail,
 	after func(*Model, string) tea.Cmd) tea.Cmd {
 	if m.hooks.SaveEndpoint == nil {
@@ -497,6 +784,12 @@ func (m *Model) saveEndpointValues(values endpointValues, before *EndpointDetail
 		return nil
 	}
 	spec := m.endpointSpecFromRows(before)
+	clearSecret := func() {
+		m.manage.endpointCredential = ""
+		m.manage.endpointClearCredential = false
+		m.manage.endpointHasLiteral = false
+		m.scrubManageFields()
+	}
 	if before == nil {
 		// A new endpoint needs its identity in full.
 		spec.ID = values.id
@@ -506,7 +799,17 @@ func (m *Model) saveEndpointValues(values endpointValues, before *EndpointDetail
 		if spec.WireProtocol == "" {
 			spec.WireProtocol = values.wire
 		}
-		spec.CredentialEnv = values.credentialEnv
+		if m.manage.endpointCredential != "" {
+			spec.Credential = m.manage.endpointCredential
+			spec.CredentialEnv = ""
+			spec.ClearCredential = false
+		} else if m.manage.endpointClearCredential {
+			spec.CredentialEnv = ""
+			spec.Credential = ""
+			spec.ClearCredential = true
+		} else {
+			spec.CredentialEnv = values.credentialEnv
+		}
 		discovery := true
 		if values.discovery != "" {
 			if parsed, err := parseOnOff(values.discovery); err == nil {
@@ -522,10 +825,13 @@ func (m *Model) saveEndpointValues(values endpointValues, before *EndpointDetail
 		spec.ID = before.Settings.ID
 	}
 	if err := m.hooks.SaveEndpoint(spec); err != nil {
+		clearSecret()
 		m.manage.notice = "Cannot save the endpoint: " + err.Error()
 		return nil
 	}
+	clearSecret()
 	m.refreshEngine()
+	m.syncEffortFromHooks()
 	if after != nil {
 		return after(m, spec.ID)
 	}
@@ -538,7 +844,8 @@ func (m *Model) saveEndpointValues(values endpointValues, before *EndpointDetail
 // The test is never run on its own: the operator asks for it. It lists
 // the endpoint's catalogue, which asks the provider a question but runs
 // no conversation and spends nothing. The report never carries the
-// credential.
+// credential. A key the operator just typed is used for the test
+// without being saved: the test proves the key before it is stored.
 func (m *Model) testEndpointValues(values endpointValues) tea.Cmd {
 	if m.hooks.TestEndpoint == nil {
 		m.manage.notice = "Testing an endpoint is not wired up."
@@ -551,6 +858,13 @@ func (m *Model) testEndpointValues(values endpointValues) tea.Cmd {
 		WireProtocol:  values.wire,
 		BaseURL:       values.baseURL,
 		CredentialEnv: values.credentialEnv,
+	}
+	if m.manage.endpointCredential != "" {
+		spec.Credential = m.manage.endpointCredential
+		spec.CredentialEnv = ""
+	} else if m.manage.endpointClearCredential {
+		spec.CredentialEnv = ""
+		spec.Credential = ""
 	}
 	if spec.Protocol == "" {
 		spec.Protocol = "openai-compatible"

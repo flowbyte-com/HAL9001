@@ -61,6 +61,11 @@ const (
 	// manageOtherCredential is the row that asks for the name of
 	// another environment variable.
 	manageOtherCredential = "\x00other-credential"
+	// manageEnterKey is the row that asks for a literal API key in a
+	// masked field.
+	manageEnterKey = "\x00enter-key"
+	// manageNoCredential is the row that clears any credential.
+	manageNoCredential = "\x00no-credential"
 )
 
 // manageAction is one action of a menu.
@@ -185,10 +190,22 @@ type manageState struct {
 	// It is how a workflow that opened the endpoint screens goes on
 	// where it left off.
 	after func(*Model, string) tea.Cmd
+	// endpointCredential is a literal key the operator typed in a
+	// masked field and has not saved yet. It is never displayed, never
+	// stored in a draft and never logged: it travels only to the
+	// configuration writer, and it is cleared on save or on leave.
+	endpointCredential string
+	// endpointHasLiteral reports whether the endpoint being edited
+	// already holds a literal key. The value itself is never held: only
+	// whether there is one.
+	endpointHasLiteral bool
+	// endpointClearCredential asks for any credential to be removed.
+	endpointClearCredential bool
 	// draft holds what the operator typed in the form of this step.
 	//
 	// The values belong to the step, not to the form that is drawn: a
-	// form that is left and come back to still holds them.
+	// form that is left and come back to still holds them. A masked
+	// key is never held here.
 	draft []string
 }
 
@@ -298,10 +315,39 @@ func (m Model) updateManage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		m.sizeManageFields()
 		return m, nil
+	case tea.PasteMsg:
+		// A paste belongs to the focused field, never to a menu
+		// shortcut: pasted text is inserted, never executed. A
+		// single-line field normalises unexpected line breaks.
+		if m.manage.screen == manageForm && len(m.manage.fields) > 0 {
+			fields := make([]manageField, len(m.manage.fields))
+			copy(fields, m.manage.fields)
+			normalised := normaliseSingleLinePaste(string(msg.Content))
+			fields[m.manage.focus].input, _ = fields[m.manage.focus].input.Update(tea.PasteMsg{Content: normalised})
+			m.manage.fields = fields
+			return m, nil
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		return m.manageKey(msg)
 	}
 	return m, nil
+}
+
+// normaliseSingleLinePaste safely normalises a paste into a
+// single-line field.
+//
+// A terminal paste may carry CRLF line endings, tabs or line breaks
+// copied with the value: a URL with a trailing newline, a key with a
+// line break. A single-line field holds one line, so line breaks and
+// tabs become spaces and surrounding whitespace is trimmed. Nothing
+// executes: the result is inserted as text, never as keys.
+func normaliseSingleLinePaste(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	return strings.TrimSpace(s)
 }
 
 // manageKey handles one key of the management interface.
@@ -784,8 +830,8 @@ func (m *Model) openModelSettings(item manageItem) tea.Cmd {
 	m.manage.actions = []manageAction{
 		{key: "L", name: "Label", value: labelValue(detail.Settings.Label),
 			what: "the name HAL shows", run: func(m *Model) tea.Cmd { return m.openLabelForm(item, before) }},
-		{key: "E", name: "Effort", value: effortValue(detail.Settings.Effort),
-			what: "the reasoning level", run: func(m *Model) tea.Cmd { return m.openEffortChoice(item, before) }},
+		{key: "E", name: "Effort", value: effortDisplay(detail.Settings.Effort, item.model),
+			what: "the reasoning level (effective: what the next request will carry)", run: func(m *Model) tea.Cmd { return m.openEffortChoice(item, before) }},
 		{key: "O", name: "Output limit", value: outputValue(detail.Settings.MaxOutputTokens),
 			what: "the room the answer may use", run: func(m *Model) tea.Cmd { return m.openOutputChoice(item, before) }},
 		{key: "C", name: "Context", value: contextValue(detail),
@@ -1010,8 +1056,24 @@ func (m *Model) saveModelSettings(item manageItem, before ModelDetail) tea.Cmd {
 		return nil
 	}
 	m.refreshEngine()
+	m.syncEffortFromHooks()
 	m.closeManage("Model " + item.model + " of endpoint " + item.endpoint + " updated.")
 	return nil
+}
+
+// syncEffortFromHooks re-reads the active reasoning level after a change
+// that may have touched it.
+//
+// The engine is rebuilt with the stored settings, and the footer must
+// show the same effective level the next request will carry. An
+// already-running request keeps the provider it started with: only the
+// next request uses the new settings.
+func (m *Model) syncEffortFromHooks() {
+	if m.hooks.Effort == nil {
+		return
+	}
+	level, supported := m.hooks.Effort()
+	m.SetEffort(level, supported)
 }
 
 // stagedModelSpec is the change the operator chose, as the configuration
@@ -1242,6 +1304,7 @@ func (m *Model) saveModelContext(item manageItem, before ModelDetail) tea.Cmd {
 		return nil
 	}
 	m.refreshEngine()
+	m.syncEffortFromHooks()
 	m.closeManage("Context limit for " + item.model + ": " + contextSummary(spec, before))
 	return nil
 }
@@ -1443,23 +1506,51 @@ func (m *Model) manageFocus(delta int) {
 // Nothing is changed on the way back: a cancelled form keeps the
 // configuration exactly as it was. What the operator typed is kept in
 // the step they came from, so a form that is left and come back to
-// still holds it.
+// still holds it. A masked key is never kept: it is cleared on leave,
+// whether the operator saved it or cancelled it.
 //
 // At the top of the hierarchy there is no step below: Esc leaves the
 // management interface and returns to the conversation.
 func (m *Model) manageBack() {
-	// The values of a form belong to the step below it.
-	if m.manage.screen == manageForm && len(m.manageStack) > 0 {
+	// A masked key never survives in a draft, a field or a notice.
+	if m.manageContainsSecret() {
+		m.scrubManageFields()
+		m.manage.endpointCredential = ""
+		// A cancelled key entry must not clear an existing credential:
+		// only an explicit save or an explicit removal does.
+		if len(m.manageStack) > 0 {
+			m.manageStack[len(m.manageStack)-1].draft = nil
+		}
+	} else if m.manage.screen == manageForm && len(m.manageStack) > 0 {
+		// The values of a form belong to the step below it.
 		m.manageStack[len(m.manageStack)-1].draft = m.manageValues()
 	}
 	if !m.managePop() {
 		m.closeManage("")
+		// Leaving the interface clears any typed key that was never
+		// saved: it must not survive in memory longer than it must.
+		m.manage.endpointCredential = ""
 		return
 	}
 	m.manage.notice = ""
 	m.panelOffset = 0
 	m.refreshPendingRows()
 	m.sizeManageFields()
+}
+
+// manageContainsSecret reports whether the form on screen holds a
+// masked key. The value itself is never read: only whether a field is
+// masked.
+func (m *Model) manageContainsSecret() bool {
+	if m.manage.screen != manageForm {
+		return false
+	}
+	for _, field := range m.manage.fields {
+		if field.input.EchoMode == textinput.EchoPassword {
+			return true
+		}
+	}
+	return false
 }
 
 // refreshPendingRows shows the changes the operator has staged.
@@ -1757,12 +1848,27 @@ func labelValue(label string) string {
 // effortValue is the reasoning level as the operator sees it.
 //
 // An unnamed effort is the model's own default, and the screen says so
-// instead of showing nothing.
+// instead of showing nothing. When the default is known, it is named:
+// the footer shows the effective level, and the editor shows the same
+// number with its provenance.
 func effortValue(effort string) string {
 	if strings.TrimSpace(effort) == "" {
 		return "the model's default"
 	}
 	return effort
+}
+
+// effortDisplay is the effective reasoning level as the operator sees
+// it: the stored level when one is set, otherwise the model's own
+// default with its provenance, so the editor and the footer agree.
+func effortDisplay(stored, modelID string) string {
+	if strings.TrimSpace(stored) != "" {
+		return stored
+	}
+	if defaults := provider.DefaultEffortFor(modelID); defaults != "" {
+		return "the model's default (" + defaults + ")"
+	}
+	return "the model's default"
 }
 
 // effortDefaultDetail says what the model's own default is.
