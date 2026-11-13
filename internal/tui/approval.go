@@ -559,7 +559,7 @@ func (m Model) approvalRow(pairs ...string) string {
 }
 
 // displayWritePath renders a proposal's destination the way the operator
-// configured it (~/HAL/note.md).
+// configured it (for example ~/.hal/workspace/note.md).
 func (m Model) displayWritePath(p workspace.Proposal) string {
 	if m.workspace != nil {
 		return m.workspace.DisplayPath(p)

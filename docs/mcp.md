@@ -22,7 +22,7 @@ tool is replaced by MCP.
 ## Configuration
 
 MCP servers live in the existing user configuration file
-(`~/.hal9001/config.json`, mode `0600`) under `mcp_servers`. The list is
+(`~/.hal/data/config.json`, mode `0600`) under `mcp_servers`. The list is
 empty by default. HAL reads it at startup; it never writes it, and the
 model cannot create, edit, connect or disconnect a server on its own.
 

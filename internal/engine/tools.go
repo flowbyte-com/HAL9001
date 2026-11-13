@@ -31,7 +31,7 @@ var writeTool = provider.Tool{
 		"properties": {
 			"path": {
 				"type": "string",
-				"description": "Destination inside the workspace. Prefer the path exactly as the operator named it: ~/HAL/notes/acc-fuel.md, /home/you/HAL/notes/acc-fuel.md and notes/acc-fuel.md all resolve to the same file. A relative path starts at the workspace root. Do not prepend the workspace folder to a relative path unless the operator explicitly requested a nested HAL/HAL/... directory. It must not contain .. components or leave the workspace."
+				"description": "Destination inside the workspace. Prefer the path exactly as the operator named it: ~/.hal/workspace/notes/acc-fuel.md, /home/you/.hal/workspace/notes/acc-fuel.md and notes/acc-fuel.md all resolve to the same file. A relative path starts at the workspace root. Do not prepend the workspace folder to a relative path unless the operator explicitly requested a nested directory. It must not contain .. components or leave the workspace."
 			},
 			"content": {
 				"type": "string",

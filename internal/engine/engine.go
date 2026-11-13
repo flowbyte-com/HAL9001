@@ -407,9 +407,9 @@ func permissionBlock(mode permission.Mode) string {
 	return "## Current permission: 444 READ ONLY\n\n" +
 		"You may converse, retrieve and update MPM knowledge through its typed tools, use the configured " +
 		"read-only web research tools, and prepare one guarded write proposal for operator " +
-		"approval. The workspace root is already ~/HAL; pass the destination the operator named, whether " +
-		"that is ~/HAL/foo, an absolute path inside ~/HAL, or a relative path such as foo. Do not add the " +
-		"workspace folder to a relative path unless the operator explicitly asked for a nested HAL folder. " +
+		"approval. The workspace root is already configured; pass the destination the operator named, whether " +
+		"that is ~/.hal/workspace/foo, an absolute path inside the workspace, or a relative path such as foo. Do not add the " +
+		"workspace folder to a relative path unless the operator explicitly asked for a nested folder. " +
 		"You cannot run shell commands or edit OS files. A request for " +
 		"those capabilities is outside your authority; do not claim a current operation happened unless a tool " +
 		"result confirms it. If an earlier assistant message reports a completed action but no verified " +

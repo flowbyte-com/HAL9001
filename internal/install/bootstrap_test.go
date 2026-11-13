@@ -172,12 +172,32 @@ func TestBootstrapPreservesOperatorData(t *testing.T) {
 	if err := os.WriteFile(note, []byte("operator note\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The consolidated layout lives beside the legacy one: the
+	// installer must preserve both.
+	unifiedConfigDir := filepath.Join(home, ".hal", "data")
+	unifiedWorkspace := filepath.Join(home, ".hal", "workspace")
+	if err := os.MkdirAll(unifiedConfigDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(unifiedWorkspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unifiedConfig := filepath.Join(unifiedConfigDir, "config.json")
+	unifiedNote := filepath.Join(unifiedWorkspace, "note.txt")
+	if err := os.WriteFile(unifiedConfig, []byte(`{"endpoint":"keep-me-too"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unifiedNote, []byte("unified note\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Bootstrap(context.Background(), l, source, &fakeBuilder{}, false); err != nil {
 		t.Fatal(err)
 	}
 	for path, want := range map[string]string{
-		config: `{"endpoint":"keep-me"}`,
-		note:   "operator note\n",
+		config:        `{"endpoint":"keep-me"}`,
+		note:          "operator note\n",
+		unifiedConfig: `{"endpoint":"keep-me-too"}`,
+		unifiedNote:   "unified note\n",
 	} {
 		got, err := os.ReadFile(path)
 		if err != nil || string(got) != want {
@@ -189,6 +209,12 @@ func TestBootstrapPreservesOperatorData(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(l.Root, "sessions")); !os.IsNotExist(err) {
 		t.Fatalf("installation root must not contain sessions: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(l.Root, "data")); !os.IsNotExist(err) {
+		t.Fatalf("installation root must not contain operator data: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(l.Root, "workspace")); !os.IsNotExist(err) {
+		t.Fatalf("installation root must not contain the operator workspace: %v", err)
 	}
 }
 

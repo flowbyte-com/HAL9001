@@ -12,8 +12,9 @@
 //	  state/                    lock, previous release, backups
 //	  staging/                  candidates under assembly
 //
-// HAL's configuration and sessions live in ~/.hal9001, and its writable
-// workspace is ~/HAL. Neither is touched here.
+// HAL's configuration, sessions, audit and usage live in ~/.hal/data,
+// and its writable workspace defaults to ~/.hal/workspace. Neither is
+// touched here.
 package install
 
 import (

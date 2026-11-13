@@ -28,7 +28,7 @@ fmt:
 ## lint: vet plus formatting.
 lint: vet fmt
 
-## run: launch the TUI (needs a TTY; stores into ~/.hal9001/sessions).
+## run: launch the TUI (needs a TTY; stores into ~/.hal/data/sessions).
 run: build-binary
 	./build/$(BINARY)
 

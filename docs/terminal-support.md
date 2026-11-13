@@ -162,10 +162,10 @@ back from a stored conversation, where it was written by hand.
 `/attach` and `/detach` are local commands and never reach the model.
 `/attachments` lists the pending files and the directory they live in.
 
-Every copy is kept in `~/HAL/uploads/`. HAL removes nothing on its own:
+Every copy is kept in `~/.hal/workspace/uploads/`. HAL removes nothing on its own:
 not when a message is sent, not when a conversation is cleared, not when
 it exits. To remove a copy, delete its own directory —
-`~/HAL/uploads/<id>/` — or the whole `~/HAL/uploads/` directory. The
+`~/.hal/workspace/uploads/<id>/` — or the whole `~/.hal/workspace/uploads/` directory. The
 conversation keeps a reference to a copy that is gone, and HAL reports
 such a file as unreadable rather than as an empty one.
 

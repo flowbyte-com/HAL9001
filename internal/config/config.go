@@ -36,7 +36,7 @@ const (
 	// which is enabled. A value that is neither is refused.
 	EnvMouse = "HAL9001_MOUSE"
 	// EnvWorkspace overrides the one directory HAL may propose files in.
-	// The default is ~/HAL.
+	// The default is ~/.hal/workspace.
 	EnvWorkspace = "HAL9001_WORKSPACE"
 )
 
@@ -226,17 +226,22 @@ func (f FileConfig) EffortFor(id string) string {
 	return ""
 }
 
-// ConfigDir returns HAL9001's own user configuration directory. Nothing
-// outside it is ever read.
+// ConfigDir returns HAL's own user data directory.
+//
+// Configuration, credentials, sessions, audit and usage all live here.
+// An explicit HAL9001_HOME still points straight at it, so isolated
+// harnesses and relocated setups keep working; otherwise it is
+// ~/.hal/data and the home migration copies the previous ~/.hal9001
+// there. Nothing outside it is ever read.
 func ConfigDir() string {
 	if home := strings.TrimSpace(os.Getenv(EnvHome)); home != "" {
 		return home
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".", ".hal9001")
+		return filepath.Join(".", ".hal", "data")
 	}
-	return filepath.Join(home, ".hal9001")
+	return filepath.Join(home, ".hal", "data")
 }
 
 // ConfigPath is the user configuration file.
@@ -377,12 +382,18 @@ type Config struct {
 func (c Config) FlagGiven(name string) bool { return c.flagGiven[name] }
 
 // DefaultWorkspaceDir returns the directory proposed writes may reach.
+//
+// An explicit HAL9001_WORKSPACE wins; otherwise it is ~/.hal/workspace
+// and the home migration copies the previous ~/HAL there.
 func DefaultWorkspaceDir() string {
+	if ws := strings.TrimSpace(os.Getenv(EnvWorkspace)); ws != "" {
+		return ws
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".", "HAL")
+		return filepath.Join(".", ".hal", "workspace")
 	}
-	return filepath.Join(home, "HAL")
+	return filepath.Join(home, ".hal", "workspace")
 }
 
 // DefaultStoreDir returns the conversation storage directory.
@@ -392,9 +403,9 @@ func DefaultStoreDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".", ".hal9001", "sessions")
+		return filepath.Join(".", ".hal", "data", "sessions")
 	}
-	return filepath.Join(home, ".hal9001", "sessions")
+	return filepath.Join(home, ".hal", "data", "sessions")
 }
 
 // Load resolves flags over environment defaults.
@@ -453,7 +464,7 @@ func LoadErr(args []string) (Config, error) {
 		// resolved from the stored metadata at startup.
 		Session:            "",
 		StoreDir:           DefaultStoreDir(),
-		WorkspaceDir:       firstNonEmpty(os.Getenv(EnvWorkspace), DefaultWorkspaceDir()),
+		WorkspaceDir:       DefaultWorkspaceDir(),
 		Models:             append([]ModelRecord(nil), stored.Models...),
 		MCPServers:         append([]MCPServerRecord(nil), stored.MCPServers...),
 		MaxTokens:          firstNonZero(envInt(EnvMaxTokens), stored.MaxTokens),

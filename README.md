@@ -26,7 +26,7 @@ workspace, available in 444. It is not the session mode. See
 
 Milestone 010 (in review): HAL attaches files the operator chooses, with
 `/attach`, `/attachments` and `/detach`. A chosen file is copied into
-`~/HAL/uploads/`, its text travels with the next message as untrusted
+`~/.hal/workspace/uploads/`, its text travels with the next message as untrusted
 data, and the conversation keeps a stable reference to it. Attaching is
 available in 444, authorises only the file the operator picked, and gives
 the model no tool that could start an ingestion of its own. See
@@ -91,7 +91,7 @@ go build -o hal9001 ./cmd/hal9001
 ```
 
 On first launch HAL9001 asks for three values: provider endpoint, model
-name, and API key. They are stored in `~/.hal9001/config.json` (mode
+name, and API key. They are stored in `~/.hal/data/config.json` (mode
 `0600`); the environment (`HAL9001_ENDPOINT`, `HAL9001_MODEL`,
 `HAL9001_API_KEY`) overrides the file and is never written back.
 A connection test runs against the provider's model list before saving;
@@ -102,7 +102,7 @@ you may save anyway if it fails.
 ./hal9001 --session work                   # resume or start a named session
 ./hal9001 --list-sessions                  # list stored conversations
 ./hal9001 --no-mouse                       # leave the pointer to the terminal
-./hal9001 --workspace ~/HAL                # where an approved write may land
+./hal9001 --workspace ~/.hal/workspace    # where an approved write may land
 ./hal9001 --provider openai-compatible \
   --endpoint https://api.minimax.io/v1 \
   --model MiniMax-M3.1-Flash               # flags win over the file
@@ -429,7 +429,7 @@ a pasted instruction cannot enable it.
   the session store, a checkpoint or MPM, so it cannot survive a restart.
 - In 666 the model is offered four real tools: `read`, `write`, `edit` and
   `bash`. They run with the permissions of the operating-system user
-  running HAL and are not confined to `~/HAL`. `bash` has a wall-clock
+  running HAL and are not confined to the workspace. `bash` has a wall-clock
   timeout, bounded stdout and stderr, and its process group is terminated
   when the command ends or is cancelled.
 - The mode is rechecked at every operation boundary, not only when the
@@ -459,10 +459,10 @@ file, it can only *propose*: HAL prepares the operation — one destination
 inside the workspace and the exact bytes — and shows it for review. Nothing
 touches the filesystem until the operator approves that one operation.
 
-- The workspace is `~/HAL` by default (`--workspace` or `HAL9001_WORKSPACE`
-  changes it). Proposed writes can never reach `~/.hal9001/`, a system
+- The workspace is `~/.hal/workspace` by default (`--workspace` or `HAL9001_WORKSPACE`
+  changes it). Proposed writes can never reach `~/.hal/data/`, a system
   directory or anything outside the workspace. The guarded path accepts
-  the operator's exact form — `~/HAL/note.md`, an absolute path inside the
+  the operator's exact form — `~/.hal/workspace/note.md`, an absolute path inside the
   workspace, or a workspace-relative path such as `note.md`. A relative
   path is not silently stripped of a `HAL/` component; `HAL/HAL/note.md`
   is a legitimate nested destination when that is what was requested.
@@ -489,7 +489,7 @@ touches the filesystem until the operator approves that one operation.
   waiting, and `666 WRITING` for the one operation in progress. These are
   the transaction's labels, not the session mode; a red `666 UNRESTRICTED`
   is the session mode and is shown only while it is enabled.
-- Decisions and tool activity are recorded in `~/.hal9001/audit.jsonl` —
+- Decisions and tool activity are recorded in `~/.hal/data/audit.jsonl` —
   time, session, tool or operation, path, digest, decision, outcome, exit
   code, duration and sizes, never the document or command text — and
   records older than six days are pruned.
@@ -512,7 +512,7 @@ never the one who chooses.
   It is never moved, modified, truncated or overwritten, and a symbolic
   link to it is followed to the file it names — the copy is a plain
   file, never a link.
-- **The copy is confined.** Every copy lands in `~/HAL/uploads/`, in a
+- **The copy is confined.** Every copy lands in `~/.hal/workspace/uploads/`, in a
   directory of its own with a random name, next to a small
   `attachment.json` that says what it is. The upload directory is
   reached through a handle that refuses to leave it, so a symbolic link
@@ -585,10 +585,10 @@ directory they live in, and `/detach <name>` removes one.
 
 **Retention.** HAL keeps every copy it makes. Nothing is removed on its
 own: not when a message is sent, not when a conversation is cleared, not
-when HAL exits. A copy in `~/HAL/uploads/` is the operator's file, and
+when HAL exits. A copy in `~/.hal/workspace/uploads/` is the operator's file, and
 only the operator decides that it should go. To clean up, delete the
-attachment's own directory — `~/HAL/uploads/<id>/` — or the whole
-`~/HAL/uploads/` directory when no conversation needs it any more. The
+attachment's own directory — `~/.hal/workspace/uploads/<id>/` — or the whole
+`~/.hal/workspace/uploads/` directory when no conversation needs it any more. The
 session records keep a reference to a copy that is gone; HAL reports
 such a file as unreadable rather than pretending it is empty.
 

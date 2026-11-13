@@ -14,8 +14,8 @@ The managed installation is separate from HAL's data:
 | `~/.hal/releases/<commit-sha>/` | immutable release (`bin/hal`, `bin/hal-update`, `manifest.json`) |
 | `~/.hal/state/` | updater lock, previous-release record, preserved old commands, Go build cache |
 | `~/.hal/staging/` | candidates under assembly; removed after every run |
-| `~/.hal9001/` | HAL configuration, sessions and audit (never touched) |
-| `~/HAL/` | HAL's writable workspace (never touched) |
+| `~/.hal/data/` | HAL configuration, credentials, sessions, audit and usage (never touched) |
+| `~/.hal/workspace/` | HAL's writable workspace (never touched) |
 
 ## Requirements
 
@@ -47,7 +47,7 @@ The bootstrap command:
 5. creates `~/.local/bin/hal` and `~/.local/bin/hal-update` as symlinks
    through `~/.hal/current`.
 
-It does not start HAL, change `~/.hal9001`, change `~/HAL`, or write shell
+It does not start HAL, change `~/.hal/data`, change `~/.hal/workspace`, or write shell
 configuration. A local installation already in progress is not needed.
 
 If `~/.local/bin/hal` already exists and is not managed by HAL9001, the
@@ -79,6 +79,50 @@ Development use remains unchanged:
 cd ~/projects/hal
 go run ./cmd/hal9001
 ```
+
+## User data layout and migration
+
+HAL keeps all user-owned runtime data under one root:
+
+| Path | Contents |
+| --- | --- |
+| `~/.hal/data/` | configuration (`config.json`, mode `0600`), credentials, sessions, audit (`audit.jsonl`), usage |
+| `~/.hal/workspace/` | the workspace HAL may propose files in |
+
+Previous releases used `~/.hal9001` for data and `~/HAL` for the
+workspace. On startup HAL copies both trees into the new layout,
+byte-for-byte with permissions intact, and records every file with its
+SHA-256 digest in `~/.hal/state/home-migration.json`. The copy is
+idempotent: rerunning it skips files that already match and changes
+nothing else. If the same relative path holds different bytes on both
+sides, migration refuses to start and names every conflicting path —
+delete, move or reconcile the listed files, or point HAL at explicit
+locations with `--store`, `--workspace` or `HAL9001_CONFIG`, then start
+again.
+
+The legacy directories are left in place after the copy. Remove them
+only deliberately, once the new layout is verified, with
+`HAL_CLEAN_LEGACY_HOME=1` set for that run: HAL re-verifies every
+migrated file, then moves `~/.hal9001` and `~/HAL` into a timestamped
+backup under `~/.hal/state/backups/home-migration-<timestamp>/`.
+
+### Rollback across the migration
+
+A previous release does not understand the new paths: it reads
+`~/.hal9001` and `~/HAL` only. Rolling back therefore depends on where
+the legacy directories are:
+
+- Before cleanup, the legacy directories are untouched, so running the
+  previous release just works. Anything written by the new release after
+  migrating is not visible to the old one.
+- After cleanup, restore the legacy layout from the backup first
+  (copy `home-migration-<timestamp>/.hal9001` back to `~/.hal9001` and
+  `home-migration-<timestamp>/HAL` back to `~/HAL`), then run the
+  previous release. The backup is byte-identical to what was migrated
+  and is removed only by an explicit, verified cleanup of its own.
+
+A fresh installation creates only `~/.hal/data` and `~/.hal/workspace`;
+it never creates the legacy directories.
 
 ## Day-to-day maintenance
 
@@ -154,8 +198,9 @@ rm -f ~/.local/bin/hal ~/.local/bin/hal-update
 rm -rf ~/.hal
 ```
 
-This deliberately leaves `~/.hal9001/` (configuration, sessions, audit) and
-`~/HAL/` (workspace files) untouched. If a command was preserved under
+This deliberately leaves `~/.hal/data/` (configuration, credentials,
+sessions, audit, usage) and `~/.hal/workspace/` (workspace files)
+untouched. If a command was preserved under
 `~/.hal/state/backups/`, restore it from a backup you kept before deleting
 `~/.hal`.
 

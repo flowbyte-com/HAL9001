@@ -154,8 +154,8 @@ def main():
     os.makedirs(base, exist_ok=True)
     root = tempfile.mkdtemp(prefix="hal-att-", dir=base)
     # The operator's home directory is the fixture root, so the interface
-    # renders the upload directory the way it renders it for a real
-    # operator: ~/HAL/uploads.
+    # renders an explicitly chosen workspace the way it renders one for
+    # a real operator: ~/HAL/uploads here because --workspace names it.
     #
     # The listing check must not depend on how long the fixture root
     # happens to be. The notice is one line, cut to the width of the

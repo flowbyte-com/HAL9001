@@ -943,7 +943,7 @@ def approval_checks():
 
     The fake provider proposes a write when the prompt contains
     ``[[save PATH]]``. The workspace is a temporary directory, so these
-    checks never touch the operator's own ~/HAL.
+    checks never touch the operator's own home directory.
     """
     # Outside HAL9001_HOME on purpose: the application data directory is
     # protected, and the checks must exercise a normal workspace.
@@ -1065,9 +1065,9 @@ def approval_checks():
               saved("two.md") is None, repr(saved("two.md")))
         check("write: the second review is pending", "666 REQUESTED" in text, text)
 
-        # The operator's literal ~/HAL/... path and the workspace-relative
-        # path must resolve to the same file. This is the regression for
-        # the doubled HAL/HAL directory.
+        # The operator's literal ~/.hal/workspace/... path and the
+        # workspace-relative path must resolve to the same file. This is
+        # the regression for a doubled workspace directory.
         tilde_home = tempfile.mkdtemp(prefix="hal9001-home-")
         previous_home = os.environ.get("HOME")
         previous_workspace = os.environ.pop("HAL9001_WORKSPACE", None)
@@ -1079,21 +1079,21 @@ def approval_checks():
                 return run(script, timeout=timeout, fresh=True,
                            session="guardedwrite")
 
-            guarded = os.path.join(tilde_home, "HAL", "guarded-write-test.txt")
-            doubled = os.path.join(tilde_home, "HAL", "HAL", "guarded-write-test.txt")
+            guarded = os.path.join(tilde_home, ".hal", "workspace", "guarded-write-test.txt")
+            doubled = os.path.join(tilde_home, ".hal", "workspace", "workspace", "guarded-write-test.txt")
             try:
                 os.remove(guarded)
             except FileNotFoundError:
                 pass
-            text = render(run_saveas([(2.5, b"")], "~/HAL/guarded-write-test.txt")).text()
+            text = render(run_saveas([(2.5, b"")], "~/.hal/workspace/guarded-write-test.txt")).text()
             check("guarded 444: review displays the requested path",
-                  "~/HAL/guarded-write-test.txt" in text and
-                  "~/HAL/HAL/guarded-write-test.txt" not in text, text)
+                  "~/.hal/workspace/guarded-write-test.txt" in text and
+                  "~/.hal/workspace/workspace/guarded-write-test.txt" not in text, text)
             check("guarded 444: no doubled directory before approval",
                   not os.path.exists(doubled), doubled)
 
             text = render(run_saveas([(2.5, b"\x19"), (1.5, b"")],
-                                     "~/HAL/guarded-write-test.txt")).text()
+                                     "~/.hal/workspace/guarded-write-test.txt")).text()
             body = None
             try:
                 with open(guarded, "rb") as fh:
@@ -1102,12 +1102,12 @@ def approval_checks():
                 pass
             check("guarded 444: approval writes the requested destination",
                   body == b"HAL444_WRITE_OK", repr(body))
-            check("guarded 444: no HAL/HAL file is created",
+            check("guarded 444: no doubled workspace file is created",
                   not os.path.exists(doubled), doubled)
             check("guarded 444: the session stays in 444",
                   "444 READ ONLY" in text and "666 UNRESTRICTED" not in text, text)
             check("guarded 444: the saved notice names the correct path",
-                  "Saved" in text and "~/HAL/guarded-write-test.txt" in text, text)
+                  "Saved" in text and "~/.hal/workspace/guarded-write-test.txt" in text, text)
 
             audit_path = os.path.join(HOME, "audit.jsonl")
             approved = []
@@ -1134,7 +1134,7 @@ def approval_checks():
             except FileNotFoundError:
                 pass
             text = render(run_saveas([(2.5, b"\x0e"), (0.8, b"")],
-                                     "~/HAL/guarded-write-test.txt")).text()
+                                     "~/.hal/workspace/guarded-write-test.txt")).text()
             check("guarded 444: rejection writes nothing",
                   not os.path.exists(guarded), guarded)
             check("guarded 444: rejection stays in 444",
@@ -1153,13 +1153,13 @@ def approval_checks():
             # or tilde destination outside it.
             outside_dir = os.path.join(tilde_home, "outside-dir")
             os.makedirs(outside_dir, exist_ok=True)
-            link = os.path.join(tilde_home, "HAL", "link")
+            link = os.path.join(tilde_home, ".hal", "workspace", "link")
             if os.path.islink(link) or os.path.isfile(link):
                 os.remove(link)
             try:
                 os.symlink(outside_dir, link)
                 text = render(run_saveas([(1.5, b"")],
-                                         "~/HAL/link/pwned.txt")).text()
+                                         "~/.hal/workspace/link/pwned.txt")).text()
                 check("guarded 444: a workspace symlink escape is refused",
                       "can't save that" in text and
                       "666 REQUESTED" not in text, text)

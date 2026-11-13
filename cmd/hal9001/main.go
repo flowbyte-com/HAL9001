@@ -58,6 +58,41 @@ func run(args []string) error {
 	// the operator already has becomes a provider-scoped one. The
 	// migration is idempotent, atomic and keeps a backup of the
 	// original; a file that is already current is left alone.
+	//
+	// migration reads is already in its new home: ~/.hal9001 becomes
+	// ~/.hal/data and ~/HAL becomes ~/.hal/workspace. An ambiguous
+	// layout \u2014 the same file with different bytes on both sides \u2014
+	// refuses to start rather than guess. Help and version output never
+	// touch the filesystem.
+	if !wantsVersion(args) && !wantsHelp(args) {
+		if _, err := config.MigrateUserHome(); err != nil {
+			return fmt.Errorf("hal9001: the home directory could not be migrated: %w", err)
+		}
+		// An explicit rollback restores the legacy layout from the
+		// migration backup and stops: the previous release only
+		// understands the old paths.
+		if strings.TrimSpace(os.Getenv(config.EnvRollbackHome)) == "1" {
+			home, herr := os.UserHomeDir()
+			if herr != nil || strings.TrimSpace(home) == "" {
+				return fmt.Errorf("hal9001: cannot resolve the home directory for rollback")
+			}
+			report, rerr := config.RollbackHomeMigrationAt(home)
+			if rerr != nil {
+				return fmt.Errorf("hal9001: home migration rollback failed: %w", rerr)
+			}
+			fmt.Printf("hal9001: home migration rolled back (%d directorie(s) restored)\n", len(report.Restored))
+			return nil
+		}
+		// Legacy directories are removed only with explicit approval, and
+		// only after the copies they left behind are re-verified.
+		if strings.TrimSpace(os.Getenv(config.EnvCleanLegacyHome)) == "1" {
+			if home, herr := os.UserHomeDir(); herr == nil && strings.TrimSpace(home) != "" {
+				if _, cerr := config.CleanupLegacyHomeAt(home, true); cerr != nil {
+					return fmt.Errorf("hal9001: legacy home cleanup failed: %w", cerr)
+				}
+			}
+		}
+	}
 	migration, err := config.Migrate(config.ConfigPath())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hal9001: the configuration could not be migrated:", err)
@@ -121,7 +156,8 @@ func run(args []string) error {
 	ws.Protect(config.ConfigDir())
 	app.workspace = ws
 	// The upload store. A file the operator attaches is copied into
-	// ~/HAL/uploads, and the copy is what the conversation discusses.
+	// the workspace's uploads directory, and the copy is what the
+	// conversation discusses.
 	// The store is created once and shared: the interface copies files
 	// into it on the operator's command, and the engine reads only the
 	// copies the operator already made.
@@ -187,11 +223,22 @@ func run(args []string) error {
 }
 
 // wantsVersion recognizes the version flag before configuration is
-// loaded. The flag package would otherwise read ~/.hal9001/config.json
+// loaded. The flag package would otherwise read ~/.hal/data/config.json
 // first, so a damaged config could make `hal --version` fail.
 func wantsVersion(args []string) bool {
 	for _, arg := range args {
 		if arg == "--version" || arg == "-version" {
+			return true
+		}
+	}
+	return false
+}
+
+// wantsHelp mirrors wantsVersion: help output never touches the
+// filesystem, so the home migration must not run for it either.
+func wantsHelp(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-help" || arg == "-h" {
 			return true
 		}
 	}
@@ -248,8 +295,8 @@ type app struct {
 	// (which prepares proposals) and the interface (which approves them).
 	workspace *workspace.Store
 	// attachments is the upload store. It copies the files the operator
-	// chooses into ~/HAL/uploads. Only the interface can start an
-	// ingestion, and no model-facing tool reaches it.
+	// chooses into the workspace's uploads directory. Only the interface
+	// can start an ingestion, and no model-facing tool reaches it.
 	attachments *attachments.Store
 	// skills is the MPM skill store, shared by the engine (which routes
 	// each turn) and the interface (which lists and pins skills).

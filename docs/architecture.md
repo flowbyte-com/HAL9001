@@ -625,15 +625,15 @@ The TUI preserves `turn_id` on reconstructed entries, puts historical tool
 notes immediately above their assistant answer, and rebinds `lastTools` to
 the latest assistant turn (or clears it). `/diag` therefore shows verified
 history rather than stale activity from the previous conversation. The
-separate `~/.hal9001/audit.jsonl` remains content-free bookkeeping and is
+separate `~/.hal/data/audit.jsonl` remains content-free bookkeeping and is
 not the source of conversational truth.
 
 ## The one-off approved write (666 REQUESTED)
 
 This is the 444 transaction, not the session-scoped 666 mode described
 above. `internal/workspace` is the only code that may write a workspace
-file through a model-requested proposal. It owns a root (`~/HAL` by
-default), a proposal, and a guarded-write audit trail. Session 666 uses
+file through a model-requested proposal. It owns a root (the configured
+workspace, `~/.hal/workspace` by default), a proposal, and a guarded-write audit trail. Session 666 uses
 the separate `internal/agenttools` executor and is not confined to the
 workspace.
 
@@ -734,7 +734,7 @@ that refuses function definitions is retried once without them and the
 conversation continues, so tool support is never a prerequisite for
 talking to HAL.
 
-The audit trail (`~/.hal9001/audit.jsonl`, mode 0600) records the timestamp,
+The audit trail (`~/.hal/data/audit.jsonl`, mode 0600) records the timestamp,
 session, operation, workspace-relative path, digest, size, decision and
 outcome for the guarded write — never the document. Tool records add the
 tool name, action, target, mode, exit code, duration, bytes and truncation,

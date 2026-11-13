@@ -359,7 +359,7 @@ func (s *Store) Root() string {
 }
 
 // DisplayPath renders the upload directory the way the interface shows
-// it: ~/HAL/uploads when it is under the home directory.
+// it: ~/.hal/workspace/uploads when it is under the home directory.
 func (s *Store) DisplayPath() string {
 	if s == nil {
 		return ""

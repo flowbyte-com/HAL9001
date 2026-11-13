@@ -251,7 +251,7 @@ func (s *Store) Root() string {
 }
 
 // DisplayPath renders a proposal's destination the way the interface shows
-// it: ~/HAL/note.md when the workspace is under the home directory.
+// it: ~/.hal/workspace/note.md when the workspace is under the home directory.
 func (s *Store) DisplayPath(p Proposal) string {
 	return s.displayPath(p.Path)
 }

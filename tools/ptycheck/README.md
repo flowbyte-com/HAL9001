@@ -185,7 +185,7 @@ python3 tools/ptycheck/notice_checks.py
 
 The attachment checks start their own fake provider on port 8129 and own
 their config, home, workspace, session store and source files. They verify
-that `/attach` copies the chosen file into `~/HAL/uploads/`, that the
+that `/attach` copies the chosen file into `~/.hal/workspace/uploads/`, that the
 pending row names it above the composer, that the file's text reaches the
 model as untrusted data inside a delimited block, that the session keeps a
 reference and not the content or the operator's own path, that `/detach`
@@ -461,7 +461,7 @@ python3 tools/ptycheck/steering_checks.py
   not that the request fits a window nobody declared. Every check uses
   local fake servers; no live credits are spent.
 - The attachment suite covers the operator path end to end: `/attach`
-  copies the chosen file into `~/HAL/uploads/` in a directory of its own,
+  copies the chosen file into `~/.hal/workspace/uploads/` in a directory of its own,
   the original file is unchanged, the pending row names the file and its
   size above the composer, `/attachments` lists it, `/detach` takes it
   back while the copy stays, a missing file and a directory are refused,
@@ -528,8 +528,8 @@ python3 tools/ptycheck/steering_checks.py
   text never decides it; paths outside the workspace are refused; overwrites
   are shown as such; and a second write needs its own approval.
   `[[saveas PATH]]` uses the fixed `HAL444_WRITE_OK` body for the 444
-  workspace-path check: `~/HAL/...` writes directly to the requested file,
-  never to `~/HAL/HAL/...`; rejection, outside paths and symlink escapes
+  workspace-path check: `~/.hal/workspace/...` writes directly to the requested file,
+  never to `~/.hal/workspace/workspace/...`; rejection, outside paths and symlink escapes
   remain refused.
 - The review keeps its three zones at 80x24, 120x30 and 170x38: the header
   names the operation, the document scrolls, and the decisions

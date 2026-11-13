@@ -137,11 +137,11 @@ zones, and only the middle one moves.
 
 ## Guarded 444 write
 
-- [ ] In 444, ask: “Create `~/HAL/guarded-write-test.txt` containing
+- [ ] In 444, ask: “Create `~/.hal/workspace/guarded-write-test.txt` containing
       `HAL444_WRITE_OK`. Request approval if required.”
-- [ ] The review names `~/HAL/guarded-write-test.txt`, not
-      `~/HAL/HAL/guarded-write-test.txt`.
-- [ ] Approving once creates the file at `~/HAL/guarded-write-test.txt`
+- [ ] The review names `~/.hal/workspace/guarded-write-test.txt`, not
+      `~/.hal/workspace/workspace/guarded-write-test.txt`.
+- [ ] Approving once creates the file at `~/.hal/workspace/guarded-write-test.txt`
       with exactly `HAL444_WRITE_OK`, and the footer remains 444.
 - [ ] Rejecting leaves the file absent. A path outside the workspace, or
       one that leaves through a symlink, is refused before any review.
@@ -211,7 +211,7 @@ manual terminal check remains:
       the row above the composer (`📎 notes.md (1.2 KiB)`).
 - [ ] The original file is unchanged: same content, same size, same
       timestamp.
-- [ ] The copy is in `~/HAL/uploads/`, in a directory of its own, and the
+- [ ] The copy is in `~/.hal/workspace/uploads/`, in a directory of its own, and the
       directory and the copies are readable by the operator only.
 - [ ] The copy's `attachment.json` names the file it was copied from.
       The conversation record itself holds no path on your machine.
@@ -250,9 +250,9 @@ manual terminal check remains:
       files were attached, without the file's text in the session.
 - [ ] A stored conversation whose attachment references were edited by
       hand still opens, and the edited names do not break the frame.
-- [ ] Nothing is deleted for you: the copy stays in `~/HAL/uploads/`
+- [ ] Nothing is deleted for you: the copy stays in `~/.hal/workspace/uploads/`
       after the message is sent, after `/clear` and after a restart.
-      Deleting `~/HAL/uploads/<id>/` yourself is the only way a copy
+      Deleting `~/.hal/workspace/uploads/<id>/` yourself is the only way a copy
       goes, and the conversation then reports the file as unreadable
       rather than as empty.
 - [ ] At 80×9 the pending row is the first thing to go; the composer text
