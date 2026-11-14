@@ -23,5 +23,12 @@ func TestMain(m *testing.M) {
 	os.Setenv("HAL9001_CONFIG", filepath.Join(dir, "config.json"))
 	os.Setenv("HAL9001_HOME", filepath.Join(dir, "home"))
 	os.Setenv("HAL9001_WORKSPACE", filepath.Join(dir, "workspace"))
+	// The startup migration resolves the real home directory, not the
+	// HAL9001_* overrides, so the test home must be the process home:
+	// otherwise every test run would migrate the operator's live
+	// ~/.hal9001 and ~/HAL into ~/.hal as a side effect.
+	home := filepath.Join(dir, "homedir")
+	os.Setenv("HOME", home)
+	os.Setenv("USERPROFILE", home)
 	os.Exit(m.Run())
 }
