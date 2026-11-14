@@ -935,7 +935,16 @@ func (a *app) setMigrationNotice(m tui.Model) {
 }
 
 func (a *app) listModels() []tui.ModelInfo {
-	active := a.model
+	// The active model is the resolved runtime identity: an explicit
+	// --model flag or HAL9001_MODEL override names what the next request
+	// actually carries, so it wins over the stored selection and the
+	// legacy fallbacks below. Marking by resolved identity keeps a
+	// matching name under the wrong endpoint from looking active.
+	_, modelOverride, _ := a.overrides()
+	active := modelOverride
+	if active == "" {
+		active = a.model
+	}
 	if active == "" {
 		active = a.cfg.Model
 	}
@@ -947,7 +956,7 @@ func (a *app) listModels() []tui.ModelInfo {
 	activeEndpoint := a.stored.ActiveEndpointID()
 	seen := map[string]bool{}
 	var out []tui.ModelInfo
-	add := func(id, label, endpoint, review string) {
+	add := func(id, label, endpoint, review string, ephemeral bool) {
 		if id == "" {
 			return
 		}
@@ -957,11 +966,12 @@ func (a *app) listModels() []tui.ModelInfo {
 		}
 		seen[key] = true
 		out = append(out, tui.ModelInfo{
-			ID:       id,
-			Label:    label,
-			Endpoint: endpoint,
-			Review:   review,
-			Active:   id == active && (endpoint == activeEndpoint || activeEndpoint == ""),
+			ID:        id,
+			Label:     label,
+			Endpoint:  endpoint,
+			Review:    review,
+			Active:    id == active && (endpoint == activeEndpoint || activeEndpoint == ""),
+			Ephemeral: ephemeral,
 		})
 	}
 	// Every endpoint's models are listed, and every model stays under its
@@ -969,17 +979,17 @@ func (a *app) listModels() []tui.ModelInfo {
 	// endpoint, and the two are not the same model.
 	for _, endpoint := range a.stored.Endpoints {
 		for _, m := range endpoint.Models {
-			add(m.ID, m.Display(), endpoint.ID, m.Review)
+			add(m.ID, m.Display(), endpoint.ID, m.Review, false)
 		}
 	}
 	for _, m := range a.stored.Models {
-		add(m.ID, m.Display(), activeEndpoint, "")
+		add(m.ID, m.Display(), activeEndpoint, "", false)
 	}
 	if a.cfg.Model != "" {
-		add(a.cfg.Model, a.cfg.Model+" (flags)", activeEndpoint, "")
+		add(a.cfg.Model, a.cfg.Model+" (flags)", activeEndpoint, "", true)
 	}
 	if a.model != "" {
-		add(a.model, a.model, activeEndpoint, "")
+		add(a.model, a.model, activeEndpoint, "", true)
 	}
 	return out
 }

@@ -158,6 +158,13 @@ type ModelInfo struct {
 	Endpoint string
 	// Review is a note for the operator, when the model needs attention.
 	Review string
+	// Ephemeral marks a display-only entry for a flag or runtime
+	// override: the effective model when it is not a stored model of the
+	// endpoint it is shown under. It names no persisted endpoint/model
+	// pair, so no picker may offer it as something to act on; the
+	// removal validation in cmd/hal9001/modelcfg.go stays the final
+	// safety boundary regardless.
+	Ephemeral bool
 }
 
 // EndpointInfo describes one configured endpoint.

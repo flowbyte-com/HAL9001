@@ -116,6 +116,10 @@ type manageItem struct {
 	// mark says what the row is: "active" for the model in use,
 	// "current" for the setting that is in force.
 	mark string
+	// ephemeral marks a display-only row for a flag or runtime override.
+	// It names no persisted endpoint/model pair, so action pickers
+	// leave it out; the Use picker shows it but never acts on it.
+	ephemeral bool
 }
 
 // manageField is one editable field of a form.
@@ -581,8 +585,23 @@ func (m *Model) manageUse() tea.Cmd {
 // switchToModel makes the chosen model the active one.
 //
 // The switch is the only thing that changes the active model, and it
-// happens here, where the operator named the model.
+// happens here, where the operator named the model. A display-only flag
+// or runtime override is already the effective model: there is nothing
+// to switch to, so choosing it just says so instead of sending a switch
+// for a pair storage does not hold.
 func (m *Model) switchToModel(item manageItem) tea.Cmd {
+	if item.ephemeral {
+		// An override is only "already active" when the resolved
+		// runtime identity proves it: the picker's mark carries that
+		// verdict. Anything else is shown as what it is, a model with
+		// no stored record, and never switched to.
+		if item.mark == "active" {
+			m.closeManage("Model " + item.model + " is already in effect (from startup options, not stored configuration).")
+		} else {
+			m.closeManage("Model " + item.model + " is not a stored model: nothing to switch to.")
+		}
+		return nil
+	}
 	eng, err := m.hooks.SwitchModel(item.endpoint, item.model)
 	if err != nil {
 		m.manage.notice = "Switch failed: " + err.Error()
@@ -661,7 +680,7 @@ func addModelAfterEndpoint(m *Model, endpointID string) tea.Cmd {
 func (m *Model) manageEditModel() tea.Cmd {
 	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
-	items := m.modelItems()
+	items := storedModelItems(m.modelItems())
 	if len(items) == 0 {
 		m.manage.notice = "There is no model to edit. Add one with /model add."
 		return nil
@@ -676,7 +695,7 @@ func (m *Model) manageEditModel() tea.Cmd {
 func (m *Model) manageRemoveModel() tea.Cmd {
 	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
-	items := m.modelItems()
+	items := storedModelItems(m.modelItems())
 	if len(items) == 0 {
 		m.manage.notice = "There is no model to remove."
 		return nil
@@ -692,7 +711,7 @@ func (m *Model) manageRemoveModel() tea.Cmd {
 func (m *Model) manageContextModel() tea.Cmd {
 	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
-	items := m.modelItems()
+	items := storedModelItems(m.modelItems())
 	if len(items) == 0 {
 		m.manage.notice = "There is no model to look at. Add one with /model add."
 		return nil
@@ -707,7 +726,7 @@ func (m *Model) manageContextModel() tea.Cmd {
 func (m *Model) manageShowModel() tea.Cmd {
 	m.manageRoot(manageModels)
 	m.manage.kind = manageModels
-	items := m.modelItems()
+	items := storedModelItems(m.modelItems())
 	if len(items) == 0 {
 		m.manage.notice = "There is no model to show. Add one with /model add."
 		return nil
@@ -1660,12 +1679,28 @@ func (m *Model) modelItems() []manageItem {
 			detail = ""
 		}
 		out = append(out, manageItem{
-			name:     name,
-			detail:   detail,
-			endpoint: info.Endpoint,
-			model:    info.ID,
-			mark:     markActive(info.Active),
+			name:      name,
+			detail:    detail,
+			endpoint:  info.Endpoint,
+			model:     info.ID,
+			mark:      markActive(info.Active),
+			ephemeral: info.Ephemeral,
 		})
+	}
+	return out
+}
+
+// storedModelItems are the picker rows that name a persisted
+// endpoint/model pair. Flag and runtime overrides ride along in the
+// list for visibility, but they are display-only: acting on one can
+// only fail, as the pair does not exist in storage.
+func storedModelItems(items []manageItem) []manageItem {
+	var out []manageItem
+	for _, item := range items {
+		if item.ephemeral {
+			continue
+		}
+		out = append(out, item)
 	}
 	return out
 }

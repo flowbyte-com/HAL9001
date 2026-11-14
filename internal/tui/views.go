@@ -339,6 +339,14 @@ func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			chosen := m.pickerModels[m.pickerCursor]
+			if chosen.Ephemeral {
+				if chosen.Active {
+					m.pickerNotice = "Model " + chosen.ID + " is already in effect (from startup options, not stored configuration)."
+				} else {
+					m.pickerNotice = "Model " + chosen.ID + " is not a stored model: nothing to switch to."
+				}
+				return m, nil
+			}
 			eng, err := m.hooks.SwitchModel(chosen.Endpoint, chosen.ID)
 			if err != nil {
 				m.pickerNotice = "Switch failed: " + err.Error()
