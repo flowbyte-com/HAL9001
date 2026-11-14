@@ -120,6 +120,8 @@ the legacy directories are:
   `home-migration-<timestamp>/HAL` back to `~/HAL`), then run the
   previous release. The backup is byte-identical to what was migrated
   and is removed only by an explicit, verified cleanup of its own.
+  The supported way to restore it is `HAL_ROLLBACK_HOME_MIGRATION=1 hal`,
+  which puts the legacy directories back and exits.
 
 A fresh installation creates only `~/.hal/data` and `~/.hal/workspace`;
 it never creates the legacy directories.

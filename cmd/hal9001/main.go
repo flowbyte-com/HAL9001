@@ -59,11 +59,11 @@ func run(args []string) error {
 	// migration is idempotent, atomic and keeps a backup of the
 	// original; a file that is already current is left alone.
 	//
-	// migration reads is already in its new home: ~/.hal9001 becomes
-	// ~/.hal/data and ~/HAL becomes ~/.hal/workspace. An ambiguous
-	// layout \u2014 the same file with different bytes on both sides \u2014
-	// refuses to start rather than guess. Help and version output never
-	// touch the filesystem.
+	// home migration runs first, so the file the migration reads is
+	// already in its new home: ~/.hal9001 becomes ~/.hal/data and
+	// ~/HAL becomes ~/.hal/workspace. An ambiguous layout -- the same
+	// file with different bytes on both sides -- refuses to start rather
+	// than guess. Help and version output never touch the filesystem.
 	if !wantsVersion(args) && !wantsHelp(args) {
 		if _, err := config.MigrateUserHome(); err != nil {
 			return fmt.Errorf("hal9001: the home directory could not be migrated: %w", err)

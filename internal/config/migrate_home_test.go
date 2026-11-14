@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,6 +254,53 @@ func TestMigrateHomeResumesPartial(t *testing.T) {
 	}
 	if readFile(t, filepath.Join(home, ".hal", "data", "config.json")) != `{"endpoint":"keep-me"}` {
 		t.Error("the resume did not complete the copy")
+	}
+}
+
+func TestMigratedCopyLeavesNoTempFilesBehind(t *testing.T) {
+	// The copy is atomic per file (temp file + rename): a killed run
+	// can never leave a truncated destination that bricks the next
+	// start, and a successful run leaves no temporary files behind.
+	home := fakeHome(t)
+	if _, err := MigrateUserHomeAt(home); err != nil {
+		t.Fatal(err)
+	}
+	var leftovers []string
+	for _, dir := range []string{filepath.Join(home, ".hal", "data"), filepath.Join(home, ".hal", "workspace")} {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if strings.HasPrefix(d.Name(), ".migrate-") || strings.HasSuffix(d.Name(), ".tmp") {
+				leftovers = append(leftovers, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(leftovers) > 0 {
+		t.Errorf("temporary files left behind: %v", leftovers)
+	}
+}
+
+func TestFailedCopyLeavesNoPartialDestination(t *testing.T) {
+	home := t.TempDir()
+	src := filepath.Join(home, "src.txt")
+	if err := os.WriteFile(src, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(src, 0o600)
+	dst := filepath.Join(home, "dst", "out.txt")
+	if err := copyFilePreservingMode(src, dst, 0o600); err == nil {
+		t.Fatal("unreadable source was copied")
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Errorf("a failed copy left a partial destination: %v", err)
 	}
 }
 

@@ -593,13 +593,6 @@ func writeHomeMigrationReceiptFull(root string, receipt homeMigrationReceiptFile
 	return nil
 }
 
-func removeHomeMigrationReceipt(root string) error {
-	if err := os.Remove(homeMigrationReceiptPath(root)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("config: %w", err)
-	}
-	return nil
-}
-
 func dirExists(dir string) bool {
 	info, err := os.Stat(dir)
 	return err == nil && info.IsDir()
@@ -642,12 +635,33 @@ func copyFilePreservingMode(src, dst string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, raw, mode); err != nil {
+	// Write to a temporary file and rename into place, so an
+	// interrupted copy can never leave a truncated destination behind:
+	// the destination is either absent (copied on rerun) or complete.
+	// A stale temporary file from a killed run is inert: migration
+	// walks the source trees only and never reads it.
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".migrate-*")
+	if err != nil {
 		return err
 	}
-	// WriteFile is subject to the umask; restore the exact source bits
-	// so a 0600 credential file stays 0600.
-	if err := os.Chmod(dst, mode); err != nil {
+	name := tmp.Name()
+	// Best effort: a killed process cannot run cleanup, and a leftover
+	// temporary file must never be mistaken for migrated data.
+	defer os.Remove(name)
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return err
+	}
+	// The process umask may have stripped bits WriteFile would keep;
+	// restore the exact source bits so a 0600 credential file stays 0600.
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, dst); err != nil {
 		return err
 	}
 	return nil
