@@ -66,13 +66,20 @@ func attributionOf(turnID string, decision skills.Decision) *session.Attribution
 	}
 	a := &session.Attribution{TurnID: turnID, Source: decision.Source}
 	for _, s := range decision.Loaded {
-		a.Skills = append(a.Skills, session.AttributedSkill{
+		record := session.AttributedSkill{
 			ID:          s.ID,
 			Name:        s.Name,
 			Source:      decision.Source,
 			Version:     s.Version,
 			ContentHash: s.ContentHash(),
-		})
+		}
+		if s.Package != nil {
+			record.PackageID = s.Package.SkillID
+			record.Entrypoint = s.Package.Entrypoint
+			record.EntrypointSHA256 = s.Package.EntrypointSHA256
+			record.PackageHash = s.Package.PackageHash
+		}
+		a.Skills = append(a.Skills, record)
 	}
 	return a
 }
@@ -116,6 +123,13 @@ func skillBlock(loaded []skills.Skill) string {
 				b.WriteString(c)
 				b.WriteString("\n")
 			}
+		}
+		if s.Package != nil {
+			b.WriteString("\nOnly the entrypoint guidance was loaded")
+			if s.Package.Entrypoint != "" {
+				b.WriteString(" (entrypoint " + s.Package.Entrypoint + ")")
+			}
+			b.WriteString("; the rest of the package was not read.\n")
 		}
 		b.WriteString("\n")
 	}

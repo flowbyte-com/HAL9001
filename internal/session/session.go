@@ -409,7 +409,22 @@ type AttributedSkill struct {
 	// Version is the version that was supplied.
 	Version string `json:"version,omitempty"`
 	// ContentHash is the hash of the instructions that were supplied.
+	// For a packaged skill this is the derived entrypoint projection,
+	// never the original SKILL.md bytes and never proof the full
+	// package was loaded.
 	ContentHash string `json:"content_hash,omitempty"`
+	// PackageID is the store-reported package identity, when the loaded
+	// skill was projected from a multi-file package.
+	PackageID string `json:"package_id,omitempty"`
+	// Entrypoint is the package path of the projection that was
+	// supplied, when known. Only this file's text reached the model.
+	Entrypoint string `json:"entrypoint,omitempty"`
+	// EntrypointSHA256 is the store-reported digest of the entrypoint
+	// file, when the store reported one.
+	EntrypointSHA256 string `json:"entrypoint_sha256,omitempty"`
+	// PackageHash is the store-reported digest of the package as a
+	// whole, when the store reported one.
+	PackageHash string `json:"package_hash,omitempty"`
 }
 
 // Turn identifies one exchange: the operator's message, the answer and

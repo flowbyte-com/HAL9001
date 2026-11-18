@@ -199,10 +199,48 @@ func skillFacts(d skills.Decision, a *session.Attribution) []skillFact {
 	if hash != "" {
 		facts = append(facts, skillFact{"hash", hash})
 	}
+	// A packaged skill says so, and says exactly how much of the
+	// package was used. The three digests are kept apart because they
+	// mean different things: the projection hash above is what was
+	// supplied, the entrypoint digest identifies the file it came from,
+	// and the package digest covers the whole package -- none of them
+	// proves the supporting files were loaded.
+	for _, p := range packageFacts(d.Loaded) {
+		facts = append(facts, p)
+	}
 	if d.Failure != "" {
 		facts = append(facts, skillFact{"failure", d.Failure})
 	}
 	return facts
+}
+
+// packageFacts describes the packages behind the loaded skills, one
+// block per packaged skill. A single-document skill contributes nothing.
+func packageFacts(loaded []skills.Skill) []skillFact {
+	var out []skillFact
+	for _, s := range loaded {
+		if s.Package == nil {
+			continue
+		}
+		out = append(out, skillFact{"package", oneLine(s.Package.SkillID)})
+		entry := s.Package.Entrypoint
+		if entry == "" {
+			entry = "(not reported)"
+		}
+		out = append(out, skillFact{"entrypoint", oneLine(entry)})
+		loadedText := "entrypoint only"
+		if s.Package.Complete {
+			loadedText = "entrypoint only (supporting files listed, not loaded)"
+		}
+		out = append(out, skillFact{"loaded", loadedText})
+		if s.Package.EntrypointSHA256 != "" {
+			out = append(out, skillFact{"entrypoint hash", oneLine(s.Package.EntrypointSHA256)})
+		}
+		if s.Package.PackageHash != "" {
+			out = append(out, skillFact{"package hash", oneLine(s.Package.PackageHash)})
+		}
+	}
+	return out
 }
 
 // skillCmd handles /skill.

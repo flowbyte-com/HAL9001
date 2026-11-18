@@ -76,10 +76,13 @@ class Session:
                 os.environ["HAL9001_CONFIG"] = self.config
                 os.environ["HAL9001_HOME"] = self.home
                 os.environ["HAL9001_WORKSPACE"] = self.workspace
-                # This suite never exercises MPM. A missing executable
+                # Most suites never exercise MPM: a missing executable
                 # keeps the knowledge registry away from the operator's
-                # real store.
-                os.environ["HAL9001_MPM_BIN"] = os.path.join(self.home, "no-mpm")
+                # real store. A suite that needs a fixture sets
+                # HAL9001_MPM_BIN itself, and that value is inherited so
+                # the operator's real store is still never reached.
+                if not os.environ.get("HAL9001_MPM_BIN"):
+                    os.environ["HAL9001_MPM_BIN"] = os.path.join(self.home, "no-mpm")
                 os.execv(self.binary, [
                     self.binary,
                     "--session", self.session,

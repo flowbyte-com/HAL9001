@@ -617,6 +617,23 @@ that fits the request, without being told which to use.
   the request says so explicitly, the mode is owned by the operator's
   controller, and a skill can never enable 666 or widen the current
   boundary.
+- **Multi-file skill packages.** MPM is adopting skill packages: one
+  skill version stored as a manifest, an entrypoint (`SKILL.md`) and
+  supporting files. When MPM's read response reports package identity,
+  HAL records it — the package id, the entrypoint path, the entrypoint
+  digest and the package digest — and loads only the **entrypoint
+  projection**. The request and `/skills` say plainly that the rest of
+  the package was not read; the three digests are kept apart, because
+  the projection hash (what was supplied) is not the entrypoint file's
+  hash and neither is the package hash.
+  HAL never materialises package files, never executes anything found in
+  a package, and never fetches supporting files during discovery or an
+  ordinary read. Progressive reads (bounded chunks, integrity
+  verification) are defined behind a narrow interface in
+  `internal/skills/packages.go`; they stay unwired until MPM exposes its
+  read-only package operations (upstream P8, issue #253). Until then,
+  `/skills` reports package provenance only when a response carries it,
+  and a store without packages behaves exactly as before.
 - `/skills` lists what is available, `/skill <name>` pins one for the
   writing task ahead, `/skill auto` restores automatic routing, and
   `/diag` names the skill of the latest request and where it came from.

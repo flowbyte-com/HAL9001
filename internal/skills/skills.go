@@ -72,6 +72,56 @@ type Skill struct {
 	WhenToUse   string
 	Body        string
 	Constraints []string
+	// Package describes the multi-file package this skill was projected
+	// from, when the store says so. It is nil for single-document
+	// skills, and nil whenever the store reports no package identity:
+	// absence means "unknown", never "not packaged".
+	Package *PackageRef
+}
+
+// PackageRef is the package identity MPM reports for a skill, if any.
+//
+// Every field here is store-supplied metadata, carried for attribution
+// and display only. It never authorises anything, never triggers
+// further reads on its own, and never claims more than the entrypoint
+// projection was loaded: supporting files stay unread until an
+// explicit, bounded package read asks for them.
+type PackageRef struct {
+	// SkillID is the store's skill identifier the package belongs to.
+	SkillID string
+	// Entrypoint is the package path of the loaded projection, such as
+	// "SKILL.md".
+	Entrypoint string
+	// EntrypointSHA256 is the store-reported digest of the entrypoint
+	// file, when the store reports one.
+	EntrypointSHA256 string
+	// PackageHash is the store-reported digest of the package as a
+	// whole, when the store reports one.
+	PackageHash string
+	// Files lists the supporting files the store reports, without their
+	// bytes. It is capped at parse time; a longer listing is truncated
+	// and marked incomplete rather than read eagerly.
+	Files []PackageFile
+	// Complete reports whether Files lists every supporting file. False
+	// means the listing was capped or the store did not enumerate them:
+	// either way, only the entrypoint was loaded.
+	Complete bool
+}
+
+// PackageFile is one supporting file named by the store: identity and
+// size only, never content. Content arrives only through an explicit,
+// bounded chunk read.
+type PackageFile struct {
+	// Path is the store-canonical, slash-separated package path.
+	Path string
+	// SHA256 is the store-reported digest of the file, when reported.
+	SHA256 string
+	// Size is the store-reported byte size. Negative means unknown.
+	Size int64
+	// Role is the store-reported role (for example "docs", "script",
+	// "reference"), when reported. It is descriptive only: a role never
+	// grants execution, and HAL never executes package files.
+	Role string
 }
 
 // ContentHash is the hash of the exact instructions of a skill.
@@ -171,16 +221,52 @@ type skillSummary struct {
 
 // readEnvelope mirrors the answer to a "read" action.
 type readEnvelope struct {
-	Success     bool     `json:"success"`
-	Error       string   `json:"error"`
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	WhenToUse   string   `json:"when_to_use"`
-	Domain      string   `json:"domain"`
-	Constraints []string `json:"constraints"`
-	Body        string   `json:"body"`
-	IsGlobal    bool     `json:"is_global"`
+	Success     bool             `json:"success"`
+	Error       string           `json:"error"`
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	Version     string           `json:"version"`
+	WhenToUse   string           `json:"when_to_use"`
+	Domain      string           `json:"domain"`
+	Constraints []string         `json:"constraints"`
+	Body        string           `json:"body"`
+	IsGlobal    bool             `json:"is_global"`
+	Package     *packageEnvelope `json:"package"`
+}
+
+// packageEnvelope mirrors the optional package block of a read
+// response.
+//
+// MPM's read-only package operations do not exist yet (tracked
+// upstream as P8), so no production server emits this block today. It
+// is parsed only so a packaged skill is recognised when a response
+// does carry package identity -- including fixture doubles that speak
+// the same vocabulary as MPM's own staged package schema (skill_id
+// keying, entrypoint plus sha256, package_hash, per-file
+// path/sha256/size_bytes/role). Field names here are HAL-side
+// provisional placeholders, not the P8 contract; aligning with P8 is
+// a separate, clearly identified integration step.
+//
+// Every field is optional and every value is untrusted display
+// metadata. An absent block changes nothing: the skill is treated
+// exactly as a single-document skill. A present block never triggers
+// further reads, never executes anything, and never claims the full
+// package was loaded -- only the entrypoint projection in Body.
+type packageEnvelope struct {
+	SkillID          string                `json:"skill_id"`
+	Entrypoint       string                `json:"entrypoint"`
+	EntrypointSHA256 string                `json:"entrypoint_sha256"`
+	PackageHash      string                `json:"package_hash"`
+	Files            []packageFileEnvelope `json:"files"`
+}
+
+// packageFileEnvelope is one supporting file named by a read response:
+// identity and size only, never content.
+type packageFileEnvelope struct {
+	Path      string      `json:"path"`
+	SHA256    string      `json:"sha256"`
+	SizeBytes json.Number `json:"size_bytes"`
+	Role      string      `json:"role"`
 }
 
 // List returns the skills MPM offers, newest version of each name.
@@ -238,6 +324,7 @@ func (c *Client) Read(ctx context.Context, name string) (Skill, error) {
 		return Skill{}, fmt.Errorf("skills: %q could not be read: %s", name, env.Error)
 	}
 	return Skill{
+		Package:     packageRefFromEnvelope(env.ID, env.Package),
 		ID:          env.ID,
 		Name:        env.Name,
 		Version:     env.Version,
@@ -334,6 +421,65 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// MaxPackageFilesParsed caps how many supporting files HAL records
+// from one read response. Anything beyond the cap is dropped and the
+// PackageRef is marked incomplete rather than read eagerly: listing
+// names is cheap, loading bytes is not.
+const MaxPackageFilesParsed = 128
+
+// packageRefFromEnvelope builds the package identity of a read
+// response, or nil when the response carries no package identity. A
+// present-but-empty block is treated as absent: without at least a
+// skill id, an entrypoint path, or a package hash, there is nothing to
+// recognise.
+func packageRefFromEnvelope(skillID string, env *packageEnvelope) *PackageRef {
+	if env == nil {
+		return nil
+	}
+	if strings.TrimSpace(env.SkillID) == "" &&
+		strings.TrimSpace(env.Entrypoint) == "" &&
+		strings.TrimSpace(env.PackageHash) == "" {
+		return nil
+	}
+	id := strings.TrimSpace(env.SkillID)
+	if id == "" {
+		id = skillID
+	}
+	ref := &PackageRef{
+		SkillID:          id,
+		Entrypoint:       strings.TrimSpace(env.Entrypoint),
+		EntrypointSHA256: strings.TrimSpace(env.EntrypointSHA256),
+		PackageHash:      strings.TrimSpace(env.PackageHash),
+		Complete:         true,
+	}
+	for _, f := range env.Files {
+		path := strings.TrimSpace(f.Path)
+		if path == "" {
+			continue
+		}
+		if len(ref.Files) >= MaxPackageFilesParsed {
+			ref.Complete = false
+			break
+		}
+		size := int64(-1)
+		if n, err := f.SizeBytes.Int64(); err == nil {
+			size = n
+		}
+		ref.Files = append(ref.Files, PackageFile{
+			Path:   path,
+			SHA256: strings.TrimSpace(f.SHA256),
+			Size:   size,
+			Role:   strings.TrimSpace(f.Role),
+		})
+	}
+	if env.Files == nil {
+		// The store did not enumerate supporting files: either way,
+		// only the entrypoint projection was loaded.
+		ref.Complete = false
+	}
+	return ref
 }
 
 // Selector owns the catalogue, the routing decision and the loading of a
