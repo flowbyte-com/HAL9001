@@ -89,8 +89,8 @@ func TestReadSingleDocumentSkillHasNoPackage(t *testing.T) {
 	}
 }
 
-// A packaged skill keeps its identity and its entrypoint, and its
-// projection hash stays a hash of the projection only.
+// A packaged skill keeps its identity and its entrypoint, and HAL's
+// attribution hash covers only the text that was supplied.
 func TestReadPackagedSkillKeepsIdentityAndEntrypoint(t *testing.T) {
 	c := clientFor(t, packagedEnvelope)
 	s, err := c.Read(context.Background(), "review-pack")
@@ -115,15 +115,16 @@ func TestReadPackagedSkillKeepsIdentityAndEntrypoint(t *testing.T) {
 	if !s.Package.Complete {
 		t.Error("a fully enumerated listing was marked incomplete")
 	}
-	// The three digests mean different things and must stay distinct.
+	// HAL's attribution hash and the store-reported digests mean
+	// different things and must stay distinct.
 	if s.Package.EntrypointSHA256 == s.Package.PackageHash {
 		t.Error("entrypoint and package digests were conflated")
 	}
 	if s.ContentHash() == s.Package.EntrypointSHA256 {
-		t.Error("the projection hash was reported as the entrypoint digest")
+		t.Error("the attribution hash was reported as the entrypoint digest")
 	}
 	if s.ContentHash() == s.Package.PackageHash {
-		t.Error("the projection hash was reported as the package digest")
+		t.Error("the attribution hash was reported as the package digest")
 	}
 }
 
@@ -160,6 +161,43 @@ func TestPackageWithoutFileListingIsIncomplete(t *testing.T) {
 	}
 	if len(s.Package.Files) != 0 {
 		t.Errorf("files were invented: %+v", s.Package.Files)
+	}
+}
+
+// MPM's production read response carries the package block without
+// "skill_id" or "files". HAL falls back to the top-level skill id, keeps
+// the entrypoint and the digests, and reports the listing as incomplete
+// rather than inventing one.
+func TestProductionPackageShapeFallsBack(t *testing.T) {
+	// The shape MPM main (edb276de) emits: package identity, no
+	// skill_id, no files, and a file_count that must not be turned
+	// into a listing.
+	production := `{"success":true,"id":"skill:review-pack-v2.0.0",
+	 "name":"review-pack","version":"2.0.0","body":"entry",
+	 "package":{"entrypoint":"SKILL.md","file_count":3,
+	   "entrypoint_sha256":"sha256:aaaa","package_hash":"sha256:bbbb"}}`
+	c := clientFor(t, production)
+	s, err := c.Read(context.Background(), "review-pack")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if s.Package == nil {
+		t.Fatal("the production package block was dropped")
+	}
+	if s.Package.SkillID != "skill:review-pack-v2.0.0" {
+		t.Errorf("skill id = %q, want the top-level id", s.Package.SkillID)
+	}
+	if s.Package.Entrypoint != "SKILL.md" {
+		t.Errorf("entrypoint = %q", s.Package.Entrypoint)
+	}
+	if s.Package.EntrypointSHA256 != "sha256:aaaa" || s.Package.PackageHash != "sha256:bbbb" {
+		t.Errorf("digests lost: %+v", s.Package)
+	}
+	if len(s.Package.Files) != 0 {
+		t.Errorf("a file listing was invented from file_count: %+v", s.Package.Files)
+	}
+	if s.Package.Complete {
+		t.Error("an unlisted package was reported complete")
 	}
 }
 

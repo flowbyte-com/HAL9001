@@ -200,11 +200,13 @@ func skillFacts(d skills.Decision, a *session.Attribution) []skillFact {
 		facts = append(facts, skillFact{"hash", hash})
 	}
 	// A packaged skill says so, and says exactly how much of the
-	// package was used. The three digests are kept apart because they
-	// mean different things: the projection hash above is what was
-	// supplied, the entrypoint digest identifies the file it came from,
+	// package was used. The digests are kept apart because they mean
+	// different things: the "hash" fact above is HAL's attribution hash
+	// over the body and hard constraints that were supplied, the
+	// entrypoint digest identifies the file the projection came from,
 	// and the package digest covers the whole package -- none of them
-	// proves the supporting files were loaded.
+	// is MPM's projection_sha256, and none proves the supporting files
+	// were loaded.
 	for _, p := range packageFacts(d.Loaded) {
 		facts = append(facts, p)
 	}

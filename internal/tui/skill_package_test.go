@@ -11,6 +11,9 @@ import (
 // The diagnostics keep package provenance readable, and never claim
 // more of the package was used than the entrypoint projection.
 
+// got returns one fact's value, or "" when it is absent.
+func got(facts []skillFact, label string) string { return factsValue(facts, label) }
+
 func factsValue(facts []skillFact, label string) string {
 	for _, f := range facts {
 		if f.Label == label {
@@ -38,7 +41,7 @@ func TestSkillFactsShowPackageProvenance(t *testing.T) {
 	facts := skillFacts(skills.Decision{
 		Skills: []string{"review-pack"}, Source: skills.SourceExplicit, Loaded: loaded,
 	}, &session.Attribution{Skills: []session.AttributedSkill{{
-		Name: "review-pack", Version: "2.0.0", ContentHash: "sha256:projection",
+		Name: "review-pack", Version: "2.0.0", ContentHash: "sha256:attribution",
 		PackageID: "skill:review-pack-v2.0.0", Entrypoint: "SKILL.md",
 		EntrypointSHA256: "sha256:entrypoint", PackageHash: "sha256:package",
 	}}})
@@ -62,10 +65,16 @@ func TestSkillFactsShowPackageProvenance(t *testing.T) {
 	if got := factsValue(facts, "package hash"); got != "sha256:package" {
 		t.Errorf("package hash = %q", got)
 	}
-	// The projection hash is its own fact: it is what was supplied, not
-	// the entrypoint file's digest.
-	if got := factsValue(facts, "hash"); got != "sha256:projection" {
-		t.Errorf("projection hash = %q", got)
+	// HAL's attribution hash is its own fact: it covers the body and
+	// hard constraints that were supplied, and it is not the entrypoint
+	// file's digest nor the package digest.
+	if got := factsValue(facts, "hash"); got != "sha256:attribution" {
+		t.Errorf("attribution hash = %q", got)
+	}
+	for _, other := range []string{got(facts, "entrypoint hash"), got(facts, "package hash")} {
+		if factsValue(facts, "hash") == other {
+			t.Errorf("the attribution hash was conflated with %q", other)
+		}
 	}
 }
 

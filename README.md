@@ -623,9 +623,17 @@ that fits the request, without being told which to use.
   HAL records it — the package id, the entrypoint path, the entrypoint
   digest and the package digest — and loads only the **entrypoint
   projection**. The request and `/skills` say plainly that the rest of
-  the package was not read; the three digests are kept apart, because
-  the projection hash (what was supplied) is not the entrypoint file's
-  hash and neither is the package hash.
+  the package was not read.
+  The three digests mean different things and are kept apart. HAL's
+  `content_hash` is an **attribution hash**: SHA-256 over the skill body
+  and then each hard constraint. It is not MPM's `projection_sha256`,
+  and it is not a digest of the original `SKILL.md` bytes. For a skill
+  with no constraints it is exactly the body digest — the value MPM
+  reports as `body_sha256` once the `sha256:` prefix is normalised —
+  and with constraints it generally differs from it. The entrypoint
+  digest (`entrypoint_sha256`) identifies the file the projection came
+  from, and the package digest (`package_hash`) covers the package as a
+  whole; neither is the attribution hash.
   HAL never materialises package files, never executes anything found in
   a package, and never fetches supporting files during discovery or an
   ordinary read. Progressive reads (bounded chunks, integrity

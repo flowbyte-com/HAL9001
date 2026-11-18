@@ -72,35 +72,73 @@ type PackageSource interface {
 	Verify(ctx context.Context, skillID string, want PackageDigest) error
 }
 
-// ReadBounded assembles one supporting file through bounded chunk reads
-// and refuses anything larger than maxTotal instead of truncating it
-// silently: a half-read script must never look like a whole one.
+// ReadBounded assembles one supporting file through bounded chunk
+// reads.
+//
+// The read succeeds only when the source proves the file is complete:
+// every chunk must report the same non-negative total, and the bytes
+// assembled must reach exactly that total. A source that stops early,
+// reports no size, or changes the size mid-read is an error. Partial
+// content is never returned as a successful read: a half-read script
+// must not look like a whole one.
+//
+// maxTotal bounds the assembled bytes. Zero means MaxPackageReadTotal;
+// a negative budget, or one above that maximum, is refused rather than
+// silently adjusted.
 func ReadBounded(ctx context.Context, src PackageSource, skillID, path string, maxTotal int64) ([]byte, error) {
 	if src == nil {
 		return nil, ErrPackageUnsupported
 	}
-	if maxTotal <= 0 || maxTotal > MaxPackageReadTotal {
+	if maxTotal < 0 {
+		return nil, fmt.Errorf("skills: package read budget %d is negative", maxTotal)
+	}
+	if maxTotal == 0 {
 		maxTotal = MaxPackageReadTotal
+	}
+	if maxTotal > MaxPackageReadTotal {
+		return nil, fmt.Errorf("skills: package read budget %d exceeds the %d-byte maximum", maxTotal, MaxPackageReadTotal)
 	}
 	var out []byte
 	var offset int64
+	total := int64(-1)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		chunk, total, err := src.ReadChunk(ctx, skillID, path, offset, PackageChunkDefault)
+		chunk, reported, err := src.ReadChunk(ctx, skillID, path, offset, PackageChunkDefault)
 		if err != nil {
 			return nil, err
 		}
-		if total >= 0 && total > MaxPackageReadTotal {
+		if reported < 0 {
+			return nil, fmt.Errorf("skills: the package source reported no size for %q", path)
+		}
+		if total < 0 {
+			total = reported
+		} else if reported != total {
+			return nil, fmt.Errorf("skills: the package source changed the size of %q from %d to %d mid-read", path, total, reported)
+		}
+		if total > MaxPackageReadTotal {
 			return nil, fmt.Errorf("skills: package file %q reports %d bytes, over the %d-byte read budget", path, total, MaxPackageReadTotal)
+		}
+		if int64(len(chunk)) > PackageChunkDefault {
+			return nil, fmt.Errorf("skills: the package source returned %d bytes for %q, more than the %d-byte chunk it was asked for", len(chunk), path, PackageChunkDefault)
+		}
+		if len(chunk) == 0 {
+			if offset == total {
+				return out, nil
+			}
+			// A source that stops early must never look complete.
+			return nil, fmt.Errorf("skills: package file %q ended at %d of %d bytes", path, offset, total)
 		}
 		out = append(out, chunk...)
 		if int64(len(out)) > maxTotal {
 			return nil, fmt.Errorf("skills: package file %q exceeds the %d-byte read budget", path, maxTotal)
 		}
 		offset += int64(len(chunk))
-		if len(chunk) == 0 || (total >= 0 && offset >= total) {
+		if offset > total {
+			return nil, fmt.Errorf("skills: package file %q delivered %d bytes, more than its reported %d", path, offset, total)
+		}
+		if offset == total {
 			return out, nil
 		}
 	}

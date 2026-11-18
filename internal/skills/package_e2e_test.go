@@ -191,8 +191,8 @@ esac
 	if strings.Contains(s.Body, "checklists/go.md") || strings.Contains(s.Body, "#!/bin/sh") {
 		t.Errorf("supporting-file content leaked into the entrypoint body")
 	}
-	// The derived projection and the reported digests stay distinct.
+	// HAL's attribution hash and the reported digests stay distinct.
 	if s.ContentHash() == s.Package.EntrypointSHA256 || s.ContentHash() == s.Package.PackageHash {
-		t.Error("the projection hash was conflated with a reported digest")
+		t.Error("the attribution hash was conflated with a reported digest")
 	}
 }

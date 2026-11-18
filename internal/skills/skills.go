@@ -237,15 +237,22 @@ type readEnvelope struct {
 // packageEnvelope mirrors the optional package block of a read
 // response.
 //
-// MPM's read-only package operations do not exist yet (tracked
-// upstream as P8), so no production server emits this block today. It
-// is parsed only so a packaged skill is recognised when a response
-// does carry package identity -- including fixture doubles that speak
-// the same vocabulary as MPM's own staged package schema (skill_id
-// keying, entrypoint plus sha256, package_hash, per-file
-// path/sha256/size_bytes/role). Field names here are HAL-side
-// provisional placeholders, not the P8 contract; aligning with P8 is
-// a separate, clearly identified integration step.
+// MPM main (edb276de) already emits this block for a packaged skill.
+// Its production read response carries the entrypoint, the entrypoint
+// digest and the package digest; it does NOT carry "skill_id" or
+// "files". Those two are fixture-only extensions, used by HAL's own
+// tests and clearly marked below: HAL must never expect them from
+// production, and it never fabricates a listing from a file count.
+//
+// When "skill_id" is absent HAL falls back to the skill id the read
+// response carries at the top level, which is the same identity. When
+// "files" is absent HAL records no supporting files and reports the
+// package as incomplete (Complete=false): the listing is unknown, not
+// empty, and the entrypoint projection is still exactly what was
+// loaded.
+//
+// Progressive package reads are a later integration step (upstream P8,
+// issue #253); nothing here depends on them.
 //
 // Every field is optional and every value is untrusted display
 // metadata. An absent block changes nothing: the skill is treated
@@ -253,15 +260,21 @@ type readEnvelope struct {
 // further reads, never executes anything, and never claims the full
 // package was loaded -- only the entrypoint projection in Body.
 type packageEnvelope struct {
-	SkillID          string                `json:"skill_id"`
-	Entrypoint       string                `json:"entrypoint"`
-	EntrypointSHA256 string                `json:"entrypoint_sha256"`
-	PackageHash      string                `json:"package_hash"`
-	Files            []packageFileEnvelope `json:"files"`
+	// SkillID is a fixture-only extension: MPM's production read
+	// response omits it, and HAL falls back to the top-level skill id.
+	SkillID          string `json:"skill_id"`
+	Entrypoint       string `json:"entrypoint"`
+	EntrypointSHA256 string `json:"entrypoint_sha256"`
+	PackageHash      string `json:"package_hash"`
+	// Files is a fixture-only extension: MPM's production read response
+	// omits it, and HAL reports the package as incomplete instead of
+	// inventing a listing.
+	Files []packageFileEnvelope `json:"files"`
 }
 
-// packageFileEnvelope is one supporting file named by a read response:
-// identity and size only, never content.
+// packageFileEnvelope is one supporting file in the fixture-only
+// "files" listing: identity and size only, never content. MPM's
+// production read response does not carry it.
 type packageFileEnvelope struct {
 	Path      string      `json:"path"`
 	SHA256    string      `json:"sha256"`

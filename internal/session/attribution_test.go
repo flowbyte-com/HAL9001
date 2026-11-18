@@ -207,6 +207,38 @@ func TestTheStoredRecordIsPlainJSON(t *testing.T) {
 	}
 }
 
+// The attribution's serialized names are part of the record's contract:
+// an existing session must keep reading, and a reader must find the
+// attribution hash under "content_hash" -- not under a package digest's
+// name.
+func TestTheAttributionFieldNamesAreUnchanged(t *testing.T) {
+	raw, err := json.Marshal(AttributedSkill{
+		ID:               "skill:x-v1.0.0",
+		Name:             "x",
+		Source:           "auto",
+		Version:          "1.0.0",
+		ContentHash:      "sha256:attribution",
+		PackageID:        "skill:x-v1.0.0",
+		Entrypoint:       "SKILL.md",
+		EntrypointSHA256: "sha256:entrypoint",
+		PackageHash:      "sha256:package",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"content_hash":"sha256:attribution"`,
+		`"package_id":"skill:x-v1.0.0"`,
+		`"entrypoint":"SKILL.md"`,
+		`"entrypoint_sha256":"sha256:entrypoint"`,
+		`"package_hash":"sha256:package"`,
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("the record is missing %s: %s", want, raw)
+		}
+	}
+}
+
 // TestEmptyContentIsStillRefused checks that the turn identity does not
 // make padding acceptable.
 func TestEmptyContentIsStillRefused(t *testing.T) {

@@ -408,10 +408,16 @@ type AttributedSkill struct {
 	Source string `json:"source,omitempty"`
 	// Version is the version that was supplied.
 	Version string `json:"version,omitempty"`
-	// ContentHash is the hash of the instructions that were supplied.
-	// For a packaged skill this is the derived entrypoint projection,
-	// never the original SKILL.md bytes and never proof the full
-	// package was loaded.
+	// ContentHash is the attribution hash of the instructions that were
+	// supplied: SHA-256 over the skill body and then each hard
+	// constraint, taken from the text that went into the request.
+	//
+	// It is not MPM's projection_sha256 and not a digest of the original
+	// SKILL.md bytes. Without constraints it equals the body digest --
+	// MPM's body_sha256 once the "sha256:" prefix is normalised -- and
+	// with constraints it generally differs. For a packaged skill it
+	// covers the entrypoint projection that was supplied, never the rest
+	// of the package.
 	ContentHash string `json:"content_hash,omitempty"`
 	// PackageID is the store-reported package identity, when the loaded
 	// skill was projected from a multi-file package.

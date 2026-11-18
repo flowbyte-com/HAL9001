@@ -110,8 +110,9 @@ func TestPackagedEntrypointGuidanceEntersTheRequest(t *testing.T) {
 	}
 }
 
-// The attribution carries the package provenance, with the three
-// digests kept apart.
+// The attribution carries the package provenance, with HAL's
+// attribution hash kept apart from the store-reported entrypoint and
+// package digests.
 func TestPackagedSkillAttributionCarriesProvenance(t *testing.T) {
 	store := packagedStore()
 	eng, _, st := skillEngineFor(t, store)
@@ -142,11 +143,14 @@ func TestPackagedSkillAttributionCarriesProvenance(t *testing.T) {
 	if credit.PackageHash != "sha256:package" {
 		t.Errorf("package hash = %q", credit.PackageHash)
 	}
-	if credit.ContentHash != "sha256:entrypoint" && credit.ContentHash == "sha256:package" {
-		t.Error("the projection hash was conflated with the package digest")
+	if credit.ContentHash == credit.PackageHash {
+		t.Error("the attribution hash was conflated with the package digest")
+	}
+	if credit.ContentHash == credit.EntrypointSHA256 {
+		t.Error("the attribution hash was conflated with the entrypoint digest")
 	}
 	if credit.ContentHash == "" {
-		t.Error("the attribution lost its projection hash")
+		t.Error("the attribution lost its content hash")
 	}
 }
 
