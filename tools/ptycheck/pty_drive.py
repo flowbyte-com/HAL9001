@@ -28,6 +28,13 @@ HOME = os.environ.get("HAL9001_HOME", "/tmp/opencode/halhome")
 SESSION = os.environ.get("HAL9001_SESSION", "demo")
 STORE = os.path.join(HOME, "sessions")
 
+# HAL's mark as the interface presents it: the 9001 raised at the upper
+# left of HAL, before the H.
+#
+# The checks read the header to prove the interface is alive and framed
+# correctly, and the header carries this wordmark.
+WORDMARK = "⁹⁰⁰¹HAL"
+
 # How long a child gets to leave after SIGTERM before it is killed. HAL
 # exits on SIGTERM, so this is normally paid only by a child that is
 # wedged or deliberately ignoring the signal.

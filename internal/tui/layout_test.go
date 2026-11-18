@@ -277,7 +277,7 @@ func TestTheSessionTitleIsInTheHeader(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = updated.(Model)
 	header := stripANSI(m.headerRow())
-	if !strings.Contains(header, "HAL9001") {
+	if !strings.Contains(header, Wordmark) {
 		t.Errorf("header = %q", header)
 	}
 	if !strings.Contains(header, "the quarterly review") {

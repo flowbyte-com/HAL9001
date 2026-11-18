@@ -357,6 +357,12 @@ python3 tools/ptycheck/steering_checks.py
   nine rows.
 - The header stays on the first row and the footer at the bottom at
   80x24, 120x40 and 160x50, and after a resize.
+- The header carries HAL's wordmark — the 9001 raised at the upper left
+  of HAL — and the effort selector offers the levels the active model's
+  own family documents, applies the chosen one, and puts it on the next
+  request. `/thinking` shows the reasoning a provider exposed, hides it
+  again without touching the answer, and keeps the preference across a
+  restart.
 - `Enter` sends, `Ctrl+J` and `Alt+Enter` break the line, `Ctrl+S`
   still sends, `Ctrl+K` opens the model picker, `/help` opens on Enter
   and `Esc` closes it.
@@ -616,3 +622,4 @@ by hand in a real terminal.
 | `steering_provider.py` | a local provider that holds a turn open and records every request it receives |
 | `steering_checks.py` | isolated steering and queue checks: the request already sent is not rewritten, the waiting messages keep their order |
 | `notice_checks.py` | isolated notice checks: a notice set while a turn is running stays on the screen, expires on its own, and is replaced by a newer one |
+| `reasoning_checks.py` | isolated reasoning checks: the header carries HAL's wordmark, `/effort` offers the model's own levels and the chosen one reaches the next request, and `/thinking` shows and hides the reasoning a provider exposed without touching the effort |

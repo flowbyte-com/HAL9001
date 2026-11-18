@@ -116,7 +116,7 @@ var commandTable = []*command{
 	{
 		name:        "/effort",
 		usage:       "/effort [level]",
-		description: "Change thinking level",
+		description: "Change the reasoning effort level",
 		takesArgs:   true,
 		run: func(m *Model, args []string) tea.Cmd {
 			if len(args) == 0 {
@@ -128,6 +128,30 @@ var commandTable = []*command{
 				return nil
 			}
 			m.applyEffort(args[0])
+			return nil
+		},
+	},
+	{
+		name:        "/thinking",
+		usage:       "/thinking [on|off]",
+		description: "Show or hide the reasoning a provider exposes",
+		takesArgs:   true,
+		run: func(m *Model, args []string) tea.Cmd {
+			switch len(args) {
+			case 0:
+				m.toggleThinking()
+				return nil
+			case 1:
+				switch strings.ToLower(args[0]) {
+				case "on", "show":
+					m.setThinking(true)
+					return nil
+				case "off", "hide":
+					m.setThinking(false)
+					return nil
+				}
+			}
+			m.notice = "Usage: /thinking [on|off]"
 			return nil
 		},
 	},

@@ -184,9 +184,10 @@ func (o *OpenAICompatible) requestBodyTools(messages []Message, model Model, str
 		out.MaxTokens = &maxTokens
 	}
 	// Capability first: a level is only ever sent to a model whose API
-	// documents reasoning_effort.
-	if EffortCapable(model.ID) {
-		out.ReasoningEffort = NormalizeEffort(model.Effort)
+	// documents reasoning_effort, and DeepSeek takes the mapped value
+	// from its own compatibility table rather than the HAL level.
+	if level, ok := OpenAIEffortFor(model.ID, model.Effort); ok {
+		out.ReasoningEffort = level
 	}
 	if stream {
 		out.StreamOptions = &streamOptions{IncludeUsage: true}

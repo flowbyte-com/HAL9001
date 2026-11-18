@@ -39,6 +39,8 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+from pty_drive import WORDMARK  # noqa: E402
+
 FAILURES = []
 
 # The configuration an operator would have before the version-2 schema: one
@@ -114,7 +116,7 @@ def main():
         # 1. The startup migration turns the legacy file into the
         #    version-2 shape.
         raw, screen = capture([(2.0, b"")])
-        check("HAL starts with a legacy configuration", "HAL9001" in screen.text(),
+        check("HAL starts with a legacy configuration", WORDMARK in screen.text(),
               screen.text())
         migrated = stored()
         check("the configuration was migrated", migrated.get("version") == 2,

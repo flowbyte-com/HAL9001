@@ -145,6 +145,13 @@ type FileConfig struct {
 
 	// Theme names the active TUI preset (empty means HAL Classic).
 	Theme string `json:"theme,omitempty"`
+	// ShowThinking says whether the reasoning a provider exposes is
+	// shown. It is presentation only: it never changes what is asked of
+	// the provider, and it never changes the reasoning level.
+	//
+	// False is the default: reasoning is hidden unless the operator
+	// asked to see it.
+	ShowThinking bool `json:"show_thinking,omitempty"`
 	// ActiveSession is the conversation HAL opens on the next launch. It
 	// is written whenever a session is started or selected, so /clear and
 	// /sessions survive a restart.

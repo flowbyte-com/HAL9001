@@ -517,12 +517,17 @@ func (e *Engine) Respond(ctx context.Context, input string) (string, error) {
 
 // Event is one streaming update from a turn.
 //
-// Text is user-facing content. Reasoning reports that the provider sent a
-// reasoning event without exposing any of it: the private reasoning text
-// never leaves the provider package. Stats is set on the final event.
+// Text is user-facing content. Reasoning carries the reasoning text the
+// provider itself exposed, and nothing else: it is never part of the
+// answer, it never reaches the model, and it is never written into the
+// conversation record. It travels on the event so the operator can be
+// shown what the provider said it was thinking; the interface decides
+// whether to show it at all. Stats is set on the final event.
 type Event struct {
-	Text      string
-	Reasoning bool
+	Text string
+	// Reasoning is the provider's own reasoning content for this chunk.
+	// It is empty when the provider exposed none.
+	Reasoning string
 	Stats     *provider.TurnStats
 	// Skill is the routing decision for this turn: which skill was
 	// selected, why, and which one was actually loaded. It is set on
@@ -1094,8 +1099,8 @@ func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []
 	model := e.model
 	model.Budget = budget
 	deltaFn := func(d provider.Delta) error {
-		ev := Event{Text: d.Text, Reasoning: d.Reasoning != ""}
-		if ev.Text == "" && !ev.Reasoning {
+		ev := Event{Text: d.Text, Reasoning: d.Reasoning}
+		if ev.Text == "" && ev.Reasoning == "" {
 			return nil
 		}
 		if emit != nil {

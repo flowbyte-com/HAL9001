@@ -330,7 +330,7 @@ func TestTheHeaderShortensTheTitle(t *testing.T) {
 		if lipgloss.Width(header) > width {
 			t.Errorf("width %d: the header is %d cells wide: %q", width, lipgloss.Width(header), header)
 		}
-		if !strings.Contains(header, "HAL9001") {
+		if !strings.Contains(header, Wordmark) {
 			t.Errorf("width %d: the identity is missing: %q", width, header)
 		}
 	}

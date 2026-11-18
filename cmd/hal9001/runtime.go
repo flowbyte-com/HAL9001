@@ -291,13 +291,12 @@ func (a *app) overrides() (endpoint, model, providerName string) {
 
 // effortForRecord returns the reasoning level of one model record.
 //
-// Only a model whose API documents a reasoning parameter has one; the
-// provider layer owns that table, and everything outside it gets no
-// effort control at all.
+// The record's own level is the operator's choice and is passed on as
+// it is: the adapter owns the table of what each wire accepts, and a
+// level the wire does not document is dropped there, not here. The
+// default is the model's own documented level, and a model that has
+// none starts with no effort control at all.
 func effortForRecord(record config.ModelRecord) string {
-	if !provider.EffortCapable(record.ID) {
-		return ""
-	}
 	if level := provider.NormalizeEffort(record.Effort); level != "" {
 		return level
 	}

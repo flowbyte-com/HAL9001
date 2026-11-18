@@ -226,7 +226,7 @@ func TestResize(t *testing.T) {
 		t.Error("composer must have a width after resize")
 	}
 	view := string(m.View().Content)
-	if !strings.Contains(view, "HAL9001") {
+	if !strings.Contains(view, Wordmark) {
 		t.Error("view must carry the brand heading")
 	}
 	if !strings.Contains(view, "444 READ ONLY") {
@@ -270,7 +270,7 @@ func TestMonochromeView(t *testing.T) {
 	if strings.Contains(view, "🦞") {
 		t.Error("view must never contain the lobster emoji")
 	}
-	for _, want := range []string{"🔴 HAL9001", "hi", "🔴 hello", "444 READ ONLY"} {
+	for _, want := range []string{"🔴 " + Wordmark, "hi", "🔴 hello", "444 READ ONLY"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q:\n%s", want, view)
 		}
@@ -292,7 +292,7 @@ func TestColorView(t *testing.T) {
 	if !strings.Contains(view, "\x1b[") {
 		t.Error("color view should style the heading")
 	}
-	if !strings.Contains(view, "HAL9001") {
+	if !strings.Contains(view, Wordmark) {
 		t.Error("color view must name the brand")
 	}
 }
@@ -1061,7 +1061,7 @@ func TestHeaderAndFooterArePersistent(t *testing.T) {
 	}
 	m = pressKey(m, tea.KeyUp, 0, "")
 	rows := m.layoutRows()
-	if !strings.Contains(rows[0], "HAL9001") {
+	if !strings.Contains(rows[0], Wordmark) {
 		t.Errorf("header must stay on the first row: %q", rows[0])
 	}
 	footer := rows[len(rows)-2]
@@ -1132,7 +1132,7 @@ func TestShortWindowStaysUsable(t *testing.T) {
 	if len(rows) != 6 {
 		t.Fatalf("short window: %d rows, want 6", len(rows))
 	}
-	if !strings.Contains(rows[0], "HAL9001") {
+	if !strings.Contains(rows[0], Wordmark) {
 		t.Errorf("the header must survive a short window: %q", rows[0])
 	}
 	last := rows[len(rows)-1]
@@ -2272,7 +2272,7 @@ func TestShortTerminalDegrades(t *testing.T) {
 		if len(rows) != h {
 			t.Errorf("height %d: %d rows", h, len(rows))
 		}
-		if !strings.Contains(rows[0], "HAL9001") {
+		if !strings.Contains(rows[0], Wordmark) {
 			t.Errorf("height %d: header lost", h)
 		}
 		tail := rows[len(rows)-1]

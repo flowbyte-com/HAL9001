@@ -358,6 +358,11 @@ type Hooks struct {
 	Theme func() string
 	// SaveTheme persists the theme name.
 	SaveTheme func(name string) error
+	// ShowThinking reports whether the reasoning a provider exposes is
+	// shown.
+	ShowThinking func() bool
+	// SaveShowThinking persists the visibility preference.
+	SaveShowThinking func(on bool) error
 	// ListSessions returns stored conversations, most recently active
 	// first, with the current one marked.
 	ListSessions func() ([]SessionInfo, error)
@@ -551,6 +556,10 @@ type entry struct {
 	// context budget. It is presentation metadata about the turn: it
 	// carries no conversation text.
 	context string
+	// reasoning is the reasoning the provider exposed for this turn. It
+	// is shown only when the operator asked to see it, and it is never
+	// part of the answer, the selection or the session record.
+	reasoning string
 	// files are the attachments the operator made with this message.
 	// They are references, shown beneath the message; the contents are
 	// never part of the text.
@@ -713,6 +722,16 @@ type Model struct {
 	// reasoningSeen reports that the provider sent reasoning events for
 	// this turn. The text itself is never seen here.
 	reasoningSeen bool
+	// showThinking is the operator's visibility preference for the
+	// reasoning a provider exposes. It is presentation only: it never
+	// changes what is asked of the provider, and the effort level is
+	// untouched by it.
+	showThinking bool
+	// pendingReasoning is the reasoning the running turn exposed so far.
+	// It is shown while the turn runs and becomes part of the answer's
+	// entry when the turn ends. It is never written into the session
+	// record: reasoning is not conversation content.
+	pendingReasoning string
 	// lastStats is the content-free telemetry of the last finished turn.
 	lastStats *provider.TurnStats
 	// turnAttribution is the credit of the last finished turn: the
@@ -729,6 +748,10 @@ type Model struct {
 	// Effort picker state.
 	effortCursor int
 	effortNotice string
+	// effortLevels are the levels the open selector offers: the ones the
+	// active model's family documents. Empty unless the selector is open
+	// on a supported model.
+	effortLevels []string
 	// tokens is the cumulative accounting for the active session, and
 	// turnStats is the usage of the turn that is finishing.
 	tokens    usage.Session
@@ -1020,6 +1043,7 @@ func (m *Model) SetHistory(lines []SessionLine) {
 	m.lastTools = nil
 	m.entries = nil
 	m.pending = ""
+	m.pendingReasoning = ""
 	m.clearUndo()
 	m.clearSelection()
 	for _, line := range lines {
@@ -1093,7 +1117,15 @@ type streamDeltaMsg struct {
 	id   int
 	text string
 }
-type streamThinkingMsg struct{ id int }
+
+// streamThinkingMsg reports that the provider exposed reasoning.
+//
+// The text is the provider's own, and it travels with the signal so the
+// operator can be shown it. The interface decides whether to show it.
+type streamThinkingMsg struct {
+	id   int
+	text string
+}
 
 // steerMsg reports that the running turn took a steering message.
 //
@@ -1263,9 +1295,9 @@ func (m Model) respondEvents(ctx context.Context, input string, atts []attachmen
 	return m.engine.RespondStream(ctx, input, func(string) {})
 }
 
-// runStream drives the live turn. The engine reports reasoning presence
-// and content-free statistics as well as text; none of the reasoning
-// text itself ever reaches the interface.
+// runStream drives the live turn. The engine reports the reasoning a
+// provider exposed, content-free statistics and the text; the reasoning
+// reaches the interface only when the operator asked to see it.
 func (m Model) runStream(id int, input string, atts []attachments.Meta, ctx context.Context) {
 	m.runTurn(id, ctx, func(ctx context.Context, collect func(engine.Event)) (string, error) {
 		if len(atts) > 0 {
@@ -1293,16 +1325,24 @@ func (m Model) runTurn(id int, ctx context.Context, runner func(context.Context,
 		switch {
 		case ev.Stats != nil:
 			m.sender(streamStatsMsg{id: id, stats: *ev.Stats})
+			return
 		case ev.ToolStart != nil:
 			m.sender(streamToolStartMsg{id: id, activity: *ev.ToolStart})
+			return
 		case ev.Tool != nil:
 			m.sender(streamToolMsg{id: id, activity: *ev.Tool})
+			return
 		case ev.Steer != "":
 			m.sender(steerMsg{id: id, text: ev.Steer, stored: ev.SteerStored})
-		case ev.Text != "":
+			return
+		}
+		// A chunk can carry reasoning and text at once: both are sent,
+		// and neither is lost because the other was there.
+		if ev.Reasoning != "" {
+			m.sender(streamThinkingMsg{id: id, text: ev.Reasoning})
+		}
+		if ev.Text != "" {
 			m.sender(streamDeltaMsg{id: id, text: ev.Text})
-		case ev.Reasoning:
-			m.sender(streamThinkingMsg{id: id})
 		}
 	}
 	var (
@@ -1644,9 +1684,13 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.reasoningSeen = true
+		m.pendingReasoning += msg.text
 		m.activityPhase = activityThinking
 		m.noteProviderEvent()
 		m.setActivity()
+		if m.showThinking {
+			m.renderConversation()
+		}
 		return m, nil
 	case streamToolStartMsg:
 		if !m.currentTurn(msg.id) {
@@ -1740,6 +1784,11 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entries[i].turnID = msg.turn
 		m.entries[i].tools = append([]engine.ToolActivity(nil), msg.tools...)
 		m.entries[i].context = msg.context
+		// The reasoning the provider exposed belongs to this answer. It
+		// is shown only when the operator asked to see it, and it is
+		// never part of the answer's text.
+		m.entries[i].reasoning = m.pendingReasoning
+		m.pendingReasoning = ""
 		m.renderEntry(i)
 		m.renderConversation()
 		// Attach this turn's reported usage directly: the answer on screen
@@ -1793,6 +1842,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.endActivity()
 		m.reasoningSeen = false
 		m.pending = ""
+		m.pendingReasoning = ""
 		// The statistics of this turn are taken before the failure path
 		// clears them. They belong to this turn and to no other: the
 		// numbers of the turn before it are not evidence about this
@@ -1984,6 +2034,7 @@ func (m Model) startTurn(input string, atts []attachments.Meta, entry int) (tea.
 	m.collapseForTurn(i)
 	m.viewport.GotoBottom()
 	m.pending = ""
+	m.pendingReasoning = ""
 	m.sending = true
 	m.streamStarted = m.clock()
 	m.reasoningSeen = false
@@ -2251,6 +2302,7 @@ func (m *Model) quit() tea.Cmd {
 	m.endActivity()
 	m.sending = false
 	m.pending = ""
+	m.pendingReasoning = ""
 	// The messages that were waiting are written to the session's own
 	// file before HAL leaves, so they are still there next time.
 	m.saveQueue()
@@ -2919,11 +2971,25 @@ func (m *Model) renderEntry(i int) {
 // renderAssistant renders one answer as an eye-led block. The eye marks
 // the response once; wrapped rows, tool activity and metadata all share
 // the content column.
+//
+// The reasoning the provider exposed sits above the answer, in a block
+// of its own, and only when the operator asked to see it. The eye stays
+// with the answer: the reasoning is not the answer.
 func (m *Model) renderAssistant(e *entry) ([]string, []bool) {
 	body := m.renderMarkdown(e.text, m.contentWidth())
 	lines := strings.Split(body, "\n")
 	rows := make([]string, 0, len(lines)+len(e.tools)+1)
 	prefix := m.transcriptPrefix()
+	// The thinking block comes first: the reasoning happened before the
+	// answer. Its rows are decoration, so a selection never copies it.
+	thinking := -1
+	if m.showThinking && e.reasoning != "" {
+		thinking = len(rows)
+		rows = append(rows, m.thinkingRows(e.reasoning)...)
+		// One blank row keeps the reasoning apart from the answer.
+		rows = append(rows, "")
+	}
+	answerStart := len(rows)
 	for j, line := range lines {
 		line = strings.TrimRight(line, " ")
 		if j == 0 {
@@ -2962,6 +3028,13 @@ func (m *Model) renderAssistant(e *entry) ([]string, []bool) {
 		}
 	}
 	deco := make([]bool, len(rows))
+	if thinking >= 0 {
+		// The reasoning is decoration: it is not the answer, and a
+		// selection never copies it.
+		for j := thinking; j < answerStart; j++ {
+			deco[j] = true
+		}
+	}
 	if contextRow >= 0 {
 		deco[contextRow] = true
 	}
@@ -3390,6 +3463,9 @@ func (m *Model) renderConversation() {
 		// every row costs time on every frame of a streaming answer.
 		m.conv = buildConvMap(m.entries)
 	}
+	// The reasoning of the running turn sits above the answer that is
+	// arriving, and only when the operator asked to see it.
+	thinking, deco := m.pendingThinkingRows()
 	if m.pending != "" {
 		// The rows of the answer being streamed are shown one by one,
 		// exactly as the cell map knows them: one row per line, so
@@ -3399,7 +3475,9 @@ func (m *Model) renderConversation() {
 			content = append(content, "")
 		}
 		pending := m.pendingRows(m.pending)
-		for _, row := range pending {
+		rows := append(thinking, pending...)
+		deco = append(deco, make([]bool, len(pending))...)
+		for _, row := range rows {
 			content = append(content, row)
 		}
 		if m.mouse {
@@ -3408,8 +3486,28 @@ func (m *Model) renderConversation() {
 			}
 			m.conv.addEntry(entry{
 				role:       "assistant",
-				rows:       pending,
+				rows:       rows,
+				deco:       deco,
 				logical:    pendingLogical(m.pending),
+				contentCol: m.contentColumn(),
+			})
+		}
+	} else if len(thinking) > 0 {
+		// The provider is still reasoning and has not answered yet.
+		if len(m.entries) > 0 {
+			content = append(content, "")
+		}
+		for _, row := range thinking {
+			content = append(content, row)
+		}
+		if m.mouse {
+			if len(m.entries) > 0 {
+				m.conv.addEntry(separatorEntry())
+			}
+			m.conv.addEntry(entry{
+				role:       "assistant",
+				rows:       thinking,
+				deco:       deco,
 				contentCol: m.contentColumn(),
 			})
 		}
@@ -3463,7 +3561,7 @@ func (m Model) View() tea.View {
 // screen while the document scrolls.
 func (m Model) layoutRows() []string {
 	if !m.ready {
-		return []string{"Starting HAL9001…"}
+		return []string{"Starting " + Wordmark + "…"}
 	}
 	var rows []string
 	switch m.view {
@@ -3733,7 +3831,7 @@ func (m Model) fitWidth(line string, width int) string {
 	return lipgloss.NewStyle().MaxWidth(width).Render(line)
 }
 
-// headerRow renders the fixed header: the eye and the name, plus the
+// headerRow renders the fixed header: the eye and the wordmark, plus the
 // conversation title when one is known.
 //
 // The title is shortened to whatever room the terminal has. The header
@@ -3741,8 +3839,7 @@ func (m Model) fitWidth(line string, width int) string {
 // the immutable session identity stays available in the diagnostics.
 func (m Model) headerRow() string {
 	st := m.theme.styles()
-	eye := "🔴"
-	identity := eye + " HAL9001"
+	identity := identityRow()
 	title := strings.TrimSpace(m.title)
 	room := m.width - lipgloss.Width(identity) - lipgloss.Width(" · ")
 	if title == "" || room < 1 {

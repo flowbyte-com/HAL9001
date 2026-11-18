@@ -186,15 +186,23 @@ type anthropicThinking struct {
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
+// anthropicOutputConfig is the output control block of a Messages
+// request. DeepSeek is the only family HAL addresses this way, and it
+// documents exactly one field: the effort.
+type anthropicOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
+}
+
 // anthropicRequest is one request body.
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	Messages  []anthropicMessage `json:"messages"`
-	System    string             `json:"system,omitempty"`
-	MaxTokens int                `json:"max_tokens"`
-	Stream    bool               `json:"stream,omitempty"`
-	Tools     []anthropicTool    `json:"tools,omitempty"`
-	Thinking  *anthropicThinking `json:"thinking,omitempty"`
+	Model        string                 `json:"model"`
+	Messages     []anthropicMessage     `json:"messages"`
+	System       string                 `json:"system,omitempty"`
+	MaxTokens    int                    `json:"max_tokens"`
+	Stream       bool                   `json:"stream,omitempty"`
+	Tools        []anthropicTool        `json:"tools,omitempty"`
+	Thinking     *anthropicThinking     `json:"thinking,omitempty"`
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
 }
 
 // anthropicUsage is the token accounting Anthropic reports.
@@ -393,6 +401,25 @@ func AnthropicThinkingFloor(modelID, effort string) int {
 // the thinking budget is the floor of the output cap.
 const anthropicThinkingMargin = 1024
 
+// anthropicDeepSeekEffort builds the thinking and output controls for
+// a DeepSeek model on the Messages API, or reports that none apply.
+//
+// DeepSeek documents thinking as a plain enabled toggle (no budget
+// tokens: they are ignored) and effort as output_config.effort with
+// the values low, high and max, defaulting to high. HAL maps its own
+// levels through MapDeepSeekEffort, so a configured "medium" travels
+// as "high" exactly as DeepSeek's compatibility table describes.
+func anthropicDeepSeekEffort(model Model) (thinking *anthropicThinking, effort string) {
+	if !isDeepSeekModel(model.ID) {
+		return nil, ""
+	}
+	level, ok := MapDeepSeekEffort(model.Effort)
+	if !ok {
+		return nil, ""
+	}
+	return &anthropicThinking{Type: "enabled"}, level
+}
+
 // requestBody builds one request, optionally offering functions.
 func (a *AnthropicCompatible) requestBody(messages []Message, model Model, stream bool, tools []Tool) ([]byte, error) {
 	system, conversation := anthropicMessages(messages)
@@ -409,6 +436,9 @@ func (a *AnthropicCompatible) requestBody(messages []Message, model Model, strea
 			out.MaxTokens = thinking.BudgetTokens + anthropicThinkingMargin
 		}
 		out.Thinking = thinking
+	} else if thinking, effort := anthropicDeepSeekEffort(model); thinking != nil {
+		out.Thinking = thinking
+		out.OutputConfig = &anthropicOutputConfig{Effort: effort}
 	}
 	if len(tools) > 0 {
 		out.Tools = anthropicTools(tools)

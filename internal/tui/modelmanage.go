@@ -903,7 +903,7 @@ func (m *Model) openEffortChoice(item manageItem, before ModelDetail) tea.Cmd {
 		value:  "",
 		mark:   markFor(before.Settings.Effort == ""),
 	}}
-	for _, level := range provider.EffortLevels {
+	for _, level := range effortLevelsForModel(item.model) {
 		items = append(items, manageItem{
 			name:  level,
 			value: level,
@@ -919,6 +919,18 @@ func (m *Model) openEffortChoice(item manageItem, before ModelDetail) tea.Cmd {
 			return nil
 		})
 	return nil
+}
+
+// effortLevelsForModel returns the levels a model offers.
+//
+// A model HAL knows nothing about gets the documented set: the choice
+// is the operator's own, and a level the provider may reject is better
+// refused by the provider than never offered.
+func effortLevelsForModel(modelID string) []string {
+	if levels, ok := provider.SupportedEffortLevels(modelID); ok {
+		return levels
+	}
+	return provider.EffortLevels
 }
 
 // openOutputChoice asks what the answer may use.

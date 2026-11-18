@@ -524,7 +524,7 @@ func (m Model) themeRows() []string {
 		rows = append(rows, line)
 	}
 	rows = append(rows, "", "Preview:")
-	rows = append(rows, st.header.Render("🔴 HAL9001"))
+	rows = append(rows, st.header.Render(identityRow()))
 	rows = append(rows, strings.Repeat(" ", transcriptGutter)+st.user.Render("preview message"))
 	rows = append(rows, st.eye.Render("🔴")+" "+"preview reply")
 	rows = append(rows, st.footer.Render(m.permissionLabel()+" · "+m.modelNameOr("model")))
@@ -899,18 +899,51 @@ func fmtDuration(d time.Duration) string {
 	return d.Round(time.Millisecond).String()
 }
 
-// enterEffort opens the reasoning-effort selector. Models without effort
-// control get an explanation instead of a meaningless picker.
+// effortLevelsFor returns the levels the active model offers.
+//
+// The model's own family decides: a level the provider does not
+// document would be a guess it may reject. When HAL's table knows
+// nothing finer about the model but the interface still reports it as
+// effort-capable, the documented levels are offered rather than
+// nothing: the operator's own signal wins over HAL's table.
+//
+// An empty result means there is nothing to offer.
+func (m *Model) effortLevelsFor() []string {
+	if !m.effortSupported {
+		return nil
+	}
+	if levels, ok := provider.SupportedEffortLevels(m.model); ok {
+		return levels
+	}
+	return provider.EffortLevels
+}
+
+// enterEffort opens the reasoning-effort selector. Only the levels the
+// active model's family documents are offered; anything else would be
+// a guess the provider may reject. Unknown and unsupported models get
+// an explanation instead of a meaningless picker. Esc leaves the model
+// and the configuration exactly as they were.
 func (m *Model) enterEffort() {
 	m.closeSuggestions()
-	if !m.effortSupported {
-		m.notice = "This model does not expose reasoning effort — nothing to configure."
+	levels := m.effortLevelsFor()
+	if len(levels) == 0 {
+		switch provider.EffortSupportFor(m.model) {
+		case provider.EffortUnsupported:
+			m.notice = "This model does not expose reasoning effort — nothing to configure."
+		case provider.EffortSupported:
+			m.notice = "Reasoning effort is not offered for this model right now — nothing to configure."
+		default:
+			m.notice = "HAL doesn't know the reasoning controls for this model — effort is unavailable. " +
+				"If the provider documents effort levels, switch to a supported model."
+		}
 		return
 	}
+	m.effortLevels = levels
 	m.effortCursor = 0
-	for i, level := range provider.EffortLevels {
+	for i, level := range levels {
 		if level == m.effort {
 			m.effortCursor = i
+			break
 		}
 	}
 	m.effortNotice = ""
@@ -939,13 +972,16 @@ func (m Model) updateEffort(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ensureVisible(2+m.effortCursor, len(m.effortRows()), contentHeight(m.height))
 			return m, nil
 		case "down", "tab":
-			if m.effortCursor < len(provider.EffortLevels)-1 {
+			if m.effortCursor < len(m.effortLevels)-1 {
 				m.effortCursor++
 			}
 			m.ensureVisible(2+m.effortCursor, len(m.effortRows()), contentHeight(m.height))
 			return m, nil
 		case "enter":
-			level := provider.EffortLevels[m.effortCursor]
+			if m.effortCursor < 0 || m.effortCursor >= len(m.effortLevels) {
+				return m, nil
+			}
+			level := m.effortLevels[m.effortCursor]
 			m.view = viewChat
 			m.applyEffort(level)
 			return m, nil
@@ -955,14 +991,22 @@ func (m Model) updateEffort(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // applyEffort changes the level for the active model and confirms it.
+//
+// Only a level the model offers is applied: a level the provider does
+// not document would be sent as a guess.
 func (m *Model) applyEffort(level string) {
-	if !m.effortSupported {
+	levels := m.effortLevelsFor()
+	if len(levels) == 0 {
 		m.notice = "This model does not expose reasoning effort — nothing to configure."
 		return
 	}
 	normalized := provider.NormalizeEffort(level)
 	if normalized == "" {
-		m.notice = "Unknown effort level " + level + " — use low, medium, high, xhigh or max."
+		m.notice = "Unknown effort level " + level + " — use " + strings.Join(levels, ", ") + "."
+		return
+	}
+	if !containsLevel(levels, normalized) {
+		m.notice = "This model takes " + strings.Join(levels, ", ") + " — not " + normalized + "."
 		return
 	}
 	if m.hooks.SetEffort == nil {
@@ -981,13 +1025,23 @@ func (m *Model) applyEffort(level string) {
 	m.notice = "Effort: " + normalized + " (applies to the next request)"
 }
 
+// containsLevel reports whether the list holds the level.
+func containsLevel(levels []string, level string) bool {
+	for _, l := range levels {
+		if l == level {
+			return true
+		}
+	}
+	return false
+}
+
 func (m Model) effortRows() []string {
 	st := m.theme.styles()
 	rows := []string{
 		"Reasoning effort (Enter applies, Esc back)",
 		"",
 	}
-	for i, level := range provider.EffortLevels {
+	for i, level := range m.effortLevels {
 		line := "  " + level
 		if i == m.effortCursor {
 			line = st.active.Render("▸ " + level)
@@ -997,9 +1051,8 @@ func (m Model) effortRows() []string {
 		rows = append(rows, line)
 	}
 	rows = append(rows, "",
-		"MiniMax reasoning models apply max effort when the parameter is",
-		"omitted; HAL sends medium explicitly. Higher levels think longer",
-		"and spend more of the output budget on reasoning.")
+		"Higher levels think longer and spend more of the output budget",
+		"on reasoning. The level applies to the next request.")
 	if m.effortNotice != "" {
 		rows = append(rows, "", m.effortNotice)
 	}

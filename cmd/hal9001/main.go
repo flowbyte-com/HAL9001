@@ -485,6 +485,8 @@ func (a *app) run() error {
 		NewSession:       a.newSession,
 		Theme:            a.currentTheme,
 		SaveTheme:        a.saveTheme,
+		ShowThinking:     a.currentShowThinking,
+		SaveShowThinking: a.saveShowThinking,
 		ListSessions:     a.listSessionNames,
 		SwitchSession:    a.switchSession,
 		Copy:             a.copyText,
@@ -517,6 +519,7 @@ func (a *app) run() error {
 	}
 	m.SetPermission(a.permission)
 	m.SetTheme(tui.ThemeByName(a.stored.Theme))
+	m.SetShowThinking(a.stored.ShowThinking)
 	// The header shows the human-readable title; the immutable session
 	// identity stays in the diagnostics.
 	m.SetTitle(a.displayTitle(a.session))
@@ -563,24 +566,30 @@ func seconds(n int) time.Duration {
 // effortFor resolves the effort level for a model: the operator's stored
 // choice when present, otherwise the built-in default for capable models
 // and nothing for everything else.
+//
+// The level belongs to the model, and a model belongs to one endpoint:
+// the record of the active endpoint is the one that counts.
+//
+// A model the configuration does not know has no settings of its own,
+// not even a default. The runtime override names such a model for this
+// run only, and it inherits nothing from the model it replaced: the
+// request carries no effort control, so the interface claims none
+// either.
 func (a *app) effortFor(id string) string {
 	if !provider.EffortCapable(id) {
 		return ""
 	}
-	// The effort belongs to the model, and a model belongs to one
-	// endpoint: the record of the active endpoint is the one that counts.
 	if endpoint, ok := a.stored.ActiveEndpoint(); ok {
 		if record, ok := endpoint.Model(id); ok {
-			if stored := provider.NormalizeEffort(record.Effort); stored != "" {
-				return stored
-			}
-			return provider.DefaultEffortFor(id)
+			return effortForRecord(record)
 		}
 	}
-	if stored := provider.NormalizeEffort(a.stored.EffortFor(id)); stored != "" {
-		return stored
+	for _, record := range a.stored.Models {
+		if record.ID == id {
+			return effortForRecord(record)
+		}
 	}
-	return provider.DefaultEffortFor(id)
+	return ""
 }
 
 // currentEffort reports the active level and whether the active model
@@ -597,8 +606,11 @@ func (a *app) currentEffort() (string, bool) {
 // the engine, so the next request carries it.
 func (a *app) setEffort(level string) (tui.Engine, error) {
 	id := a.activeModelID()
-	if !provider.EffortCapable(id) {
+	switch provider.EffortSupportFor(id) {
+	case provider.EffortUnsupported:
 		return nil, fmt.Errorf("model %q does not support reasoning effort", id)
+	case provider.EffortUnknown:
+		return nil, fmt.Errorf("model %q has unknown reasoning capability: HAL documents no effort control for it", id)
 	}
 	normalized := provider.NormalizeEffort(level)
 	if normalized == "" {
@@ -1166,6 +1178,21 @@ func (a *app) currentTheme() string {
 
 func (a *app) saveTheme(name string) error {
 	a.stored.Theme = name
+	return config.SaveFile(config.ConfigPath(), a.stored)
+}
+
+// currentShowThinking reports whether the reasoning a provider exposes
+// is shown.
+func (a *app) currentShowThinking() bool {
+	return a.stored.ShowThinking
+}
+
+// saveShowThinking persists the visibility preference.
+//
+// It is a preference and nothing else: the reasoning level, the
+// provider and the conversation are untouched by it.
+func (a *app) saveShowThinking(on bool) error {
+	a.stored.ShowThinking = on
 	return config.SaveFile(config.ConfigPath(), a.stored)
 }
 

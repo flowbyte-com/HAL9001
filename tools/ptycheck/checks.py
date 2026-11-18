@@ -22,6 +22,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pty_drive
 from fake_provider import LONG_SAVE_BODY, SAVE_BODY
+from pty_drive import WORDMARK
 from pty_drive import HOME, run
 from termsim import render
 
@@ -261,7 +262,7 @@ def session_checks():
 
     # 1. First launch, one exchange.
     first = run_keys([(2.0, b"first question\r"), (3.0, b"/q\r")], timeout=10.0)
-    check("session: first conversation is active", "HAL9001" in first, first)
+    check("session: first conversation is active", WORDMARK in first, first)
 
     # 2. Clear and quit. The confirmation is transient, so the screen is
     # captured while it is still there.
@@ -806,7 +807,7 @@ def draft_notice_checks():
           first_before != first_scrolled,
           "%r -> %r" % (first_before, first_scrolled))
     check("draft: the wheel in the composer leaves the conversation alone",
-          "Section" not in scrolled and "HAL9001" in scrolled,
+          "Section" not in scrolled and WORDMARK in scrolled,
           scrolled[:400])
 
 
@@ -1576,7 +1577,7 @@ def main():
     s = screen(run([(2.0, b"")], timeout=4.0))
     lines = s.text().split("\n")
     check("starts in the alternate screen", s.alt)
-    check("header on the first row", "HAL9001" in lines[0], repr(lines[0]))
+    check("header on the first row", WORDMARK in lines[0], repr(lines[0]))
     check("footer at the bottom", "444 READ ONLY" in lines[-2], repr(lines[-2:]))
     top, bottom = composer_bounds(s.text())
     check("composer: the empty composer shows the caret",
@@ -1664,7 +1665,7 @@ def main():
     for cols, rows in [(80, 24), (120, 30), (170, 38), (160, 50)]:
         s = screen(run([(2.0, b"")], cols=cols, rows=rows, timeout=4.0), cols, rows)
         lines = s.text().split("\n")
-        check(f"{cols}x{rows}: header stays on row one", "HAL9001" in lines[0], repr(lines[0]))
+        check(f"{cols}x{rows}: header stays on row one", WORDMARK in lines[0], repr(lines[0]))
         check(f"{cols}x{rows}: footer stays at the bottom",
               "444 READ ONLY" in lines[-2], repr(lines[-2:]))
         top, bottom = composer_bounds("\n".join(lines))
@@ -1678,7 +1679,7 @@ def main():
     # permission line; either way it is the same row at the bottom.
     s = screen(run([(2.0, b"hi"), (1.5, ("resize", 60, 15))], timeout=9.0), 60, 15)
     lines = s.text().split("\n")
-    check("resize keeps the header", "HAL9001" in lines[0], repr(lines[0]))
+    check("resize keeps the header", WORDMARK in lines[0], repr(lines[0]))
     footer = lines[-2]
     check("resize keeps the footer",
           "444 READ ONLY" in footer or "Ctrl+U clear" in footer, repr(lines[-2:]))

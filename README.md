@@ -135,13 +135,13 @@ remains supported for development.
 
 HAL9001 takes over the terminal with the alternate screen buffer: the
 shell output is hidden while HAL runs and the previous screen comes back
-when it exits. A fixed header (`🔴 HAL9001` and the session title) sits at
-the top, the conversation scrolls in the middle, and the composer, one
-row of keyboard hints, a thin divider and the status footer stay at the
-bottom.
+when it exits. A fixed header (the eye, HAL's wordmark and the session
+title) sits at the top, the conversation scrolls in the middle, and the
+composer, one row of keyboard hints, a thin divider and the status
+footer stay at the bottom.
 
 ```text
-🔴 HAL9001 · the quarterly review
+🔴 ⁹⁰⁰¹HAL · the quarterly review
    Summarize the plan.
 
 🔴 The plan has three parts.
@@ -166,6 +166,15 @@ separates turns, so consecutive messages stay readable without chrome.
 The transcript uses the full usable terminal width with a three-cell
 left gutter and a two-cell right margin; the composer, header and footer
 keep the full width.
+
+**HAL's mark.** The wordmark is `⁹⁰⁰¹HAL`: the `9001` is raised at the
+upper left of `HAL`, before the `H`, and never a full-size part of the
+name. The digits are Unicode superscript characters, so the font draws
+them small and raised, and they take the same seven columns the plain
+`HAL9001` did: the header's alignment and the room left for the session
+title do not move. The mark is the interface's identity — the executable,
+the configuration file, the installed release and the MCP server keep the
+name `HAL9001`, because those are identities other software reads.
 
 Links are OSC 8 hyperlinks. A labeled Markdown link shows its label, not a
 duplicated raw destination; a bare `http(s)://` URL stays visible. In a
@@ -271,7 +280,7 @@ the terminal reports modifier combinations and says so in `/help`.
 
 Slash commands run locally and never reach the model: `/help`,
 `/copy`, `/copy code`, `/theme`, `/model`, `/endpoint`, `/new`, `/clear`,
-`/sessions`, `/effort`, `/expand`, `/collapse`, `/diag`, `/usage`,
+`/sessions`, `/effort`, `/thinking`, `/expand`, `/collapse`, `/diag`, `/usage`,
 `/permission`, `/tool-icons`, `/animation`, `/attach`, `/attachments`,
 `/detach`, `/q`, `/quit`, `/exit`.
 Typing `/` opens a suggestion
@@ -326,6 +335,34 @@ level directly. The footer shows the active level next to the model
 switching models restores each one's level. The parameter is never sent
 to a provider that does not document it: an unsupported model says so and
 offers no selector. Changing effort never touches the conversation.
+
+The selector offers the levels the active model's own family documents,
+because a level the provider does not have would be a guess it may
+reject: MiniMax's M-series takes all five, DeepSeek takes `low`, `high`
+and `max`, and a model HAL knows nothing about is refused rather than
+offered a level. A model HAL knows to take no reasoning control says so
+plainly, and a model HAL knows nothing about says that instead — the two
+are different facts and the interface does not blur them. Each provider's
+wire decides what is sent: MiniMax takes the level as written, DeepSeek
+takes the value its own table documents, and a Claude model takes the
+extended-thinking block the Messages API documents, with the budget
+that follows the level. A Claude model with no level of its own sends no
+block at all, so nothing changes on the wire until you ask for one.
+
+**Show Thinking.** `/thinking` turns the visibility of the reasoning a
+provider exposed on and off; `/thinking on` and `/thinking off` set it
+directly. It is presentation only: it never changes what is asked of the
+provider, it never changes the reasoning level, and changing one never
+changes the other. The answer is always shown either way.
+
+What is shown is the provider's own reasoning, and only what the provider
+actually sent — there is no placeholder and no invented text for a model
+that exposes none. It sits above the answer in a dim, labelled block, so
+it can never be mistaken for HAL's answer or for the tool activity under
+it; a selection never copies it. The reasoning is never written into the
+conversation record: it is not conversation content, and it does not
+reach the model. The preference is the operator's own and is kept in the
+configuration, like the theme, so it survives a restart.
 
 **Scrolling.** `PgUp`/`PgDn` move a full page and `Home`/`End` jump to
 the start and end. Page keys are recognised by key code, not by their

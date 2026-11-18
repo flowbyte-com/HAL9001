@@ -23,6 +23,11 @@ import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+
+from pty_drive import WORDMARK  # noqa: E402
+
+# The header carries HAL's mark: the eye and the wordmark.
+IDENTITY = "🔴 " + WORDMARK
 import pty_drive  # noqa: E402
 from termsim import render  # noqa: E402
 
@@ -123,7 +128,7 @@ def main():
         raw, text = capture([(2.0, b"hold the line\r"), (3.3, b"")],
                             timeout=7.0)
         frames = clocks_in(raw)
-        check("red identity marker is stationary", "🔴 HAL9001" in text, text)
+        check("red identity marker is stationary", IDENTITY in text, text)
         check("assistant eye is red", "\n🔴 " in text, text)
         check("clock advances independently of tokens", len(frames) >= 3,
               "".join(sorted(frames)))
@@ -168,7 +173,7 @@ def main():
                                 theme=theme, timeout=6.0)
             rows = text.split("\n")
             check("theme %s: red eye renders" % theme,
-                  "🔴 HAL9001" in text and "\n🔴 " in text, text)
+                  IDENTITY in text and "\n🔴 " in text, text)
             check("theme %s: no overflow" % theme,
                   all(display_width(row) <= 80 for row in rows), text)
     finally:

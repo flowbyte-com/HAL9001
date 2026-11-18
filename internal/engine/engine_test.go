@@ -276,9 +276,11 @@ func TestProgressEventsReportReasoningWithoutText(t *testing.T) {
 		t.Errorf("reply = %q", reply)
 	}
 	var reasoningSignals, texts, stats int
+	var reasoningText string
 	for _, ev := range events {
-		if ev.Reasoning {
+		if ev.Reasoning != "" {
 			reasoningSignals++
+			reasoningText += ev.Reasoning
 			if ev.Text != "" {
 				t.Error("a reasoning event must not carry text")
 			}
@@ -295,6 +297,11 @@ func TestProgressEventsReportReasoningWithoutText(t *testing.T) {
 	}
 	if reasoningSignals != 1 {
 		t.Errorf("reasoning signals = %d, want 1", reasoningSignals)
+	}
+	// The reasoning travels on the event, so the operator can be shown
+	// what the provider exposed.
+	if reasoningText != "private thought" {
+		t.Errorf("the reasoning text on the event = %q", reasoningText)
 	}
 	if texts != 2 {
 		t.Errorf("text events = %d, want 2", texts)
