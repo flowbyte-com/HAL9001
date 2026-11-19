@@ -1,10 +1,6 @@
 package tui
 
-import (
-	"strings"
-
-	"github.com/rivo/uniseg"
-)
+import "strconv"
 
 // Show Thinking is a presentation control.
 //
@@ -74,23 +70,41 @@ func thinkingState(on bool) string {
 	return "off"
 }
 
+// thinkingStyle returns how a reasoning row is styled, and the name of
+// that style.
+//
+// The name lets the buffer know when the rows have to be styled again:
+// a theme change restyles the block, and nothing else does.
+func (m Model) thinkingStyle() (func(string) string, string) {
+	st := m.theme.styles()
+	prefix := m.transcriptPrefix()
+	key := m.theme.Name + "|" + strconv.FormatBool(m.color)
+	return func(line string) string {
+		if !m.color {
+			return prefix + line
+		}
+		return prefix + st.footer.Render(line)
+	}, key
+}
+
 // thinkingRows renders the reasoning a provider exposed, as a block of
 // its own.
 //
 // The block is dim, labelled and set apart from the answer, so it can
 // never be mistaken for HAL's answer or for the tool activity under
 // it. Nothing is invented: a turn with no reasoning renders no block.
-func (m Model) thinkingRows(text string) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
+//
+// The rows come from the buffer, which wrapped and styled them once: a
+// reasoning that is still arriving costs what the piece that arrived
+// costs, and the rows that are already on screen do not move.
+func (m Model) thinkingRows(buf *thinkingBuffer) []string {
+	if buf == nil || buf.Empty() {
 		return nil
 	}
-	st := m.theme.styles()
-	prefix := m.transcriptPrefix()
-	rows := []string{prefix + st.footer.Render("thinking")}
-	for _, line := range wrapPlainText(text, m.contentWidth()) {
-		rows = append(rows, prefix+st.footer.Render(line))
-	}
+	style, key := m.thinkingStyle()
+	buf.SetStyle(style, key)
+	rows := []string{style("thinking")}
+	rows = append(rows, buf.Rows()...)
 	return rows
 }
 
@@ -100,10 +114,10 @@ func (m Model) thinkingRows(text string) []string {
 // It is empty when the operator asked for no reasoning, or when the
 // provider has exposed none so far.
 func (m Model) pendingThinkingRows() ([]string, []bool) {
-	if !m.showThinking || strings.TrimSpace(m.pendingReasoning) == "" {
+	if !m.showThinking || m.pendingThinking == nil || m.pendingThinking.Empty() {
 		return nil, nil
 	}
-	rows := m.thinkingRows(m.pendingReasoning)
+	rows := m.thinkingRows(m.pendingThinking)
 	// One blank row keeps the reasoning apart from the answer.
 	rows = append(rows, m.transcriptPrefix())
 	deco := make([]bool, len(rows))
@@ -113,66 +127,15 @@ func (m Model) pendingThinkingRows() ([]string, []bool) {
 	return rows, deco
 }
 
-// wrapPlainText wraps text to a width in display cells, keeping the
-// line breaks the provider wrote.
+// thinkingBufferFor returns the buffer of the running turn, creating it
+// when the provider exposed its first reasoning.
 //
-// The reasoning is plain text, not Markdown: it is shown as it was
-// received, and it is wrapped so a long line cannot push the frame out
-// of shape.
-func wrapPlainText(text string, width int) []string {
-	if width < 1 {
-		width = 1
+// The buffer is created with the width of the moment: a window that
+// changes later re-wraps it.
+func (m *Model) thinkingBufferFor() *thinkingBuffer {
+	if m.pendingThinking == nil {
+		style, key := m.thinkingStyle()
+		m.pendingThinking = newThinkingBuffer(m.contentWidth(), style, key)
 	}
-	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimRight(line, " \t")
-		if line == "" {
-			out = append(out, "")
-			continue
-		}
-		out = append(out, wrapPlainLine(line, width)...)
-	}
-	return out
-}
-
-// wrapPlainLine wraps one line of plain text within width display
-// cells. Words are kept whole where they fit and broken by grapheme
-// cluster where they do not.
-func wrapPlainLine(line string, width int) []string {
-	var out []string
-	current := ""
-	currentWidth := 0
-	for _, word := range strings.Fields(line) {
-		wordWidth := uniseg.StringWidth(word)
-		if current == "" {
-			if wordWidth <= width {
-				current, currentWidth = word, wordWidth
-				continue
-			}
-			parts := splitHelpWord(word, width)
-			out = append(out, parts[:len(parts)-1]...)
-			current, currentWidth = parts[len(parts)-1], uniseg.StringWidth(parts[len(parts)-1])
-			continue
-		}
-		if currentWidth+1+wordWidth <= width {
-			current += " " + word
-			currentWidth += 1 + wordWidth
-			continue
-		}
-		out = append(out, current)
-		if wordWidth <= width {
-			current, currentWidth = word, wordWidth
-			continue
-		}
-		parts := splitHelpWord(word, width)
-		out = append(out, parts[:len(parts)-1]...)
-		current, currentWidth = parts[len(parts)-1], uniseg.StringWidth(parts[len(parts)-1])
-	}
-	if current != "" {
-		out = append(out, current)
-	}
-	if len(out) == 0 {
-		return []string{""}
-	}
-	return out
+	return m.pendingThinking
 }

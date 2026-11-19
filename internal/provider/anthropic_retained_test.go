@@ -135,11 +135,14 @@ func TestAnthropicIdleTimeoutClosesTheRequest(t *testing.T) {
 // TestAnthropicMergesConsecutiveMessages checks that two user messages
 // become one, because the API expects alternating roles.
 func TestAnthropicMergesConsecutiveMessages(t *testing.T) {
-	system, messages := anthropicMessages([]Message{
+	system, messages, err := anthropicMessages([]Message{
 		{Role: "user", Content: "one"},
 		{Role: "user", Content: "two"},
 		{Role: "assistant", Content: "answer"},
-	})
+	}, Model{ID: "claude-test"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if system != "" {
 		t.Errorf("system = %q", system)
 	}

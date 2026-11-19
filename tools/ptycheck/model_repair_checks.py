@@ -63,7 +63,7 @@ SECRET = "synthetic-deepseek-key-000111222333"
 ANSWER = "the local provider answered"
 
 # The catalogue the local provider serves.
-CATALOGUE = ["flash", "deepseek-chat"]
+CATALOGUE = ["MiniMax-M3.1-Flash", "deepseek-flash"]
 
 
 def check(name, ok, detail=""):
@@ -168,13 +168,13 @@ CONFIG = {
             "credential": "",
             "discovery": {"enabled": False},
             "models": [
-                {"id": "flash", "label": "Flash", "effort": "medium",
+                {"id": "MiniMax-M3.1-Flash", "label": "Flash", "effort": "medium",
                  "context_mode": "auto", "context_window": 0,
                  "max_output_tokens": 0, "source": "manual"},
             ],
         },
     ],
-    "active": {"endpoint": "primary", "model": "flash"},
+    "active": {"endpoint": "primary", "model": "MiniMax-M3.1-Flash"},
     "theme": "HAL Classic",
 }
 
@@ -283,7 +283,7 @@ def scenario_the_operator_journey(harness, provider):
 
         # The command that takes an endpoint id says what an address is.
         escape_to_chat(session)
-        session.send(b"/model add https://api.deepseek.com/v1 deepseek-chat\r")
+        session.send(b"/model add https://api.deepseek.com/v1 deepseek-flash\r")
         session.wait(1.5)
         screen = session.screen()
         check("an address is refused as an endpoint id",
@@ -291,7 +291,7 @@ def scenario_the_operator_journey(harness, provider):
         check("the refusal names the endpoints that exist",
               "primary" in screen, screen)
         check("nothing was added",
-              not any(m.get("id") == "deepseek-chat" for m in models_of(config)),
+              not any(m.get("id") == "deepseek-flash" for m in models_of(config)),
               json.dumps(models_of(config)))
 
         # 4. The endpoint is created from inside Add Model.
@@ -376,7 +376,7 @@ def scenario_the_operator_journey(harness, provider):
         screen = session.screen()
         check("the operator is back in Add Model",
               "Add a model to deepseek" in screen, screen)
-        session.send(b"deepseek-chat")
+        session.send(b"deepseek-flash")
         session.wait(0.6)
         session.send(b"\x13")
         session.wait(1.5)
@@ -387,10 +387,10 @@ def scenario_the_operator_journey(harness, provider):
 
         # 6. The model is in the configuration, under the right endpoint.
         check("the model is on disk under the new endpoint",
-              any(m.get("id") == "deepseek-chat" for m in models_of(config, "deepseek")),
+              any(m.get("id") == "deepseek-flash" for m in models_of(config, "deepseek")),
               json.dumps(models_of(config, "deepseek")))
         check("the model was not added to the other endpoint",
-              not any(m.get("id") == "deepseek-chat" for m in models_of(config, "primary")),
+              not any(m.get("id") == "deepseek-flash" for m in models_of(config, "primary")),
               json.dumps(models_of(config, "primary")))
 
         # 7. The list and the details show it under the right endpoint.
@@ -400,22 +400,22 @@ def scenario_the_operator_journey(harness, provider):
         check("the list names the new endpoint",
               "id deepseek" in screen, screen)
         check("the list names the new model",
-              "deepseek-chat" in screen, screen)
+              "deepseek-flash" in screen, screen)
         session.send(b"\x1b")
         session.wait(0.8)
-        session.send(b"/model show deepseek deepseek-chat\r")
+        session.send(b"/model show deepseek deepseek-flash\r")
         session.wait(1.5)
         screen = session.screen()
         check("the details name the endpoint of the model",
               "deepseek" in screen, screen)
         check("the details name the model",
-              "deepseek-chat" in screen, screen)
+              "deepseek-flash" in screen, screen)
         session.send(b"\x1b")
         session.wait(0.8)
 
         # 8. The active model did not change.
         check("the active model did not change",
-              (stored(config).get("active") or {}).get("model") == "flash",
+              (stored(config).get("active") or {}).get("model") == "MiniMax-M3.1-Flash",
               json.dumps(stored(config).get("active")))
     finally:
         session.close()
@@ -483,7 +483,7 @@ def scenario_every_setting(harness):
         session.wait(1.5)
         screen = session.screen()
         check("the changes were written", "updated" in screen, screen)
-        record = model_of(config, "flash")
+        record = model_of(config, "MiniMax-M3.1-Flash")
         check("the label was stored", record.get("label") == "Renamed",
               json.dumps(record))
         check("the effort was stored", record.get("effort") == "high",
@@ -519,7 +519,7 @@ def scenario_the_defaults(harness):
         session.wait(1.5)
         screen = session.screen()
         check("the changes were written", "updated" in screen, screen)
-        record = model_of(config, "flash")
+        record = model_of(config, "MiniMax-M3.1-Flash")
         check("the effort was restored", not record.get("effort"),
               json.dumps(record))
         check("the output limit was restored", not record.get("max_output_tokens"),
@@ -553,7 +553,7 @@ def scenario_an_empty_field_is_not_a_reset(harness):
         # Nothing was written.
         session.send(b"s")
         session.wait(1.5)
-        record = model_of(config, "flash")
+        record = model_of(config, "MiniMax-M3.1-Flash")
         check("the effort was not restored", record.get("effort") == "medium",
               json.dumps(record))
         check("the output limit was not restored",
@@ -566,7 +566,7 @@ def scenario_a_refused_change(harness):
     """A change the configuration refuses changes nothing."""
     session, config = harness
     try:
-        before = model_of(config, "flash")
+        before = model_of(config, "MiniMax-M3.1-Flash")
         session.send(b"/model edit\r")
         session.wait(1.2)
         session.send(b"\r")
@@ -591,9 +591,9 @@ def scenario_a_refused_change(harness):
         check("the refused screen stays open",
               "Edit model primary" in screen, screen)
         check("the refused change was not stored",
-              model_of(config, "flash").get("max_output_tokens") ==
+              model_of(config, "MiniMax-M3.1-Flash").get("max_output_tokens") ==
               before.get("max_output_tokens"),
-              json.dumps(model_of(config, "flash")))
+              json.dumps(model_of(config, "MiniMax-M3.1-Flash")))
     finally:
         session.close()
 
@@ -765,7 +765,7 @@ def scenario_the_other_actions(harness):
         session.send(b"\x1b")
         session.wait(0.8)
         check("the cancelled removal kept the model",
-              any(m.get("id") == "flash" for m in models_of(config)),
+              any(m.get("id") == "MiniMax-M3.1-Flash" for m in models_of(config)),
               json.dumps(models_of(config)))
     finally:
         session.close()
@@ -846,7 +846,7 @@ def scenario_onboarding(harness):
         session.wait(0.6)
         session.send(b"\t")
         session.wait(0.4)
-        session.send(b"deepseek-chat")
+        session.send(b"deepseek-flash")
         session.wait(0.6)
         session.send(b"\t")
         session.wait(0.4)
@@ -870,7 +870,7 @@ def scenario_onboarding(harness):
                   "http://127.0.0.1:%d/v1" % PORT,
                   json.dumps(endpoints["default"]))
             check("the model was added",
-                  any(m.get("id") == "deepseek-chat" for m in models_of(config, "default")),
+                  any(m.get("id") == "deepseek-flash" for m in models_of(config, "default")),
                   json.dumps(models_of(config, "default")))
         # The file that holds the secret is protected.
         mode = os.stat(config).st_mode & 0o777
@@ -929,7 +929,7 @@ def scenario_a_cancelled_onboarding(harness):
         session.wait(0.6)
         session.send(b"\t")
         session.wait(0.4)
-        session.send(b"deepseek-chat")
+        session.send(b"deepseek-flash")
         session.wait(0.6)
         session.send(b"\x1b")
         session.wait(1.0)

@@ -133,8 +133,8 @@ func TestTheReasoningIsNeverPartOfTheAnswer(t *testing.T) {
 	if strings.Contains(last.text, "the model weighed two answers") {
 		t.Errorf("the reasoning is part of the answer's text: %q", last.text)
 	}
-	if last.reasoning != "the model weighed two answers" {
-		t.Errorf("the entry's reasoning = %q", last.reasoning)
+	if last.thinking == nil || last.thinking.Text() != "the model weighed two answers" {
+		t.Errorf("the entry's reasoning = %q", last.thinking.Text())
 	}
 	// Every reasoning row is decoration, so a selection skips it.
 	for i, row := range last.rows {
@@ -171,8 +171,8 @@ func TestAnInterruptedTurnLeavesNoReasoning(t *testing.T) {
 	updated, _ = m.Update(errorMsg{id: m.streamID, err: context.Canceled})
 	m = updated.(Model)
 
-	if m.pendingReasoning != "" {
-		t.Errorf("the interrupted turn left reasoning behind: %q", m.pendingReasoning)
+	if m.pendingThinking != nil {
+		t.Errorf("the interrupted turn left reasoning behind: %q", m.pendingThinking.Text())
 	}
 	view := string(m.View().Content)
 	if strings.Contains(view, "weighing it up") {

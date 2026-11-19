@@ -76,6 +76,12 @@ type openAIMessage struct {
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 	Name       string           `json:"name,omitempty"`
+	// ReasoningContent is the provider's own reasoning, replayed.
+	//
+	// It is a pointer so an absent field stays absent: a turn with no
+	// reasoning and a turn with empty reasoning are not the same thing
+	// to the provider.
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
 }
 
 // openAITool is the wire form of one offered function.
@@ -169,6 +175,11 @@ func (o *OpenAICompatible) requestBodyTools(messages []Message, model Model, str
 	for _, m := range messages {
 		wire := openAIMessage{Role: m.Role, Content: m.Content,
 			ToolCallID: m.ToolCallID, Name: m.Name}
+		reasoning, err := openAIReasoningContent(model, tools, m)
+		if err != nil {
+			return nil, err
+		}
+		wire.ReasoningContent = reasoning
 		for _, call := range m.ToolCalls {
 			var tc openAIToolCall
 			tc.ID = call.ID
@@ -202,6 +213,45 @@ func (o *OpenAICompatible) requestBodyTools(messages []Message, model Model, str
 		out.Tools = append(out.Tools, wire)
 	}
 	return json.Marshal(out)
+}
+
+// openAIReasoningContent returns the reasoning an assistant message
+// must carry back.
+//
+// DeepSeek's Thinking Mode requires the reasoning_content of a prior
+// assistant turn to be replayed with every later request that carries
+// tools, across user turns as well. The field is left out entirely
+// when the turn had no reasoning: an absent field and an empty one are
+// not the same thing to the provider.
+//
+// Nothing is replayed to a model whose protocol does not ask for it,
+// and nothing is replayed when the request carries no tools, because
+// the requirement is a property of the tool-enabled request.
+//
+// The blocks are replayed only when they are this protocol's own: data
+// from another family is never sent to a dialect that does not know
+// it.
+func openAIReasoningContent(model Model, tools []Tool, m Message) (*string, error) {
+	if len(tools) == 0 || m.Role != "assistant" {
+		return nil, nil
+	}
+	key := ReasoningKey(model.ID, WireOpenAI)
+	if key == "" || m.ReasoningKey != key {
+		return nil, nil
+	}
+	switch {
+	case len(m.Reasoning) > 0:
+		text := ReasoningText(m.Reasoning)
+		return &text, nil
+	case m.ReasoningIncomplete:
+		// The reasoning of this turn was too large to keep. Sending
+		// the turn without it would be refused by the provider, so the
+		// request is refused here, with the reason.
+		return nil, fmt.Errorf(
+			"provider: the reasoning of an earlier turn was too large to keep; " +
+				"the conversation cannot continue with tools")
+	}
+	return nil, nil
 }
 
 // toolCallsFrom converts the provider's calls into the engine's form.
@@ -343,6 +393,8 @@ func (o *OpenAICompatible) Chat(ctx context.Context, messages []Message, model M
 		}
 		if parsed.Choices[0].Message.ReasoningContent != nil {
 			out.Reasoning = *parsed.Choices[0].Message.ReasoningContent
+			out.ReasoningBlocks = openAIReasoningBlocks(out.Reasoning)
+			out.ReasoningKey = ReasoningKey(model.ID, WireOpenAI)
 		}
 		out.ToolCalls = toolCallsFrom(parsed.Choices[0].Message.ToolCalls)
 	}
@@ -541,6 +593,10 @@ func (o *OpenAICompatible) chatStream(ctx context.Context, messages []Message, m
 		}
 	}
 	out.ToolCalls = toolCallsFrom(calls.list())
+	out.ReasoningBlocks = openAIReasoningBlocks(out.Reasoning)
+	if len(out.ReasoningBlocks) > 0 {
+		out.ReasoningKey = ReasoningKey(model.ID, WireOpenAI)
+	}
 	stats.Duration = time.Since(stats.StartedAt)
 	if err := scanner.Err(); err != nil {
 		// A provider that keeps the socket open after finish_reason is

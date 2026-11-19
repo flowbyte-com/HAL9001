@@ -34,7 +34,7 @@ func TestTheReasoningLevelReachesTheProvider(t *testing.T) {
 			level: "high", want: "high", present: true, protocol: config.ProtocolOpenAI,
 		},
 		{
-			name: "deepseek takes the mapped value", model: "deepseek-reasoner",
+			name: "deepseek takes the mapped value", model: "deepseek-flash",
 			level: "medium", want: "high", present: true, protocol: config.ProtocolOpenAI,
 		},
 		{
@@ -115,8 +115,8 @@ func TestTheConfiguredDefaultAndTheStoredLevelAreDifferent(t *testing.T) {
 	}{
 		{"MiniMax-M3.1-Flash", "", "medium"},
 		{"MiniMax-M3.1-Flash", "low", "low"},
-		{"deepseek-reasoner", "", "high"},
-		{"deepseek-reasoner", "max", "max"},
+		{"deepseek-flash", "", "high"},
+		{"deepseek-flash", "max", "max"},
 		// A Claude model starts with no extended thinking.
 		{"claude-sonnet-4-5", "", ""},
 		{"claude-sonnet-4-5", "high", "high"},
@@ -224,6 +224,39 @@ func TestTheVisibilityPreferenceHasItsOwnName(t *testing.T) {
 
 // effortApp builds an application whose active model is one record, on
 // an endpoint that records the request.
+// The footer names the level the provider will get.
+//
+// A stored level that the provider never sees — a legacy or hand-edited
+// "medium" on a DeepSeek record — rides at "high" on the wire, and the
+// footer says "high". A footer that names one level while the wire
+// carries another is a disagreement the operator cannot see through.
+func TestTheFooterNamesTheLevelTheProviderGets(t *testing.T) {
+	cases := []struct {
+		name   string
+		model  string
+		effort string
+		want   string
+	}{
+		{"a mapped level", "deepseek-flash", "medium", "high"},
+		{"a level the provider takes as written", "deepseek-flash", "low", "low"},
+		{"a family that takes the level as written", "MiniMax-M3.1-Flash", "xhigh", "xhigh"},
+		{"the model's own default", "deepseek-flash", "", "high"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := effortApp(t, "http://127.0.0.1:1", config.ProtocolOpenAI,
+				config.ModelRecord{ID: c.model, Effort: c.effort})
+			level, ok := a.currentEffort()
+			if !ok {
+				t.Fatalf("the model %q reported no effort control", c.model)
+			}
+			if level != c.want {
+				t.Errorf("the footer names %q, want %q", level, c.want)
+			}
+		})
+	}
+}
+
 func effortApp(t *testing.T, baseURL string, protocol config.Protocol, record config.ModelRecord) *app {
 	t.Helper()
 	store, err := session.Open(t.TempDir(), "test")

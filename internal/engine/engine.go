@@ -377,12 +377,50 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 		if len(msg.Attachments) > 0 {
 			content = e.attachmentRequest(msg, msg.TurnID == expandTurn, boundary)
 		}
-		messages = append(messages, provider.Message{
+		wire := provider.Message{
 			Role:    string(msg.Role),
 			Content: content,
-		})
+		}
+		// The provider's own continuity data travels with the message it
+		// belongs to: a restored conversation replays it, and a
+		// compacted one takes it away with the message.
+		if msg.Protocol != nil && msg.Protocol.Version == session.ProtocolVersion {
+			if key, _, blocks, ok := provider.DecodeReasoning(msg.Protocol.Payload); ok {
+				wire.ReasoningKey = key
+				wire.Reasoning = blocks
+				// A record that kept the key but not the data is
+				// incomplete: the request that would need it is
+				// refused rather than sent without it.
+				wire.ReasoningIncomplete = len(blocks) == 0
+			}
+		}
+		messages = append(messages, wire)
 	}
 	return messages
+}
+
+// protocolOf returns the continuity record of a provider turn.
+//
+// The record is opaque here: the engine stores what the provider layer
+// produced and hands it back unchanged. The provider layer is the only
+// one that can read it.
+//
+// Data that would exceed the bound is not kept. What survives is the
+// name of the protocol: a later request that needs the data is then
+// refused, rather than sent without it and refused by the provider.
+func protocolOf(resp provider.Response, modelID string) *session.Protocol {
+	key := resp.ReasoningKey
+	if key == "" {
+		return nil
+	}
+	payload := provider.EncodeReasoning(key, modelID, resp.ReasoningBlocks)
+	if len(payload) == 0 {
+		return nil
+	}
+	if len(payload) > session.MaxProtocolBytes {
+		payload = provider.EncodeReasoningKey(key)
+	}
+	return session.NewProtocol(payload)
 }
 
 // permissionBlock tells the model the authority for this request. It is
@@ -726,6 +764,7 @@ func (e *Engine) respondTurn(ctx context.Context, op lifecycle.Operation, input 
 		ID:          turnID,
 		Attribution: attribution,
 		Tools:       evidence,
+		Protocol:    protocolOf(resp, e.model.ID),
 	}); err != nil {
 		return "", err
 	}
@@ -786,6 +825,11 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 		}
 		current = append(current, provider.Message{
 			Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
+			// The provider's own reasoning travels with the turn that
+			// produced it: a provider that requires it replayed needs
+			// exactly this back, in the very next request.
+			ReasoningKey: resp.ReasoningKey,
+			Reasoning:    resp.ReasoningBlocks,
 		})
 		stop := false
 		for i, call := range resp.ToolCalls {
@@ -1116,7 +1160,18 @@ func (e *Engine) chat(ctx context.Context, messages []provider.Message, tools []
 	if streamer, ok := e.provider.(provider.Streamer); ok && emit != nil {
 		return streamer.ChatStream(ctx, messages, model, deltaFn)
 	}
-	return e.provider.Chat(ctx, messages, model)
+	resp, err := e.provider.Chat(ctx, messages, model)
+	if err != nil {
+		return resp, err
+	}
+	// A provider that does not stream still has reasoning to show. The
+	// operator sees what the provider exposed, however it arrived: the
+	// reasoning is the provider's own and it is never part of the
+	// answer.
+	if emit != nil && resp.Reasoning != "" {
+		emit(Event{Reasoning: resp.Reasoning})
+	}
+	return resp, nil
 }
 
 // applyContextBudget fits the assembled request into the model's

@@ -556,10 +556,13 @@ type entry struct {
 	// context budget. It is presentation metadata about the turn: it
 	// carries no conversation text.
 	context string
-	// reasoning is the reasoning the provider exposed for this turn. It
+	// thinking is the reasoning the provider exposed for this turn. It
 	// is shown only when the operator asked to see it, and it is never
 	// part of the answer, the selection or the session record.
-	reasoning string
+	//
+	// It is a buffer and not a string: the block was wrapped and
+	// styled while it arrived, and it is not wrapped again.
+	thinking *thinkingBuffer
 	// files are the attachments the operator made with this message.
 	// They are references, shown beneath the message; the contents are
 	// never part of the text.
@@ -727,11 +730,15 @@ type Model struct {
 	// changes what is asked of the provider, and the effort level is
 	// untouched by it.
 	showThinking bool
-	// pendingReasoning is the reasoning the running turn exposed so far.
+	// pendingThinking is the reasoning the running turn exposed so far.
 	// It is shown while the turn runs and becomes part of the answer's
 	// entry when the turn ends. It is never written into the session
 	// record: reasoning is not conversation content.
-	pendingReasoning string
+	//
+	// It is a buffer and not a string because the reasoning arrives in
+	// pieces: a buffer wraps and styles each piece once, where a string
+	// would be wrapped and styled again with every piece.
+	pendingThinking *thinkingBuffer
 	// lastStats is the content-free telemetry of the last finished turn.
 	lastStats *provider.TurnStats
 	// turnAttribution is the credit of the last finished turn: the
@@ -1043,7 +1050,7 @@ func (m *Model) SetHistory(lines []SessionLine) {
 	m.lastTools = nil
 	m.entries = nil
 	m.pending = ""
-	m.pendingReasoning = ""
+	m.pendingThinking = nil
 	m.clearUndo()
 	m.clearSelection()
 	for _, line := range lines {
@@ -1169,6 +1176,12 @@ type skillDecisionMsg struct {
 type responseMsg struct {
 	id   int
 	text string
+	// reasoning is the reasoning the provider exposed, for the turns
+	// that did not stream it.
+	//
+	// It is the provider's own and it is shown only when the operator
+	// asked to see it: it is never part of the answer.
+	reasoning string
 	// proposal is one prepared write awaiting the operator's decision.
 	proposal *workspace.Proposal
 	// decision is the routing decision of this turn, when the engine
@@ -1234,6 +1247,7 @@ func (m Model) runTurnInline(id int, ctx context.Context, runner func(context.Co
 		contextNote string
 		steerText   string
 		steerStored bool
+		reasoning   string
 	)
 	reply, err := runner(ctx, func(ev engine.Event) {
 		switch {
@@ -1255,6 +1269,11 @@ func (m Model) runTurnInline(id int, ctx context.Context, runner func(context.Co
 		case ev.Steer != "":
 			steerText = ev.Steer
 			steerStored = ev.SteerStored
+		case ev.Reasoning != "":
+			// A turn that did not stream still has reasoning to
+			// show: the operator sees what the provider exposed,
+			// however it arrived.
+			reasoning += ev.Reasoning
 		}
 	})
 	if err != nil {
@@ -1263,6 +1282,7 @@ func (m Model) runTurnInline(id int, ctx context.Context, runner func(context.Co
 	return responseMsg{
 		id:          id,
 		text:        reply,
+		reasoning:   reasoning,
 		proposal:    proposal,
 		decision:    decision,
 		attribution: attribution,
@@ -1684,7 +1704,9 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.reasoningSeen = true
-		m.pendingReasoning += msg.text
+		// The reasoning is wrapped as it arrives: the block on screen
+		// costs what the piece that arrived costs.
+		m.thinkingBufferFor().Append(msg.text)
 		m.activityPhase = activityThinking
 		m.noteProviderEvent()
 		m.setActivity()
@@ -1787,8 +1809,19 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The reasoning the provider exposed belongs to this answer. It
 		// is shown only when the operator asked to see it, and it is
 		// never part of the answer's text.
-		m.entries[i].reasoning = m.pendingReasoning
-		m.pendingReasoning = ""
+		//
+		// The buffer moves with it: the block keeps the rows it was
+		// given, so the answer does not have to be wrapped again.
+		if msg.reasoning != "" {
+			// A turn that did not stream carries its reasoning with
+			// the answer.
+			m.thinkingBufferFor().Append(msg.reasoning)
+		}
+		if m.pendingThinking != nil {
+			m.pendingThinking.Flush()
+			m.entries[i].thinking = m.pendingThinking
+			m.pendingThinking = nil
+		}
 		m.renderEntry(i)
 		m.renderConversation()
 		// Attach this turn's reported usage directly: the answer on screen
@@ -1842,7 +1875,7 @@ func (m Model) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.endActivity()
 		m.reasoningSeen = false
 		m.pending = ""
-		m.pendingReasoning = ""
+		m.pendingThinking = nil
 		// The statistics of this turn are taken before the failure path
 		// clears them. They belong to this turn and to no other: the
 		// numbers of the turn before it are not evidence about this
@@ -2034,7 +2067,7 @@ func (m Model) startTurn(input string, atts []attachments.Meta, entry int) (tea.
 	m.collapseForTurn(i)
 	m.viewport.GotoBottom()
 	m.pending = ""
-	m.pendingReasoning = ""
+	m.pendingThinking = nil
 	m.sending = true
 	m.streamStarted = m.clock()
 	m.reasoningSeen = false
@@ -2302,7 +2335,7 @@ func (m *Model) quit() tea.Cmd {
 	m.endActivity()
 	m.sending = false
 	m.pending = ""
-	m.pendingReasoning = ""
+	m.pendingThinking = nil
 	// The messages that were waiting are written to the session's own
 	// file before HAL leaves, so they are still there next time.
 	m.saveQueue()
@@ -2976,6 +3009,11 @@ func (m *Model) renderEntry(i int) {
 // of its own, and only when the operator asked to see it. The eye stays
 // with the answer: the reasoning is not the answer.
 func (m *Model) renderAssistant(e *entry) ([]string, []bool) {
+	if e.thinking != nil {
+		// A window that changed re-wraps the block. This happens once
+		// per width, not once per piece of reasoning.
+		e.thinking.SetWidth(m.contentWidth())
+	}
 	body := m.renderMarkdown(e.text, m.contentWidth())
 	lines := strings.Split(body, "\n")
 	rows := make([]string, 0, len(lines)+len(e.tools)+1)
@@ -2983,9 +3021,9 @@ func (m *Model) renderAssistant(e *entry) ([]string, []bool) {
 	// The thinking block comes first: the reasoning happened before the
 	// answer. Its rows are decoration, so a selection never copies it.
 	thinking := -1
-	if m.showThinking && e.reasoning != "" {
+	if m.showThinking && e.thinking != nil && !e.thinking.Empty() {
 		thinking = len(rows)
-		rows = append(rows, m.thinkingRows(e.reasoning)...)
+		rows = append(rows, m.thinkingRows(e.thinking)...)
 		// One blank row keeps the reasoning apart from the answer.
 		rows = append(rows, "")
 	}

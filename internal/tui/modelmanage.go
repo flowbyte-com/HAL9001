@@ -897,6 +897,7 @@ func (m *Model) openLabelForm(item manageItem, before ModelDetail) tea.Cmd {
 // empty field means.
 func (m *Model) openEffortChoice(item manageItem, before ModelDetail) tea.Cmd {
 	defaults := provider.DefaultEffortFor(item.model)
+	stored := provider.EffectiveEffort(item.model, before.Settings.Effort)
 	items := []manageItem{{
 		name:   "the model's own default",
 		detail: effortDefaultDetail(defaults),
@@ -907,12 +908,18 @@ func (m *Model) openEffortChoice(item manageItem, before ModelDetail) tea.Cmd {
 		items = append(items, manageItem{
 			name:  level,
 			value: level,
-			mark:  markFor(before.Settings.Effort == level),
+			mark:  markFor(stored == level),
 		})
+	}
+	message := "Enter chooses the level. The default restores the model's own."
+	if len(items) == 1 {
+		// The model has no documented levels: the only choice is the
+		// model's own, and the screen says why.
+		message = "HAL documents no reasoning level for this model, so the model's own is all there is."
 	}
 	m.managePush()
 	m.openChoice("Effort of "+item.endpoint+" · "+item.model,
-		"Enter chooses the level. The default restores the model's own.",
+		message,
 		items, func(m *Model, choice manageItem) tea.Cmd {
 			m.manageSetPending("effort", manageChange{value: choice.value, reset: choice.value == ""})
 			m.manageBack()
@@ -923,14 +930,12 @@ func (m *Model) openEffortChoice(item manageItem, before ModelDetail) tea.Cmd {
 
 // effortLevelsForModel returns the levels a model offers.
 //
-// A model HAL knows nothing about gets the documented set: the choice
-// is the operator's own, and a level the provider may reject is better
-// refused by the provider than never offered.
+// Only the levels the model's own family documents are offered. A level
+// HAL cannot place on the wire is a setting that can never apply, and
+// offering it would store a promise the provider never keeps.
 func effortLevelsForModel(modelID string) []string {
-	if levels, ok := provider.SupportedEffortLevels(modelID); ok {
-		return levels
-	}
-	return provider.EffortLevels
+	levels, _ := provider.SupportedEffortLevels(modelID)
+	return levels
 }
 
 // openOutputChoice asks what the answer may use.
@@ -1908,8 +1913,15 @@ func effortValue(effort string) string {
 // effortDisplay is the effective reasoning level as the operator sees
 // it: the stored level when one is set, otherwise the model's own
 // default with its provenance, so the editor and the footer agree.
+//
+// A stored level that the provider never saw is shown as the level the
+// provider does get: a family that documents fewer levels maps the
+// others, and the operator has to see what was actually sent.
 func effortDisplay(stored, modelID string) string {
 	if strings.TrimSpace(stored) != "" {
+		if effective := provider.EffectiveEffort(modelID, stored); effective != "" {
+			return effective
+		}
 		return stored
 	}
 	if defaults := provider.DefaultEffortFor(modelID); defaults != "" {

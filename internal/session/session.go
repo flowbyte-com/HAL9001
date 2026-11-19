@@ -58,6 +58,62 @@ type Message struct {
 	// copy, never the contents, so a session file never grows with the
 	// size of the files that were discussed.
 	Attachments []attachments.Meta `json:"attachments,omitempty"`
+	// Protocol is the provider-required continuity data of this
+	// message. It is present only on assistant messages and only when
+	// a provider asked for it.
+	//
+	// It is not conversation content: it never appears in a message, a
+	// selection, an export or a log.
+	Protocol *Protocol `json:"protocol,omitempty"`
+}
+
+// ProtocolVersion is the explicit schema version of the protocol state.
+//
+// A record with any other version is ignored rather than guessed at.
+const ProtocolVersion = 1
+
+// MaxProtocolBytes bounds the continuity data one message may carry.
+//
+// The data is what a provider needs to continue a conversation, and it
+// is kept as the provider sent it: a shortened payload is not a
+// smaller payload, it is a wrong one. The bound is generous, and data
+// over it is not stored at all.
+const MaxProtocolBytes = 1 << 20
+
+// Protocol is the provider-required continuity data of one message.
+//
+// The conversation record never mentions a provider: this is an opaque,
+// versioned payload that the provider layer owns. What is inside it is
+// defined by the provider that produced it, and the provider layer
+// refuses to interpret a payload it did not write.
+//
+// Some providers require their own reasoning to be replayed when the
+// conversation continues. This is where that data lives between turns:
+// attached to the message it belongs to, so a restored conversation
+// replays it and a compacted one takes it away with the message.
+type Protocol struct {
+	// Version is the schema version of the payload.
+	Version int `json:"version"`
+	// Payload is the provider's own data, verbatim.
+	Payload json.RawMessage `json:"payload,omitempty"`
+	// Incomplete reports that the data was too large to keep and was
+	// not stored. A request that would need it is refused rather than
+	// sent without it.
+	Incomplete bool `json:"incomplete,omitempty"`
+}
+
+// NewProtocol returns the record of one message's continuity data.
+//
+// The payload is bounded: data over the bound is not stored, and the
+// record says so, so nothing is silently lost.
+func NewProtocol(payload []byte) *Protocol {
+	if len(payload) == 0 {
+		return nil
+	}
+	if len(payload) > MaxProtocolBytes {
+		return &Protocol{Version: ProtocolVersion, Incomplete: true}
+	}
+	return &Protocol{Version: ProtocolVersion, Payload: json.RawMessage(payload)}
 }
 
 // ToolLedgerVersion is the explicit schema version of ToolLedger. A
@@ -135,6 +191,7 @@ type messageWire struct {
 	Attribution *Attribution    `json:"attribution,omitempty"`
 	ToolLedger  json.RawMessage `json:"tool_ledger,omitempty"`
 	Attachments json.RawMessage `json:"attachments,omitempty"`
+	Protocol    json.RawMessage `json:"protocol,omitempty"`
 }
 
 // UnmarshalJSON keeps old sessions and damaged optional ledgers loadable.
@@ -152,11 +209,29 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		TurnID:      w.TurnID,
 		Attribution: w.Attribution,
 		Attachments: parseAttachments(w.Attachments),
+		Protocol:    parseProtocol(w.Protocol),
 	}
 	if len(w.ToolLedger) > 0 {
 		m.ToolLedger = parseToolLedger(w.ToolLedger)
 	}
 	return nil
+}
+
+// parseProtocol reads the optional continuity data of a message.
+//
+// The data is provider-owned and optional: a record that cannot be read
+// is treated as absent, so a damaged file does not lose the conversation
+// around it. The version is kept as it was written: the provider layer
+// decides what it can interpret.
+func parseProtocol(raw json.RawMessage) *Protocol {
+	if len(raw) == 0 {
+		return nil
+	}
+	var p Protocol
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil
+	}
+	return &p
 }
 
 // parseAttachments reads the optional attachment references of a message.
@@ -450,6 +525,13 @@ type Turn struct {
 	// contents stay in the upload directory and are never written into
 	// the session.
 	Attachments []attachments.Meta
+	// Protocol is the provider-required continuity data of this
+	// exchange: what a provider must see replayed when the
+	// conversation continues.
+	//
+	// It is not conversation content and it is never read by the
+	// operator.
+	Protocol *Protocol
 }
 
 // NewTurnID mints a fresh, opaque turn identity.
@@ -664,6 +746,15 @@ func (s *Store) AppendTurn(role Role, content string, turn Turn) (Message, error
 			refs = append(refs, attachments.SanitizeMeta(a))
 		}
 		msg.Attachments = refs
+	}
+	if role == RoleAssistant && turn.Protocol != nil {
+		// The continuity data belongs to the assistant turn and to no
+		// other: it is what the provider must see replayed.
+		p := *turn.Protocol
+		if p.Version == 0 {
+			p.Version = ProtocolVersion
+		}
+		msg.Protocol = &p
 	}
 	if turn.Attribution != nil {
 		// The attribution repeats the turn identity it belongs to, so a

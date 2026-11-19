@@ -599,7 +599,10 @@ func (a *app) currentEffort() (string, bool) {
 	if !provider.EffortCapable(id) {
 		return "", false
 	}
-	return a.effortFor(id), true
+	// The footer names the level the provider will get: a family that
+	// documents fewer levels maps the others, and the operator has to
+	// see what was actually sent.
+	return provider.EffectiveEffort(id, a.effortFor(id)), true
 }
 
 // setEffort persists a reasoning level for the active model and rebuilds

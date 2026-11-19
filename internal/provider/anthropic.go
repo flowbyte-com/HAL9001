@@ -165,6 +165,15 @@ type anthropicBlock struct {
 	// Thinking carries the model's reasoning. It is never displayed as
 	// the answer.
 	Thinking string `json:"thinking,omitempty"`
+	// Signature is the provider's signature for a thinking block.
+	//
+	// It is the provider's own and is never regenerated: the Messages
+	// API refuses a thinking block whose signature was invented,
+	// truncated or re-derived.
+	Signature string `json:"signature,omitempty"`
+	// Data is the opaque payload of a redacted thinking block: the
+	// provider withheld the reasoning and returned this instead.
+	Data string `json:"data,omitempty"`
 }
 
 // anthropicMessage is one message of a conversation.
@@ -251,9 +260,12 @@ type anthropicMessageStart struct {
 
 // anthropicDelta is the payload of a content-block delta.
 type anthropicDelta struct {
-	Type        string `json:"type"`
-	Text        string `json:"text"`
-	Thinking    string `json:"thinking"`
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Thinking string `json:"thinking"`
+	// Signature is the provider's signature for the thinking block the
+	// delta belongs to. It arrives in pieces and is kept as it comes.
+	Signature   string `json:"signature"`
 	PartialJSON string `json:"partial_json"`
 	StopReason  string `json:"stop_reason"`
 }
@@ -263,9 +275,19 @@ type anthropicDelta struct {
 // The system prompt is a top-level field, a tool result is a user message
 // carrying a tool_result block, and consecutive messages with the same
 // role are merged, because the API expects alternating roles.
-func anthropicMessages(messages []Message) (string, []anthropicMessage) {
+//
+// The reasoning blocks of an assistant turn are replayed with it, and
+// only when this request asks for thinking: the Messages API refuses a
+// continued thinking turn whose blocks are missing, and it refuses an
+// unexpected block when thinking is off. The blocks are the provider's
+// own, with the provider's own signature: they are never regenerated.
+func anthropicMessages(messages []Message, model Model, thinking bool) (string, []anthropicMessage, error) {
 	var systemParts []string
 	var out []anthropicMessage
+	key := ""
+	if thinking {
+		key = ReasoningKey(model.ID, WireAnthropic)
+	}
 	appendMessage := func(role string, blocks []anthropicBlock) {
 		if len(blocks) == 0 {
 			return
@@ -284,6 +306,31 @@ func anthropicMessages(messages []Message) (string, []anthropicMessage) {
 			}
 		case "assistant":
 			var blocks []anthropicBlock
+			if key != "" && m.ReasoningKey == key {
+				switch {
+				case len(m.Reasoning) > 0:
+					for _, r := range m.Reasoning {
+						switch r.Type {
+						case ReasoningRedacted:
+							blocks = append(blocks, anthropicBlock{Type: ReasoningRedacted, Data: r.Data})
+						default:
+							blocks = append(blocks, anthropicBlock{
+								Type:      ReasoningThinking,
+								Thinking:  r.Text,
+								Signature: r.Signature,
+							})
+						}
+					}
+				case m.ReasoningIncomplete:
+					// The reasoning of this turn was too large to
+					// keep. Sending the turn without its blocks
+					// would be refused by the provider, so the
+					// request is refused here, with the reason.
+					return "", nil, fmt.Errorf(
+						"provider: the reasoning of an earlier turn was too large to keep; " +
+							"the conversation cannot continue with this model")
+				}
+			}
 			if text := m.Content; text != "" {
 				blocks = append(blocks, anthropicBlock{Type: "text", Text: text})
 			}
@@ -310,7 +357,7 @@ func anthropicMessages(messages []Message) (string, []anthropicMessage) {
 			appendMessage("user", []anthropicBlock{{Type: "text", Text: m.Content}})
 		}
 	}
-	return strings.Join(systemParts, "\n\n"), out
+	return strings.Join(systemParts, "\n\n"), out, nil
 }
 
 // anthropicTools turns the engine's tools into the Anthropic shape.
@@ -332,6 +379,38 @@ func anthropicTools(tools []Tool) []anthropicTool {
 	return out
 }
 
+// anthropicThinkingFamilies names the Claude families that accept the
+// extended-thinking block.
+//
+// The table is the adapter's own: HAL only sends a parameter an API
+// documents, and an unknown model simply gets no thinking control. It
+// names the families instead of guessing from the identifier: a
+// version number in a name says nothing about what the API accepts.
+var anthropicThinkingFamilies = []string{
+	"claude-3-7",
+	"claude-opus-4",
+	"claude-sonnet-4",
+	"claude-haiku-4",
+	"claude-4",
+}
+
+// anthropicNoThinkingFamilies names the Claude families that are known
+// to take no extended thinking.
+//
+// They are known, not unknown: the Messages API documents that the
+// extended-thinking block arrived with Claude 3.7, and the models
+// before it take none. Saying so is more useful than saying that HAL
+// knows nothing about them.
+var anthropicNoThinkingFamilies = []string{
+	"claude-2",
+	"claude-instant",
+	"claude-3-opus",
+	"claude-3-sonnet",
+	"claude-3-haiku",
+	"claude-3-5",
+	"claude-3",
+}
+
 // anthropicThinkingCapable reports whether a model identifier belongs to
 // a family that accepts the extended-thinking block.
 //
@@ -339,15 +418,23 @@ func anthropicTools(tools []Tool) []anthropicTool {
 // documents, and an unknown model simply gets no thinking control.
 func anthropicThinkingCapable(modelID string) bool {
 	id := strings.ToLower(strings.TrimSpace(modelID))
-	if !strings.Contains(id, "claude") {
+	if !strings.HasPrefix(id, "claude") {
 		return false
 	}
-	if strings.Contains(id, "3-7") || strings.Contains(id, "3.7") {
-		return true
+	for _, family := range anthropicThinkingFamilies {
+		if matchesModelPrefix(id, family) {
+			return true
+		}
 	}
-	fields := strings.FieldsFunc(id, func(r rune) bool { return r == '-' || r == '.' })
-	for i, f := range fields {
-		if f == "4" && i > 0 {
+	return false
+}
+
+// anthropicNoThinking reports whether a model identifier belongs to a
+// family that is known to take no extended thinking.
+func anthropicNoThinking(modelID string) bool {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	for _, family := range anthropicNoThinkingFamilies {
+		if matchesModelPrefix(id, family) {
 			return true
 		}
 	}
@@ -422,7 +509,15 @@ func anthropicDeepSeekEffort(model Model) (thinking *anthropicThinking, effort s
 
 // requestBody builds one request, optionally offering functions.
 func (a *AnthropicCompatible) requestBody(messages []Message, model Model, stream bool, tools []Tool) ([]byte, error) {
-	system, conversation := anthropicMessages(messages)
+	// The thinking control is decided first: the reasoning blocks of an
+	// earlier turn are replayed only when this request asks for
+	// thinking.
+	thinking := anthropicThinkingFor(model)
+	deepSeekThinking, deepSeekEffort := anthropicDeepSeekEffort(model)
+	system, conversation, err := anthropicMessages(messages, model, thinking != nil)
+	if err != nil {
+		return nil, err
+	}
 	out := anthropicRequest{
 		Model:     model.ID,
 		Messages:  conversation,
@@ -430,15 +525,15 @@ func (a *AnthropicCompatible) requestBody(messages []Message, model Model, strea
 		MaxTokens: a.effectiveMaxTokens(model),
 		Stream:    stream,
 	}
-	if thinking := anthropicThinkingFor(model); thinking != nil {
+	if thinking != nil {
 		// The API requires max_tokens to exceed the thinking budget.
 		if out.MaxTokens <= thinking.BudgetTokens {
 			out.MaxTokens = thinking.BudgetTokens + anthropicThinkingMargin
 		}
 		out.Thinking = thinking
-	} else if thinking, effort := anthropicDeepSeekEffort(model); thinking != nil {
-		out.Thinking = thinking
-		out.OutputConfig = &anthropicOutputConfig{Effort: effort}
+	} else if deepSeekThinking != nil {
+		out.Thinking = deepSeekThinking
+		out.OutputConfig = &anthropicOutputConfig{Effort: deepSeekEffort}
 	}
 	if len(tools) > 0 {
 		out.Tools = anthropicTools(tools)
@@ -512,6 +607,22 @@ func (a *AnthropicCompatible) Chat(ctx context.Context, messages []Message, mode
 			out.Reasoning += block.Thinking
 			out.Stats.ReasoningChunks++
 			out.Stats.ReasoningRunes += len([]rune(block.Thinking))
+			// The block is kept whole, with the provider's signature:
+			// a tool-use turn that continues must send it back
+			// unmodified.
+			out.ReasoningBlocks = append(out.ReasoningBlocks, ReasoningBlock{
+				Type:      ReasoningThinking,
+				Text:      block.Thinking,
+				Signature: block.Signature,
+			})
+		case "redacted_thinking":
+			// The provider withheld the reasoning and returned an
+			// opaque payload. It is kept exactly as it came: it is
+			// the only thing the provider will accept back.
+			out.ReasoningBlocks = append(out.ReasoningBlocks, ReasoningBlock{
+				Type: ReasoningRedacted,
+				Data: block.Data,
+			})
 		case "tool_use":
 			call := ToolCall{ID: block.ID, Name: block.Name}
 			if len(block.Input) > 0 {
@@ -526,6 +637,11 @@ func (a *AnthropicCompatible) Chat(ctx context.Context, messages []Message, mode
 		}
 	}
 	out.FinishReason = parsed.StopReason
+	if len(out.ReasoningBlocks) > 0 {
+		// The blocks are named with the protocol they belong to, so
+		// only an adapter whose own key matches will replay them.
+		out.ReasoningKey = ReasoningKey(model.ID, WireAnthropic)
+	}
 	out.Stats.FinishReason = parsed.StopReason
 	out.Stats.OutputLimitHit = parsed.StopReason == "max_tokens"
 	if parsed.Usage != nil {
@@ -624,6 +740,12 @@ func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message
 
 	var out Response
 	calls := map[int]*anthropicToolCall{}
+	// The reasoning blocks arrive as a stream: an opening event names
+	// the block, deltas carry its text and its signature, and a stop
+	// event ends it. The blocks are kept by index and in order, because
+	// a turn that continues must send them back exactly as they came.
+	blocks := map[int]*ReasoningBlock{}
+	var blockOrder []int
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	finished := false
@@ -668,8 +790,21 @@ func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message
 				stats.Usage = anthropicUsageStats(*event.Message.Usage)
 			}
 		case "content_block_start":
-			if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
-				calls[event.Index] = &anthropicToolCall{ID: event.ContentBlock.ID, Name: event.ContentBlock.Name}
+			if event.ContentBlock != nil {
+				switch event.ContentBlock.Type {
+				case "tool_use":
+					calls[event.Index] = &anthropicToolCall{ID: event.ContentBlock.ID, Name: event.ContentBlock.Name}
+				case "thinking", "redacted_thinking":
+					// The block is opened here. Its text and its
+					// signature arrive in the deltas that follow.
+					if _, ok := blocks[event.Index]; !ok {
+						blocks[event.Index] = &ReasoningBlock{
+							Type: event.ContentBlock.Type,
+							Data: event.ContentBlock.Data,
+						}
+						blockOrder = append(blockOrder, event.Index)
+					}
+				}
 			}
 		case "content_block_delta":
 			if event.Delta == nil {
@@ -704,6 +839,10 @@ func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message
 				if stats.FirstReasoning == 0 {
 					stats.FirstReasoning = time.Since(stats.StartedAt)
 				}
+				// The text belongs to the block it arrived for.
+				if block, ok := blocks[event.Index]; ok {
+					block.Text += event.Delta.Thinking
+				}
 				if emit != nil {
 					if err := emit(Delta{Reasoning: event.Delta.Thinking}); err != nil {
 						stats.Status = StatusCancelled
@@ -711,6 +850,13 @@ func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message
 						out.Stats = stats
 						return out, err
 					}
+				}
+			case "signature_delta":
+				// The signature is the provider's own. It is kept as
+				// it arrives and never derived: a turn that continues
+				// must send back the signature the provider gave.
+				if block, ok := blocks[event.Index]; ok {
+					block.Signature += event.Delta.Signature
 				}
 			case "input_json_delta":
 				// The arguments of a call arrive in pieces. A stream
@@ -773,6 +919,26 @@ func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message
 			}
 		}
 		out.ToolCalls = append(out.ToolCalls, toolCall)
+	}
+	// The reasoning blocks are reported in the order the model produced
+	// them, whole and with the provider's own signature: a turn that
+	// continues has to send them back exactly as they came.
+	//
+	// The order is the block index, not the order the events happened
+	// to arrive in.
+	order := append([]int(nil), blockOrder...)
+	sort.Ints(order)
+	for _, index := range order {
+		block := blocks[index]
+		if block == nil {
+			continue
+		}
+		out.ReasoningBlocks = append(out.ReasoningBlocks, *block)
+	}
+	if len(out.ReasoningBlocks) > 0 {
+		// The blocks are named with the protocol they belong to, so
+		// only an adapter whose own key matches will replay them.
+		out.ReasoningKey = ReasoningKey(model.ID, WireAnthropic)
 	}
 	stats.Duration = time.Since(stats.StartedAt)
 	if err := scanner.Err(); err != nil {

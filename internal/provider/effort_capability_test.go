@@ -24,9 +24,14 @@ func TestEffortCapabilityIsThreeWay(t *testing.T) {
 		{"gpt-4-turbo", EffortUnsupported},
 		{"llama-3.1-70b", EffortUnsupported},
 		{"", EffortUnsupported},
-		// A Claude model outside the families that take a thinking
-		// block is unknown to HAL, not known to have none.
-		{"claude-3-5-sonnet", EffortUnknown},
+		// A Claude model from before the extended-thinking block is
+		// known to take none: the API documents that the block arrived
+		// with Claude 3.7.
+		{"claude-3-5-sonnet", EffortUnsupported},
+		{"claude-3-opus", EffortUnsupported},
+		{"claude-2.4", EffortUnsupported},
+		// A model outside every table is unknown to HAL, not known to
+		// have none.
 		{"some-model-nobody-documented", EffortUnknown},
 	}
 	for _, c := range cases {
@@ -92,14 +97,32 @@ func TestTheDefaultLevelFollowsTheModel(t *testing.T) {
 
 // A family never claims a longer name that merely starts the same way.
 func TestAFamilyNeverClaimsALongerName(t *testing.T) {
-	for _, model := range []string{"minimax-music", "deepseeking", "minimax-music-2"} {
+	for _, model := range []string{"minimax-music", "deepseeking", "minimax-music-2", "deepseek-flashy"} {
 		if EffortCapable(model) {
 			t.Errorf("%q was claimed by a family", model)
 		}
 	}
-	for _, model := range []string{"minimax-m2", "minimax-m", "deepseek-chat"} {
+	for _, model := range []string{"minimax-m2", "minimax-m", "deepseek-flash"} {
 		if !EffortCapable(model) {
 			t.Errorf("%q was not claimed by its family", model)
+		}
+	}
+}
+
+// A family that names its models claims only those models.
+//
+// The DeepSeek catalogue holds models that do not reason, and a family
+// that claimed every name that started the same way would offer a level
+// for a model that takes none.
+func TestAFamilyClaimsOnlyTheModelsItDocuments(t *testing.T) {
+	for _, model := range []string{"deepseek-embedding", "deepseek-coder", "deepseek-chat"} {
+		if EffortCapable(model) {
+			t.Errorf("%q was claimed by the DeepSeek family", model)
+		}
+	}
+	for _, model := range []string{"deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner"} {
+		if !EffortCapable(model) {
+			t.Errorf("%q was not claimed by the DeepSeek family", model)
 		}
 	}
 }

@@ -31,6 +31,22 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
 
+	// Reasoning carries the provider-required continuity data of this
+	// message: the reasoning a provider must see replayed when the
+	// conversation continues.
+	//
+	// It is not conversation content. It never appears in a message, a
+	// selection, an export or a log, and it is never sent to a
+	// provider whose protocol does not ask for it.
+	Reasoning []ReasoningBlock `json:"-"`
+	// ReasoningKey names the protocol the blocks belong to. An adapter
+	// replays them only when the key is its own.
+	ReasoningKey string `json:"-"`
+	// ReasoningIncomplete reports that the continuity data of this
+	// message was too large to keep. An adapter that would have to
+	// replay it refuses the request rather than sending it without.
+	ReasoningIncomplete bool `json:"-"`
+
 	// Reference marks a message that carries lower-trust reference
 	// data: historical material that stands in for something else, and
 	// is not something the operator said.
@@ -83,8 +99,21 @@ type Tool struct {
 // field). It is never displayed as the answer and never stored as
 // conversation content: user-facing text comes only from Content.
 type Response struct {
-	Content      string     `json:"content"`
-	Reasoning    string     `json:"reasoning,omitempty"`
+	Content   string `json:"content"`
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningBlocks are the provider's own reasoning blocks, exactly
+	// as it sent them: the continuity data a provider that requires its
+	// reasoning replayed needs.
+	//
+	// It is empty for a provider that sends a plain reasoning field,
+	// and for a turn with no reasoning at all.
+	ReasoningBlocks []ReasoningBlock `json:"-"`
+	// ReasoningKey names the protocol the blocks belong to: the wire
+	// and the family that produced them.
+	//
+	// The adapter that captured them names them, and only an adapter
+	// whose own key matches replays them.
+	ReasoningKey string     `json:"-"`
 	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
 	FinishReason string     `json:"finish_reason,omitempty"`
 	// Stats is content-free telemetry for the turn: counts, durations and

@@ -144,9 +144,15 @@ func TestTheEffortCanBeRestoredToTheDefault(t *testing.T) {
 	if !strings.Contains(view, "the model's own default") {
 		t.Errorf("the list must offer the default:\n%s", view)
 	}
+	// The model is one HAL documents no level for: the only choice is
+	// the model's own, and the screen says so. A level that can never
+	// reach the provider is not offered.
+	if !strings.Contains(view, "HAL documents no reasoning level for this model") {
+		t.Errorf("the list must say why it offers nothing else:\n%s", view)
+	}
 	for _, level := range []string{"low", "medium", "high", "xhigh", "max"} {
-		if !strings.Contains(view, level) {
-			t.Errorf("the list must offer %q:\n%s", level, view)
+		if strings.Contains(view, level) {
+			t.Errorf("the list must not offer %q for a model with no documented level:\n%s", level, view)
 		}
 	}
 	m = pressKey(m, tea.KeyEnter, 0, "")
