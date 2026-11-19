@@ -627,43 +627,62 @@ func TestDeepSeekCapturesItsReasoningWithoutStreaming(t *testing.T) {
 }
 
 // The encoded form of the continuity data is opaque to the record: it
-// names its protocol and carries the provider's own blocks.
+// names its protocol, carries the provider's own blocks, and says how
+// the request that produced them asked for thinking.
 func TestTheContinuityRecordCarriesTheProvidersOwnBlocks(t *testing.T) {
 	blocks := []ReasoningBlock{
 		{Type: ReasoningThinking, Text: "the model weighed it", Signature: "sig-abc"},
 		{Type: ReasoningRedacted, Data: "encrypted"},
 	}
-	payload := EncodeReasoning("anthropic/thinking", "claude-sonnet-4-5", blocks)
+	payload := EncodeReasoning("anthropic/thinking", "claude-sonnet-4-5", ThinkingAsked, blocks)
 	if len(payload) == 0 {
 		t.Fatal("nothing was encoded")
 	}
-	key, model, decoded, ok := DecodeReasoning(payload)
+	continuity, ok := DecodeReasoning(payload)
 	if !ok {
 		t.Fatal("the payload was not read back")
 	}
-	if key != "anthropic/thinking" {
-		t.Errorf("the key = %q", key)
+	if continuity.Key != "anthropic/thinking" {
+		t.Errorf("the key = %q", continuity.Key)
 	}
-	if model != "claude-sonnet-4-5" {
-		t.Errorf("the model = %q", model)
+	if continuity.Model != "claude-sonnet-4-5" {
+		t.Errorf("the model = %q", continuity.Model)
 	}
-	if len(decoded) != 2 {
-		t.Fatalf("the blocks = %+v", decoded)
+	if continuity.Thinking != ThinkingAsked {
+		t.Errorf("the thinking = %q", continuity.Thinking)
 	}
-	if decoded[0].Signature != "sig-abc" || decoded[1].Data != "encrypted" {
-		t.Errorf("the blocks were changed: %+v", decoded)
+	if len(continuity.Blocks) != 2 {
+		t.Fatalf("the blocks = %+v", continuity.Blocks)
+	}
+	if continuity.Blocks[0].Signature != "sig-abc" || continuity.Blocks[1].Data != "encrypted" {
+		t.Errorf("the blocks were changed: %+v", continuity.Blocks)
+	}
+}
+
+// A record written before the thinking of the producing request was
+// kept says nothing about it, and nothing is guessed about it.
+func TestARecordWithoutThinkingIsReadAsUnknown(t *testing.T) {
+	continuity, ok := DecodeReasoning([]byte(`{"key":"anthropic/thinking","blocks":[{"type":"thinking","text":"it"}]}`))
+	if !ok {
+		t.Fatal("the record was not read back")
+	}
+	if continuity.Thinking != "" {
+		t.Errorf("the thinking = %q, want nothing known", continuity.Thinking)
+	}
+	if len(continuity.Blocks) != 1 {
+		t.Errorf("the blocks = %+v", continuity.Blocks)
 	}
 }
 
 // A payload that is not one of ours is dropped, never guessed at.
 func TestAnUnknownPayloadIsDropped(t *testing.T) {
-	if _, _, _, ok := DecodeReasoning([]byte("not json")); ok {
+	if _, ok := DecodeReasoning([]byte("not json")); ok {
 		t.Error("a malformed payload was read")
 	}
-	if _, _, _, ok := DecodeReasoning(nil); ok {
+	if _, ok := DecodeReasoning(nil); ok {
 		t.Error("an empty payload was read")
 	}
-	if _, _, _, ok := DecodeReasoning([]byte(`{"key":""}`)); ok {
+	if _, ok := DecodeReasoning([]byte(`{"key":""}`)); ok {
 		t.Error("a payload with no key was read")
 	}
 }
@@ -672,14 +691,14 @@ func TestAnUnknownPayloadIsDropped(t *testing.T) {
 // that needs it is refused rather than sent without it.
 func TestAKeptKeyWithoutDataIsAnIncompleteRecord(t *testing.T) {
 	payload := EncodeReasoningKey("openai/reasoning-content")
-	key, _, blocks, ok := DecodeReasoning(payload)
+	continuity, ok := DecodeReasoning(payload)
 	if !ok {
 		t.Fatal("the payload was not read back")
 	}
-	if key != "openai/reasoning-content" {
-		t.Errorf("the key = %q", key)
+	if continuity.Key != "openai/reasoning-content" {
+		t.Errorf("the key = %q", continuity.Key)
 	}
-	if len(blocks) != 0 {
-		t.Errorf("the record carries data it does not have: %+v", blocks)
+	if len(continuity.Blocks) != 0 {
+		t.Errorf("the record carries data it does not have: %+v", continuity.Blocks)
 	}
 }

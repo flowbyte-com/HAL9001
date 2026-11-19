@@ -90,12 +90,13 @@ func streamOf(t *testing.T, answer string) string {
 		ID      string `json:"id"`
 		Model   string `json:"model"`
 		Content []struct {
-			Type     string          `json:"type"`
-			Thinking string          `json:"thinking"`
-			Text     string          `json:"text"`
-			ID       string          `json:"id"`
-			Name     string          `json:"name"`
-			Input    json.RawMessage `json:"input"`
+			Type      string          `json:"type"`
+			Thinking  string          `json:"thinking"`
+			Signature string          `json:"signature"`
+			Text      string          `json:"text"`
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			Input     json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 	}
@@ -145,6 +146,15 @@ func streamOf(t *testing.T, answer string) string {
 				"type": "content_block_delta", "index": i, "delta": delta,
 			})
 			write("content_block_delta", string(deltaBytes))
+		}
+		if block.Signature != "" {
+			// The signature of a thinking block arrives in its own
+			// delta, the way the Messages API sends it.
+			signature, _ := json.Marshal(map[string]any{
+				"type": "content_block_delta", "index": i,
+				"delta": map[string]any{"type": "signature_delta", "signature": block.Signature},
+			})
+			write("content_block_delta", string(signature))
 		}
 		stop, _ := json.Marshal(map[string]any{"type": "content_block_stop", "index": i})
 		write("content_block_stop", string(stop))

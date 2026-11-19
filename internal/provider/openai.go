@@ -215,6 +215,25 @@ func (o *OpenAICompatible) requestBodyTools(messages []Message, model Model, str
 	return json.Marshal(out)
 }
 
+// openAIThinkingMode reports how a request for this model asks for
+// thinking.
+//
+// The dialect has no thinking block: the effort control is the whole of
+// it, and it is sent only for a model whose API documents it. A request
+// that carries no effort says nothing about thinking, and DeepSeek
+// thinks by default.
+//
+// The dialect's own replay rule does not depend on this — the
+// reasoning of an earlier turn travels back with every tool-carrying
+// request — but the record keeps the fact, because it is what the
+// request actually asked for.
+func openAIThinkingMode(model Model) string {
+	if _, ok := OpenAIEffortFor(model.ID, model.Effort); ok {
+		return ThinkingAsked
+	}
+	return ThinkingUnset
+}
+
 // openAIReasoningContent returns the reasoning an assistant message
 // must carry back.
 //
@@ -405,6 +424,7 @@ func (o *OpenAICompatible) Chat(ctx context.Context, messages []Message, model M
 			out.Reasoning = *parsed.Choices[0].Message.ReasoningContent
 			out.ReasoningBlocks = openAIReasoningBlocks(out.Reasoning)
 			out.ReasoningKey = ReasoningKey(model.ID, WireOpenAI)
+			out.Thinking = openAIThinkingMode(model)
 		}
 		out.ToolCalls = toolCallsFrom(parsed.Choices[0].Message.ToolCalls)
 	}
@@ -606,6 +626,7 @@ func (o *OpenAICompatible) chatStream(ctx context.Context, messages []Message, m
 	out.ReasoningBlocks = openAIReasoningBlocks(out.Reasoning)
 	if len(out.ReasoningBlocks) > 0 {
 		out.ReasoningKey = ReasoningKey(model.ID, WireOpenAI)
+		out.Thinking = openAIThinkingMode(model)
 	}
 	stats.Duration = time.Since(stats.StartedAt)
 	if err := scanner.Err(); err != nil {

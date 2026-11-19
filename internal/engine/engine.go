@@ -385,21 +385,35 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 		// belongs to: a restored conversation replays it, and a
 		// compacted one takes it away with the message.
 		if msg.Protocol != nil {
-			key, _, blocks, ok := provider.DecodeReasoning(msg.Protocol.Payload)
-			if !ok || msg.Protocol.Version != session.ProtocolVersion {
-				// The record could not be read: it is of another
-				// version, or its payload is damaged. The provider
-				// would refuse a request that is missing it, so the
-				// message is marked and the request is refused
-				// rather than sent without it.
+			continuity, ok := provider.DecodeReasoning(msg.Protocol.Payload)
+			switch {
+			case !ok:
+				// The payload could not be read: the record is
+				// damaged. The provider would refuse a request that
+				// is missing it, so the message is marked and the
+				// request is refused rather than sent without it.
 				wire.ReasoningIncomplete = true
-			} else {
-				wire.ReasoningKey = key
-				wire.Reasoning = blocks
+			case msg.Protocol.Version != session.ProtocolVersion &&
+				msg.Protocol.Version != session.ProtocolVersionLegacy:
+				// A record of a version HAL does not know cannot be
+				// read either, and it is not guessed at.
+				wire.ReasoningIncomplete = true
+			default:
+				wire.ReasoningKey = continuity.Key
+				wire.Reasoning = continuity.Blocks
+				if msg.Protocol.Version == session.ProtocolVersionLegacy {
+					// A record written before the thinking of the
+					// producing request was kept says nothing
+					// about how that request asked for thinking,
+					// and nothing is guessed about it.
+					wire.Thinking = ""
+				} else {
+					wire.Thinking = continuity.Thinking
+				}
 				// A record that kept the key but not the data is
 				// incomplete: the request that would need it is
 				// refused rather than sent without it.
-				wire.ReasoningIncomplete = len(blocks) == 0
+				wire.ReasoningIncomplete = len(continuity.Blocks) == 0
 			}
 		}
 		messages = append(messages, wire)
@@ -413,6 +427,10 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 // produced and hands it back unchanged. The provider layer is the only
 // one that can read it.
 //
+// The thinking of the request that produced the turn travels with it:
+// a later request decides what to replay from that fact, and it cannot
+// recover it on its own.
+//
 // Data that would exceed the bound is not kept. What survives is the
 // name of the protocol: a later request that needs the data is then
 // refused, rather than sent without it and refused by the provider.
@@ -421,7 +439,7 @@ func protocolOf(resp provider.Response, modelID string) *session.Protocol {
 	if key == "" {
 		return nil
 	}
-	payload := provider.EncodeReasoning(key, modelID, resp.ReasoningBlocks)
+	payload := provider.EncodeReasoning(key, modelID, resp.Thinking, resp.ReasoningBlocks)
 	if len(payload) == 0 {
 		return nil
 	}
@@ -838,6 +856,9 @@ func (e *Engine) toolTurn(ctx context.Context, messages []provider.Message, tool
 			// exactly this back, in the very next request.
 			ReasoningKey: resp.ReasoningKey,
 			Reasoning:    resp.ReasoningBlocks,
+			// The thinking of the request that produced it travels with
+			// it: the next request decides what to replay from that.
+			Thinking: resp.Thinking,
 		})
 		stop := false
 		for i, call := range resp.ToolCalls {

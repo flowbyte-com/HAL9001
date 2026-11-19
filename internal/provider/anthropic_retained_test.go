@@ -139,7 +139,7 @@ func TestAnthropicMergesConsecutiveMessages(t *testing.T) {
 		{Role: "user", Content: "one"},
 		{Role: "user", Content: "two"},
 		{Role: "assistant", Content: "answer"},
-	}, Model{ID: "claude-test"}, false)
+	}, Model{ID: "claude-test"}, ThinkingUnset)
 	if err != nil {
 		t.Fatal(err)
 	}

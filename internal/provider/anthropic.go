@@ -270,6 +270,28 @@ type anthropicDelta struct {
 	StopReason  string `json:"stop_reason"`
 }
 
+// anthropicThinkingMode reports how a request for this model asks for
+// thinking.
+//
+// The three states are kept apart, because the difference between them
+// decides what a later request replays. A request that carries the
+// thinking block asks for thinking. A request that carries nothing says
+// nothing and leaves the question to the provider: Claude thinks only
+// when asked, DeepSeek thinks by default.
+//
+// A request that forbids thinking is a state of its own. HAL sends none
+// today — the Messages API takes one, and the gate honours it — but the
+// state belongs to the contract and not to the interface.
+func anthropicThinkingMode(model Model) string {
+	if anthropicThinkingFor(model) != nil {
+		return ThinkingAsked
+	}
+	if thinking, _ := anthropicDeepSeekEffort(model); thinking != nil {
+		return ThinkingAsked
+	}
+	return ThinkingUnset
+}
+
 // anthropicMessages turns the engine's messages into the Anthropic shape.
 //
 // The system prompt is a top-level field, a tool result is a user message
@@ -283,16 +305,25 @@ type anthropicDelta struct {
 // provider's own, with the provider's own signature: they are never
 // regenerated.
 //
+// What "in thinking mode" means is the provider's own rule, and it is
+// not the same for every provider. A request that asks for thinking is
+// in thinking mode. A request that forbids thinking is not, whatever
+// came before. A request that says nothing leaves it to the provider,
+// and the answer is in the conversation itself: a turn that asked for
+// nothing and came back with thinking says that this provider thinks
+// by default.
+//
 // The blocks are the provider's own shape. A DeepSeek thinking block
 // carries what DeepSeek sent — its text, and a signature only if
 // DeepSeek sent one — and nothing of Claude's is assumed about it.
-func anthropicMessages(messages []Message, model Model, wantsThinking bool) (string, []anthropicMessage, error) {
+func anthropicMessages(messages []Message, model Model, mode string) (string, []anthropicMessage, error) {
 	var systemParts []string
 	var out []anthropicMessage
-	key := ""
-	if wantsThinking {
-		key = ReasoningKey(model.ID, WireAnthropic)
-	}
+	key := ReasoningKey(model.ID, WireAnthropic)
+	// The provider thinks by default when its family says so, and when
+	// the conversation shows it: a turn that asked for nothing came
+	// back with thinking blocks.
+	defaultThinking := isDeepSeekModel(model.ID) || thinksByDefault(messages, key)
 	appendMessage := func(role string, blocks []anthropicBlock) {
 		if len(blocks) == 0 {
 			return
@@ -303,6 +334,11 @@ func anthropicMessages(messages []Message, model Model, wantsThinking bool) (str
 		}
 		out = append(out, anthropicMessage{Role: role, Content: blocks})
 	}
+	// Whether this request replays the reasoning of an earlier turn is
+	// one decision for the whole request: it depends on how this
+	// request asked for thinking and on what the conversation says
+	// about the provider, not on the turn being looked at.
+	replay := replaysThinking(mode, defaultThinking)
 	for _, m := range messages {
 		switch m.Role {
 		case "system":
@@ -317,7 +353,7 @@ func anthropicMessages(messages []Message, model Model, wantsThinking bool) (str
 			switch {
 			case foreign:
 				// Nothing of it is ours: the turn goes out as it was.
-			case m.ReasoningIncomplete && key != "":
+			case m.ReasoningIncomplete && key != "" && replay:
 				// The continuity data of this turn is missing or
 				// unreadable, and this request has to replay it.
 				// Sending the turn without it would be refused by
@@ -326,7 +362,7 @@ func anthropicMessages(messages []Message, model Model, wantsThinking bool) (str
 				return "", nil, fmt.Errorf(
 					"provider: the continuity data of an earlier turn could not be read; " +
 						"the conversation cannot continue with this model")
-			case key != "" && m.ReasoningKey == key:
+			case key != "" && m.ReasoningKey == key && replay:
 				for _, r := range m.Reasoning {
 					switch r.Type {
 					case ReasoningRedacted:
@@ -522,16 +558,16 @@ func (a *AnthropicCompatible) requestBody(messages []Message, model Model, strea
 	// earlier turn are replayed only when this request runs in thinking
 	// mode.
 	//
-	// A Claude model takes the extended-thinking block, and the
-	// Messages API refuses a turn that carries thinking blocks when
-	// the request does not ask for thinking. A DeepSeek model on this
-	// wire takes the thinking toggle with the effort beside it, and
-	// its thinking is on by default when the request says nothing: the
-	// endpoint enables it, so its blocks are replayed either way.
+	// How this request asks for thinking is what says so. A Claude
+	// model takes the extended-thinking block, and the Messages API
+	// refuses a turn that carries thinking blocks when the request does
+	// not ask for thinking. A DeepSeek model on this wire takes the
+	// thinking toggle with the effort beside it, and its thinking is on
+	// by default when the request says nothing: the endpoint enables
+	// it, so its blocks are replayed either way.
 	thinking := anthropicThinkingFor(model)
 	deepSeekThinking, deepSeekEffort := anthropicDeepSeekEffort(model)
-	wantsThinking := thinking != nil || isDeepSeekModel(model.ID)
-	system, conversation, err := anthropicMessages(messages, model, wantsThinking)
+	system, conversation, err := anthropicMessages(messages, model, anthropicThinkingMode(model))
 	if err != nil {
 		return nil, err
 	}
@@ -658,6 +694,10 @@ func (a *AnthropicCompatible) Chat(ctx context.Context, messages []Message, mode
 		// The blocks are named with the protocol they belong to, so
 		// only an adapter whose own key matches will replay them.
 		out.ReasoningKey = ReasoningKey(model.ID, WireAnthropic)
+		// The thinking of the request that produced them travels with
+		// them: a later request has to know how that request asked
+		// for thinking before it decides what to replay.
+		out.Thinking = anthropicThinkingMode(model)
 	}
 	out.Stats.FinishReason = parsed.StopReason
 	out.Stats.OutputLimitHit = parsed.StopReason == "max_tokens"
@@ -956,6 +996,10 @@ func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message
 		// The blocks are named with the protocol they belong to, so
 		// only an adapter whose own key matches will replay them.
 		out.ReasoningKey = ReasoningKey(model.ID, WireAnthropic)
+		// The thinking of the request that produced them travels with
+		// them: a later request has to know how that request asked
+		// for thinking before it decides what to replay.
+		out.Thinking = anthropicThinkingMode(model)
 	}
 	stats.Duration = time.Since(stats.StartedAt)
 	if err := scanner.Err(); err != nil {

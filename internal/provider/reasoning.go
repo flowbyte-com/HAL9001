@@ -95,14 +95,61 @@ func ReasoningKey(modelID, wire string) string {
 	return ""
 }
 
+// The thinking a request asked for.
+//
+// The three states are distinct, and the difference between them is
+// what decides whether the reasoning of an earlier turn is replayed.
+//
+// A request that asks for thinking is in thinking mode. A request that
+// forbids thinking is not, whatever came before. A request that says
+// nothing leaves the question to the provider: Claude thinks only when
+// asked, DeepSeek thinks by default.
+//
+// The state travels with the blocks it belongs to, because the decision
+// a later request has to make depends on how the request that produced
+// them asked for thinking — and on nothing else.
+const (
+	// ThinkingUnset: the request says nothing about thinking.
+	ThinkingUnset = "unset"
+	// ThinkingAsked: the request asks for thinking.
+	ThinkingAsked = "asked"
+	// ThinkingOff: the request forbids thinking.
+	ThinkingOff = "off"
+)
+
 // reasoningPayload is the stored form of continuity data.
 type reasoningPayload struct {
 	// Key names the protocol the blocks belong to.
 	Key string `json:"key"`
 	// Model names the model that produced them.
 	Model string `json:"model,omitempty"`
+	// Thinking says how the request that produced the blocks asked for
+	// thinking: ThinkingAsked, ThinkingUnset or ThinkingOff.
+	//
+	// It is empty for a record written before the field existed. Such a
+	// record says nothing about how its thinking came about, and the
+	// decision that follows from it is the careful one.
+	Thinking string `json:"thinking,omitempty"`
 	// Blocks are the provider's blocks, in the provider's order.
 	Blocks []ReasoningBlock `json:"blocks,omitempty"`
+}
+
+// Continuity is the continuity data of one message, as it is stored.
+//
+// The record is provider-owned: only the provider layer reads it, and
+// only the provider layer writes it.
+type Continuity struct {
+	// Key names the protocol the blocks belong to.
+	Key string
+	// Model names the model that produced them.
+	Model string
+	// Thinking says how the request that produced the blocks asked for
+	// thinking.
+	//
+	// It is empty for a record written before the field existed.
+	Thinking string
+	// Blocks are the provider's blocks, in the provider's order.
+	Blocks []ReasoningBlock
 }
 
 // EncodeReasoning serialises continuity data for the conversation
@@ -111,13 +158,22 @@ type reasoningPayload struct {
 // The record never mentions a provider: the payload is opaque to
 // everything but the provider layer, which is what wrote it.
 //
+// The thinking of the producing request travels with the blocks: a later
+// request has to know how the request that produced them asked for
+// thinking, and that is the one fact it cannot recover on its own.
+//
 // A payload with no key or no blocks is nothing: an empty result means
 // there is no continuity to keep.
-func EncodeReasoning(key, model string, blocks []ReasoningBlock) []byte {
+func EncodeReasoning(key, model, thinking string, blocks []ReasoningBlock) []byte {
 	if key == "" || len(blocks) == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(reasoningPayload{Key: key, Model: model, Blocks: blocks})
+	raw, err := json.Marshal(reasoningPayload{
+		Key:      key,
+		Model:    model,
+		Thinking: thinking,
+		Blocks:   blocks,
+	})
 	if err != nil {
 		return nil
 	}
@@ -149,18 +205,27 @@ func EncodeReasoningKey(key string) []byte {
 // The blocks are empty when the record kept the key but not the data:
 // the data was too large to store, and a request that needs it must
 // not be sent.
-func DecodeReasoning(payload []byte) (key, model string, blocks []ReasoningBlock, ok bool) {
+//
+// The thinking of the producing request is empty for a record written
+// before the field existed: nothing is known about how that request
+// asked for thinking, and nothing is guessed.
+func DecodeReasoning(payload []byte) (Continuity, bool) {
 	if len(payload) == 0 {
-		return "", "", nil, false
+		return Continuity{}, false
 	}
 	var p reasoningPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return "", "", nil, false
+		return Continuity{}, false
 	}
 	if p.Key == "" {
-		return "", "", nil, false
+		return Continuity{}, false
 	}
-	return p.Key, p.Model, p.Blocks, true
+	return Continuity{
+		Key:      p.Key,
+		Model:    p.Model,
+		Thinking: p.Thinking,
+		Blocks:   p.Blocks,
+	}, true
 }
 
 // ReasoningText joins the text of a set of blocks.
@@ -173,6 +238,62 @@ func ReasoningText(blocks []ReasoningBlock) string {
 		b.WriteString(block.Text)
 	}
 	return b.String()
+}
+
+// replaysThinking reports whether a request in this thinking mode
+// replays the reasoning of an earlier turn.
+//
+// The three states are apart on purpose. A request that forbids
+// thinking replays nothing, whatever came before: the provider refuses
+// an unexpected block. A request that asks for thinking replays
+// everything of its own protocol: the provider refuses a continued
+// thinking turn whose blocks are missing.
+//
+// A request that says nothing is the difficult one, and the answer is
+// not HAL's to guess. When the provider is known to think by default —
+// its family says so, or the conversation shows it — the request is in
+// thinking mode and the blocks are replayed. When nothing says so, the
+// provider thinks only when asked, and the blocks stay where they are.
+//
+// An omitted reasoning configuration is never read as "thinking is off":
+// that is the provider's decision, and only the provider's own answer
+// settles it.
+func replaysThinking(mode string, defaultThinking bool) bool {
+	switch mode {
+	case ThinkingOff:
+		return false
+	case ThinkingAsked:
+		return true
+	default:
+		return defaultThinking
+	}
+}
+
+// thinksByDefault reports whether the conversation shows that this
+// protocol's provider thinks when the request says nothing about it.
+//
+// The evidence is a turn that asked for nothing and came back with
+// thinking blocks. Such a turn is only ever recorded when the provider
+// answered with reasoning, so its presence is the answer.
+//
+// Only turns of this protocol count: another family's record says
+// nothing about this provider.
+func thinksByDefault(messages []Message, key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, m := range messages {
+		if m.Role != "assistant" {
+			continue
+		}
+		if m.ReasoningKey != key {
+			continue
+		}
+		if m.Thinking == ThinkingUnset && len(m.Reasoning) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // openAIReasoningBlocks is the continuity data of a plain reasoning

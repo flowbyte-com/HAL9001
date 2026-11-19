@@ -34,46 +34,57 @@ func TestTheVisibilityDoesNotChangeTheProtocol(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var reference []map[string]any
-	for _, show := range []bool{false, true} {
-		bodies = nil
-		a := effortApp(t, srv.URL, config.ProtocolAnthropic,
-			config.ModelRecord{ID: "deepseek-flash", Effort: "high"})
-		a.stored.ShowThinking = show
-		if _, err := a.eng.RespondStream(context.Background(), "hi", nil); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := a.eng.RespondStream(context.Background(), "and again", nil); err != nil {
-			t.Fatal(err)
-		}
-		if len(bodies) != 2 {
-			t.Fatalf("the provider was asked %d times", len(bodies))
-		}
-		// The second turn carries the thinking of the first one back.
-		conversation, _ := bodies[1]["messages"].([]any)
-		var blocks []any
-		for _, raw := range conversation {
-			message, _ := raw.(map[string]any)
-			if message["role"] != "assistant" {
-				continue
+	// The native DeepSeek model, and the Claude alias the same endpoint
+	// serves: the visibility is the operator's, and it changes nothing
+	// the provider sees in either case.
+	for _, record := range []config.ModelRecord{
+		{ID: "deepseek-flash", Effort: "high"},
+		{ID: "claude-sonnet-4-5"},
+	} {
+		t.Run(record.ID, func(t *testing.T) {
+			var reference []map[string]any
+			for _, show := range []bool{false, true} {
+				bodies = nil
+				a := effortApp(t, srv.URL, config.ProtocolAnthropic, record)
+				a.stored.ShowThinking = show
+				if _, err := a.eng.RespondStream(context.Background(), "hi", nil); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := a.eng.RespondStream(context.Background(), "and again", nil); err != nil {
+					t.Fatal(err)
+				}
+				if len(bodies) != 2 {
+					t.Fatalf("the provider was asked %d times", len(bodies))
+				}
+				// The second turn carries the thinking of the first one
+				// back.
+				conversation, _ := bodies[1]["messages"].([]any)
+				var blocks []any
+				for _, raw := range conversation {
+					message, _ := raw.(map[string]any)
+					if message["role"] != "assistant" {
+						continue
+					}
+					blocks, _ = message["content"].([]any)
+					break
+				}
+				if len(blocks) != 2 {
+					t.Fatalf("the replayed turn = %+v", conversation)
+				}
+				block, _ := blocks[0].(map[string]any)
+				if block["type"] != "thinking" || block["thinking"] != "the model weighed it" {
+					t.Errorf("the replayed block = %+v", block)
+				}
+				if reference == nil {
+					reference = protocolOf(bodies)
+					continue
+				}
+				if !reflect.DeepEqual(reference, protocolOf(bodies)) {
+					t.Errorf("the visibility changed the protocol:\n%+v\n%+v",
+						reference, protocolOf(bodies))
+				}
 			}
-			blocks, _ = message["content"].([]any)
-			break
-		}
-		if len(blocks) != 2 {
-			t.Fatalf("the replayed turn = %+v", conversation)
-		}
-		block, _ := blocks[0].(map[string]any)
-		if block["type"] != "thinking" || block["thinking"] != "the model weighed it" {
-			t.Errorf("the replayed block = %+v", block)
-		}
-		if reference == nil {
-			reference = protocolOf(bodies)
-			continue
-		}
-		if !reflect.DeepEqual(reference, protocolOf(bodies)) {
-			t.Errorf("the visibility changed the protocol:\n%+v\n%+v", reference, protocolOf(bodies))
-		}
+		})
 	}
 }
 

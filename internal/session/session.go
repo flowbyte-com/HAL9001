@@ -69,8 +69,23 @@ type Message struct {
 
 // ProtocolVersion is the explicit schema version of the protocol state.
 //
-// A record with any other version is ignored rather than guessed at.
-const ProtocolVersion = 1
+// Version 2 keeps the thinking of the request that produced the blocks
+// with the blocks themselves: a later request decides what to replay
+// from that fact.
+//
+// A record of any other version is ignored rather than guessed at, with
+// one exception: the version before it is read, and read as what it is —
+// a record that says nothing about how its thinking came about.
+const ProtocolVersion = 2
+
+// ProtocolVersionLegacy is the version before the thinking of the
+// producing request was kept.
+//
+// Its records are still read: they hold the blocks the provider sent,
+// and a request that needs them is refused rather than sent without
+// them. What they do not hold is how the request that produced them
+// asked for thinking, and that is not guessed at.
+const ProtocolVersionLegacy = 1
 
 // MaxProtocolBytes bounds the continuity data one message may carry.
 //

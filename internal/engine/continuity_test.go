@@ -81,15 +81,15 @@ func TestTheReasoningIsKeptWithTheAnswer(t *testing.T) {
 	if stored.Version != session.ProtocolVersion {
 		t.Errorf("the record version = %d", stored.Version)
 	}
-	key, _, blocks, ok := provider.DecodeReasoning(stored.Payload)
+	continuity, ok := provider.DecodeReasoning(stored.Payload)
 	if !ok {
 		t.Fatal("the record was not read back")
 	}
-	if key != provider.ReasoningKey("deepseek-reasoner", provider.WireOpenAI) {
-		t.Errorf("the record names %q", key)
+	if continuity.Key != provider.ReasoningKey("deepseek-reasoner", provider.WireOpenAI) {
+		t.Errorf("the record names %q", continuity.Key)
 	}
-	if len(blocks) != 1 || blocks[0].Text != "the model weighed it" {
-		t.Errorf("the blocks = %+v", blocks)
+	if len(continuity.Blocks) != 1 || continuity.Blocks[0].Text != "the model weighed it" {
+		t.Errorf("the blocks = %+v", continuity.Blocks)
 	}
 	// The reasoning is not conversation content: it is not in the text
 	// of the answer.
@@ -328,6 +328,7 @@ func TestARecordOfAnotherVersionRefusesTheRequest(t *testing.T) {
 	record := session.NewProtocol(provider.EncodeReasoning(
 		provider.ReasoningKey("deepseek-reasoner", provider.WireOpenAI),
 		"deepseek-reasoner",
+		provider.ThinkingAsked,
 		[]provider.ReasoningBlock{{Type: provider.ReasoningPlain, Text: "the thought"}}))
 	record.Version = session.ProtocolVersion + 1
 	if _, err := st.AppendTurn(session.RoleAssistant, "the answer", session.Turn{
@@ -373,7 +374,7 @@ func TestTheCompactionTakesTheReasoningWithTheMessage(t *testing.T) {
 	history := []session.Message{
 		{Role: session.RoleUser, Content: "hi"},
 		{Role: session.RoleAssistant, Content: "the answer", Protocol: session.NewProtocol(
-			provider.EncodeReasoning(key, "deepseek-reasoner", []provider.ReasoningBlock{
+			provider.EncodeReasoning(key, "deepseek-reasoner", provider.ThinkingAsked, []provider.ReasoningBlock{
 				{Type: provider.ReasoningPlain, Text: "the model weighed it"},
 			}))},
 		{Role: session.RoleUser, Content: "and now the other one"},

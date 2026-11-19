@@ -53,15 +53,15 @@ func TestTheMessagesWireContinuitySurvivesTheSession(t *testing.T) {
 	if stored == nil {
 		t.Fatal("the answer carries no continuity data")
 	}
-	key, _, blocks, ok := provider.DecodeReasoning(stored.Payload)
+	continuity, ok := provider.DecodeReasoning(stored.Payload)
 	if !ok {
 		t.Fatal("the record was not read back")
 	}
-	if key != provider.ReasoningKey("deepseek-flash", provider.WireAnthropic) {
-		t.Errorf("the record names %q, want the Messages-wire protocol of DeepSeek", key)
+	if continuity.Key != provider.ReasoningKey("deepseek-flash", provider.WireAnthropic) {
+		t.Errorf("the record names %q, want the Messages-wire protocol of DeepSeek", continuity.Key)
 	}
-	if len(blocks) != 1 || blocks[0].Text != "the model weighed the answer too" {
-		t.Fatalf("the blocks = %+v", blocks)
+	if len(continuity.Blocks) != 1 || continuity.Blocks[0].Text != "the model weighed the answer too" {
+		t.Fatalf("the blocks = %+v", continuity.Blocks)
 	}
 
 	// A new session over the same store: the conversation is restored,

@@ -48,6 +48,16 @@ type Message struct {
 	// An adapter that would have to replay it refuses the request
 	// rather than sending it without the data the provider demands.
 	ReasoningIncomplete bool `json:"-"`
+	// Thinking says how the request that produced this message's blocks
+	// asked for thinking: ThinkingAsked, ThinkingUnset or ThinkingOff.
+	//
+	// It is the provenance the replay decision needs. A request that
+	// said nothing about thinking and came back with thinking anyway
+	// says that the provider thinks by default, and a later request
+	// has to know that before it decides what to replay.
+	//
+	// It is empty for a record written before the field existed.
+	Thinking string `json:"-"`
 
 	// Reference marks a message that carries lower-trust reference
 	// data: historical material that stands in for something else, and
@@ -115,7 +125,13 @@ type Response struct {
 	//
 	// The adapter that captured them names them, and only an adapter
 	// whose own key matches replays them.
-	ReasoningKey string     `json:"-"`
+	ReasoningKey string `json:"-"`
+	// Thinking says how the request that produced these blocks asked
+	// for thinking: ThinkingAsked, ThinkingUnset or ThinkingOff.
+	//
+	// It travels with the blocks into the conversation record, because
+	// the replay decision of a later request depends on it.
+	Thinking     string     `json:"-"`
 	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
 	FinishReason string     `json:"finish_reason,omitempty"`
 	// Stats is content-free telemetry for the turn: counts, durations and
