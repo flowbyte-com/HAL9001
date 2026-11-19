@@ -70,6 +70,10 @@ const (
 // match. A DeepSeek reasoning field means nothing to the Messages API,
 // and a signed thinking block means nothing to the OpenAI dialect, so
 // data from one family is never sent to another.
+//
+// A family that speaks the same wire is not enough either: DeepSeek's
+// Anthropic-compatible endpoint keeps its own continuity, separate from
+// Claude's on the same wire and from DeepSeek's on the OpenAI dialect.
 func ReasoningKey(modelID, wire string) string {
 	family := matchEffortFamily(modelID)
 	if family == nil {
@@ -78,6 +82,13 @@ func ReasoningKey(modelID, wire string) string {
 	switch {
 	case wire == WireAnthropic && family.anthropicWire:
 		return "anthropic/thinking"
+	case wire == WireAnthropic && family.prefix == "deepseek":
+		// DeepSeek's Anthropic-compatible endpoint keeps continuity of
+		// its own: its thinking blocks are not Claude's, and they are
+		// not the reasoning_content of the OpenAI dialect either. The
+		// key keeps the three apart, so no block of one is ever
+		// replayed as a block of another.
+		return "anthropic/deepseek-thinking"
 	case wire == WireOpenAI && family.prefix == "deepseek":
 		return "openai/reasoning-content"
 	}

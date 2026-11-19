@@ -277,15 +277,20 @@ type anthropicDelta struct {
 // role are merged, because the API expects alternating roles.
 //
 // The reasoning blocks of an assistant turn are replayed with it, and
-// only when this request asks for thinking: the Messages API refuses a
-// continued thinking turn whose blocks are missing, and it refuses an
-// unexpected block when thinking is off. The blocks are the provider's
-// own, with the provider's own signature: they are never regenerated.
-func anthropicMessages(messages []Message, model Model, thinking bool) (string, []anthropicMessage, error) {
+// only when this request runs in thinking mode: the Messages API
+// refuses a continued thinking turn whose blocks are missing, and it
+// refuses an unexpected block when thinking is off. The blocks are the
+// provider's own, with the provider's own signature: they are never
+// regenerated.
+//
+// The blocks are the provider's own shape. A DeepSeek thinking block
+// carries what DeepSeek sent — its text, and a signature only if
+// DeepSeek sent one — and nothing of Claude's is assumed about it.
+func anthropicMessages(messages []Message, model Model, wantsThinking bool) (string, []anthropicMessage, error) {
 	var systemParts []string
 	var out []anthropicMessage
 	key := ""
-	if thinking {
+	if wantsThinking {
 		key = ReasoningKey(model.ID, WireAnthropic)
 	}
 	appendMessage := func(role string, blocks []anthropicBlock) {
@@ -306,29 +311,33 @@ func anthropicMessages(messages []Message, model Model, thinking bool) (string, 
 			}
 		case "assistant":
 			var blocks []anthropicBlock
-			if key != "" && m.ReasoningKey == key {
-				switch {
-				case len(m.Reasoning) > 0:
-					for _, r := range m.Reasoning {
-						switch r.Type {
-						case ReasoningRedacted:
-							blocks = append(blocks, anthropicBlock{Type: ReasoningRedacted, Data: r.Data})
-						default:
-							blocks = append(blocks, anthropicBlock{
-								Type:      ReasoningThinking,
-								Thinking:  r.Text,
-								Signature: r.Signature,
-							})
-						}
+			// The continuity data of another protocol is not ours to
+			// replay, and its state is not ours to judge.
+			foreign := key != "" && m.ReasoningKey != "" && m.ReasoningKey != key
+			switch {
+			case foreign:
+				// Nothing of it is ours: the turn goes out as it was.
+			case m.ReasoningIncomplete && key != "":
+				// The continuity data of this turn is missing or
+				// unreadable, and this request has to replay it.
+				// Sending the turn without it would be refused by
+				// the provider, so the request is refused here,
+				// with the reason.
+				return "", nil, fmt.Errorf(
+					"provider: the continuity data of an earlier turn could not be read; " +
+						"the conversation cannot continue with this model")
+			case key != "" && m.ReasoningKey == key:
+				for _, r := range m.Reasoning {
+					switch r.Type {
+					case ReasoningRedacted:
+						blocks = append(blocks, anthropicBlock{Type: ReasoningRedacted, Data: r.Data})
+					default:
+						blocks = append(blocks, anthropicBlock{
+							Type:      ReasoningThinking,
+							Thinking:  r.Text,
+							Signature: r.Signature,
+						})
 					}
-				case m.ReasoningIncomplete:
-					// The reasoning of this turn was too large to
-					// keep. Sending the turn without its blocks
-					// would be refused by the provider, so the
-					// request is refused here, with the reason.
-					return "", nil, fmt.Errorf(
-						"provider: the reasoning of an earlier turn was too large to keep; " +
-							"the conversation cannot continue with this model")
 				}
 			}
 			if text := m.Content; text != "" {
@@ -510,11 +519,19 @@ func anthropicDeepSeekEffort(model Model) (thinking *anthropicThinking, effort s
 // requestBody builds one request, optionally offering functions.
 func (a *AnthropicCompatible) requestBody(messages []Message, model Model, stream bool, tools []Tool) ([]byte, error) {
 	// The thinking control is decided first: the reasoning blocks of an
-	// earlier turn are replayed only when this request asks for
-	// thinking.
+	// earlier turn are replayed only when this request runs in thinking
+	// mode.
+	//
+	// A Claude model takes the extended-thinking block, and the
+	// Messages API refuses a turn that carries thinking blocks when
+	// the request does not ask for thinking. A DeepSeek model on this
+	// wire takes the thinking toggle with the effort beside it, and
+	// its thinking is on by default when the request says nothing: the
+	// endpoint enables it, so its blocks are replayed either way.
 	thinking := anthropicThinkingFor(model)
 	deepSeekThinking, deepSeekEffort := anthropicDeepSeekEffort(model)
-	system, conversation, err := anthropicMessages(messages, model, thinking != nil)
+	wantsThinking := thinking != nil || isDeepSeekModel(model.ID)
+	system, conversation, err := anthropicMessages(messages, model, wantsThinking)
 	if err != nil {
 		return nil, err
 	}

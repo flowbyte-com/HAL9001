@@ -357,7 +357,7 @@ func TestATurnWithoutItsReasoningIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("the request was sent without the reasoning it needed")
 	}
-	if !strings.Contains(err.Error(), "too large to keep") {
+	if !strings.Contains(err.Error(), "could not be read") {
 		t.Errorf("error = %v", err)
 	}
 	if len(srv.requests) != 0 {

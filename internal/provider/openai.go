@@ -236,20 +236,30 @@ func openAIReasoningContent(model Model, tools []Tool, m Message) (*string, erro
 		return nil, nil
 	}
 	key := ReasoningKey(model.ID, WireOpenAI)
-	if key == "" || m.ReasoningKey != key {
+	if key == "" {
+		// This protocol keeps no continuity: there is nothing to
+		// replay and nothing to refuse.
 		return nil, nil
 	}
-	switch {
-	case len(m.Reasoning) > 0:
+	// The continuity data of another protocol is not ours to replay,
+	// and its state is not ours to judge.
+	if m.ReasoningKey != "" && m.ReasoningKey != key {
+		return nil, nil
+	}
+	if m.ReasoningIncomplete {
+		// The continuity data of this turn is missing or unreadable.
+		// Sending the turn without it would be refused by the
+		// provider, so the request is refused here, with the reason.
+		return nil, fmt.Errorf(
+			"provider: the continuity data of an earlier turn could not be read; " +
+				"the conversation cannot continue with tools")
+	}
+	if m.ReasoningKey != key {
+		return nil, nil
+	}
+	if len(m.Reasoning) > 0 {
 		text := ReasoningText(m.Reasoning)
 		return &text, nil
-	case m.ReasoningIncomplete:
-		// The reasoning of this turn was too large to keep. Sending
-		// the turn without it would be refused by the provider, so the
-		// request is refused here, with the reason.
-		return nil, fmt.Errorf(
-			"provider: the reasoning of an earlier turn was too large to keep; " +
-				"the conversation cannot continue with tools")
 	}
 	return nil, nil
 }

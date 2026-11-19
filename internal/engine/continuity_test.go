@@ -261,6 +261,106 @@ func TestAnIncompleteRecordRefusesTheRequest(t *testing.T) {
 	}
 }
 
+// A record whose payload cannot be read is incomplete: the request that
+// would need the data is refused, and nothing incomplete is sent.
+//
+// The record is opaque here, so the engine cannot know what it held.
+// It knows only that it cannot be read, and a record it cannot read is
+// a record it cannot send: the request that needs it is refused.
+func TestADamagedRecordRefusesTheRequest(t *testing.T) {
+	for _, payload := range []string{
+		// A shape the provider layer does not know.
+		`{"unexpected":"shape"}`,
+		// Not even an object.
+		`["not","an","object"]`,
+	} {
+		dir := t.TempDir()
+		st, err := session.Open(dir, "chat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AppendTurn(session.RoleUser, "hi", session.Turn{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AppendTurn(session.RoleAssistant, "the answer", session.Turn{
+			Protocol: session.NewProtocol([]byte(payload)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		restored, err := session.Open(dir, "chat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := &reasoningProvider{reply: provider.Response{Content: "the answer"}}
+		eng := New(restored, p, provider.Model{ID: "deepseek-reasoner"})
+		history, err := restored.History()
+		if err != nil {
+			t.Fatal(err)
+		}
+		messages := eng.requestMessages(history, "", "", nil)
+		assistant := provider.Message{}
+		for _, m := range messages {
+			if m.Role == "assistant" {
+				assistant = m
+			}
+		}
+		if !assistant.ReasoningIncomplete {
+			t.Fatalf("the damaged record %s was not marked: %+v", payload, assistant)
+		}
+		if len(assistant.Reasoning) != 0 {
+			t.Errorf("the damaged record carries data it does not have: %+v", assistant.Reasoning)
+		}
+	}
+}
+
+// A record of another version is incomplete as well: the engine cannot
+// read a format it does not know, and it does not guess at one.
+func TestARecordOfAnotherVersionRefusesTheRequest(t *testing.T) {
+	dir := t.TempDir()
+	st, err := session.Open(dir, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendTurn(session.RoleUser, "hi", session.Turn{}); err != nil {
+		t.Fatal(err)
+	}
+	record := session.NewProtocol(provider.EncodeReasoning(
+		provider.ReasoningKey("deepseek-reasoner", provider.WireOpenAI),
+		"deepseek-reasoner",
+		[]provider.ReasoningBlock{{Type: provider.ReasoningPlain, Text: "the thought"}}))
+	record.Version = session.ProtocolVersion + 1
+	if _, err := st.AppendTurn(session.RoleAssistant, "the answer", session.Turn{
+		Protocol: record,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := session.Open(dir, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &reasoningProvider{reply: provider.Response{Content: "the answer"}}
+	eng := New(restored, p, provider.Model{ID: "deepseek-reasoner"})
+	history, err := restored.History()
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := eng.requestMessages(history, "", "", nil)
+	assistant := provider.Message{}
+	for _, m := range messages {
+		if m.Role == "assistant" {
+			assistant = m
+		}
+	}
+	if !assistant.ReasoningIncomplete {
+		t.Fatalf("the record of another version was not marked: %+v", assistant)
+	}
+	if len(assistant.Reasoning) != 0 {
+		t.Errorf("the record of another version carries data: %+v", assistant.Reasoning)
+	}
+}
+
 // The compaction takes the continuity data away with the message it
 // belongs to: the summary replaces the exchange, and the exchange's
 // protocol data goes with it.

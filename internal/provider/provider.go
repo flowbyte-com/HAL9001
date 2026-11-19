@@ -43,8 +43,10 @@ type Message struct {
 	// replays them only when the key is its own.
 	ReasoningKey string `json:"-"`
 	// ReasoningIncomplete reports that the continuity data of this
-	// message was too large to keep. An adapter that would have to
-	// replay it refuses the request rather than sending it without.
+	// message is missing or could not be read.
+	//
+	// An adapter that would have to replay it refuses the request
+	// rather than sending it without the data the provider demands.
 	ReasoningIncomplete bool `json:"-"`
 
 	// Reference marks a message that carries lower-trust reference

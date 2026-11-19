@@ -384,8 +384,16 @@ func (e *Engine) requestMessages(history []session.Message, guidance string, exp
 		// The provider's own continuity data travels with the message it
 		// belongs to: a restored conversation replays it, and a
 		// compacted one takes it away with the message.
-		if msg.Protocol != nil && msg.Protocol.Version == session.ProtocolVersion {
-			if key, _, blocks, ok := provider.DecodeReasoning(msg.Protocol.Payload); ok {
+		if msg.Protocol != nil {
+			key, _, blocks, ok := provider.DecodeReasoning(msg.Protocol.Payload)
+			if !ok || msg.Protocol.Version != session.ProtocolVersion {
+				// The record could not be read: it is of another
+				// version, or its payload is damaged. The provider
+				// would refuse a request that is missing it, so the
+				// message is marked and the request is refused
+				// rather than sent without it.
+				wire.ReasoningIncomplete = true
+			} else {
 				wire.ReasoningKey = key
 				wire.Reasoning = blocks
 				// A record that kept the key but not the data is
