@@ -54,6 +54,24 @@ type OpenAICompatible struct {
 	IdleTimeout time.Duration
 	// TurnTimeout bounds one whole turn. Zero uses DefaultTurnTimeout.
 	TurnTimeout time.Duration
+	// CredentialProfile names the credential the endpoint uses without
+	// naming the credential itself: it is the name of the environment
+	// variable that holds it, or a marker for a credential the
+	// configuration carries itself.
+	//
+	// It is part of the endpoint's identity. Two accounts at one
+	// endpoint are two origins, and the reasoning of one is never sent
+	// to the other.
+	CredentialProfile string
+}
+
+// origin is the reasoning origin of this endpoint.
+//
+// The same endpoint always yields the same origin, and the origin holds
+// nothing secret: it is a fingerprint of the wire, the address and the
+// credential profile.
+func (o *OpenAICompatible) origin() Origin {
+	return OriginFor(WireOpenAI, o.Endpoint, o.CredentialProfile)
 }
 
 // Name implements Provider.
@@ -171,11 +189,18 @@ func (o *OpenAICompatible) requestBody(messages []Message, model Model, stream b
 
 // requestBodyTools builds one request, optionally offering functions.
 func (o *OpenAICompatible) requestBodyTools(messages []Message, model Model, stream bool, tools []Tool) ([]byte, error) {
+	// The reasoning of a turn belongs to the endpoint that produced it.
+	// A record of another endpoint is never sent to this one, whatever
+	// its protocol is: the request is refused here, before anything
+	// goes out.
+	if err := checkOrigin(messages, o.origin(), endpointLabel(o.Endpoint)); err != nil {
+		return nil, err
+	}
 	out := openAIRequest{Model: model.ID, Stream: stream}
 	for _, m := range messages {
 		wire := openAIMessage{Role: m.Role, Content: m.Content,
 			ToolCallID: m.ToolCallID, Name: m.Name}
-		reasoning, err := openAIReasoningContent(model, tools, m)
+		reasoning, err := o.reasoningContent(model, tools, m)
 		if err != nil {
 			return nil, err
 		}
@@ -234,7 +259,7 @@ func openAIThinkingMode(model Model) string {
 	return ThinkingUnset
 }
 
-// openAIReasoningContent returns the reasoning an assistant message
+// reasoningContent returns the reasoning an assistant message
 // must carry back.
 //
 // DeepSeek's Thinking Mode requires the reasoning_content of a prior
@@ -250,7 +275,11 @@ func openAIThinkingMode(model Model) string {
 // The blocks are replayed only when they are this protocol's own: data
 // from another family is never sent to a dialect that does not know
 // it.
-func openAIReasoningContent(model Model, tools []Tool, m Message) (*string, error) {
+//
+// The origin of the record is checked before the request is built: the
+// reasoning belongs to the endpoint that produced it, and a record of
+// another endpoint is never sent to this one.
+func (o *OpenAICompatible) reasoningContent(model Model, tools []Tool, m Message) (*string, error) {
 	if len(tools) == 0 || m.Role != "assistant" {
 		return nil, nil
 	}
@@ -425,6 +454,7 @@ func (o *OpenAICompatible) Chat(ctx context.Context, messages []Message, model M
 			out.ReasoningBlocks = openAIReasoningBlocks(out.Reasoning)
 			out.ReasoningKey = ReasoningKey(model.ID, WireOpenAI)
 			out.Thinking = openAIThinkingMode(model)
+			out.Origin = string(o.origin())
 		}
 		out.ToolCalls = toolCallsFrom(parsed.Choices[0].Message.ToolCalls)
 	}
@@ -627,6 +657,7 @@ func (o *OpenAICompatible) chatStream(ctx context.Context, messages []Message, m
 	if len(out.ReasoningBlocks) > 0 {
 		out.ReasoningKey = ReasoningKey(model.ID, WireOpenAI)
 		out.Thinking = openAIThinkingMode(model)
+		out.Origin = string(o.origin())
 	}
 	stats.Duration = time.Since(stats.StartedAt)
 	if err := scanner.Err(); err != nil {

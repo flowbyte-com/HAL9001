@@ -642,3 +642,25 @@ func (f FileConfig) CredentialValue() string {
 	}
 	return raw
 }
+
+// CredentialProfile names the credential of a configuration of the first
+// version.
+//
+// It follows the same rule the endpoint's own profile follows, and the
+// migration's: a reference names the variable that holds the
+// credential, a literal is a credential the configuration carries
+// itself, and a configuration that names neither uses the global
+// variable. A conversation that survives the migration therefore keeps
+// its origin.
+//
+// The secret is never part of the profile.
+func (f FileConfig) CredentialProfile() string {
+	raw := strings.TrimSpace(f.APIKey)
+	if ref := envReference.FindStringSubmatch(raw); ref != nil {
+		return "env:" + ref[1]
+	}
+	if raw != "" {
+		return "inline"
+	}
+	return "env:" + EnvAPIKey
+}

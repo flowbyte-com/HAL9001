@@ -126,7 +126,7 @@ func TestDeepSeekReplaysItsReasoningOnTheToolRequest(t *testing.T) {
 	// reasoning.
 	follow := append(append([]Message(nil), messages...),
 		Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks},
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin},
 		Message{Role: "tool", ToolCallID: "call_1", Name: "read", Content: "the file"},
 	)
 	if _, err := p.ChatStreamTools(context.Background(), follow, Model{ID: "deepseek-flash"}, tools, nil); err != nil {
@@ -158,7 +158,7 @@ func TestDeepSeekReplaysItsReasoningAcrossUserTurns(t *testing.T) {
 	later := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks},
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin},
 		{Role: "tool", ToolCallID: "call_1", Name: "read", Content: "the file"},
 		{Role: "user", Content: "and now the other one"},
 	}
@@ -217,6 +217,7 @@ func TestDeepSeekReplaysNoReasoningWithoutTools(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello",
 			ReasoningKey: ReasoningKey("deepseek-flash", WireOpenAI),
+			Origin:       string(p.origin()),
 			Reasoning:    []ReasoningBlock{{Type: ReasoningPlain, Text: "the model weighed it"}}},
 	}
 	if _, err := p.ChatStream(context.Background(), messages, Model{ID: "deepseek-flash"}, nil); err != nil {
@@ -242,6 +243,7 @@ func TestReasoningOfAnotherProtocolIsNeverReplayed(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello",
 			ReasoningKey: "anthropic/thinking",
+			Origin:       string(p.origin()),
 			Reasoning:    []ReasoningBlock{{Type: ReasoningThinking, Text: "signed", Signature: "sig"}}},
 	}
 	if _, err := p.ChatStreamTools(context.Background(), messages, Model{ID: "deepseek-flash"}, tools, nil); err != nil {
@@ -268,6 +270,7 @@ func TestTheReasoningOfOneModelIsNotSentToAnother(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello",
 			ReasoningKey: ReasoningKey("deepseek-flash", WireOpenAI),
+			Origin:       string(p.origin()),
 			Reasoning:    []ReasoningBlock{{Type: ReasoningPlain, Text: "the model weighed it"}}},
 	}
 	// Another model of the same wire, and another protocol.
@@ -309,7 +312,7 @@ func TestTheReasoningSurvivesATurnWithSeveralTools(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks},
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin},
 		{Role: "tool", ToolCallID: "call_1", Name: "read", Content: "the file"},
 		{Role: "tool", ToolCallID: "call_2", Name: "list", Content: "the listing"},
 	}
@@ -373,13 +376,14 @@ func TestClaudeReplaysItsSignedThinkingWithTheToolResult(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := &AnthropicCompatible{Endpoint: ts.URL, ThinkingDefault: ThinkingDefaultOff}
 	model := Model{ID: "claude-sonnet-4-5", Effort: "high"}
 	tools := []Tool{{Name: "read"}}
 	messages := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: "reading it",
 			ReasoningKey: ReasoningKey(model.ID, WireAnthropic),
+			Origin:       string(a.origin()),
 			Reasoning: []ReasoningBlock{
 				{Type: ReasoningThinking, Text: "the model weighed it", Signature: "sig-abc"},
 			}},
@@ -434,12 +438,13 @@ func TestClaudeKeepsRedactedThinking(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := &AnthropicCompatible{Endpoint: ts.URL, ThinkingDefault: ThinkingDefaultOff}
 	model := Model{ID: "claude-sonnet-4-5", Effort: "high"}
 	messages := []Message{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello",
 			ReasoningKey: ReasoningKey(model.ID, WireAnthropic),
+			Origin:       string(a.origin()),
 			Reasoning: []ReasoningBlock{
 				{Type: ReasoningRedacted, Data: "encrypted-payload"},
 			}},
@@ -472,12 +477,13 @@ func TestClaudeReplaysNoThinkingWhenThinkingIsOff(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := &AnthropicCompatible{Endpoint: ts.URL, ThinkingDefault: ThinkingDefaultOff}
 	model := Model{ID: "claude-sonnet-4-5"}
 	messages := []Message{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello",
 			ReasoningKey: ReasoningKey(model.ID, WireAnthropic),
+			Origin:       string(a.origin()),
 			Reasoning: []ReasoningBlock{
 				{Type: ReasoningThinking, Text: "the model weighed it", Signature: "sig-abc"},
 			}},
@@ -634,7 +640,12 @@ func TestTheContinuityRecordCarriesTheProvidersOwnBlocks(t *testing.T) {
 		{Type: ReasoningThinking, Text: "the model weighed it", Signature: "sig-abc"},
 		{Type: ReasoningRedacted, Data: "encrypted"},
 	}
-	payload := EncodeReasoning("anthropic/thinking", "claude-sonnet-4-5", ThinkingAsked, blocks)
+	payload := EncodeReasoning(Continuity{
+		Key:      "anthropic/thinking",
+		Model:    "claude-sonnet-4-5",
+		Thinking: ThinkingAsked,
+		Blocks:   blocks,
+	})
 	if len(payload) == 0 {
 		t.Fatal("nothing was encoded")
 	}

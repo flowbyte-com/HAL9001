@@ -188,6 +188,22 @@ func (e *anthropicEndpoint) check(body map[string]any, mode string) string {
 	return ""
 }
 
+// adapter builds the adapter this mock is reached through.
+//
+// The mock says which behaviour it has, and the adapter is told. What
+// HAL knows about an endpoint comes from the endpoint, never from the
+// model identifier: the same Claude name is a Claude model on one
+// endpoint and an alias on another.
+func (e *anthropicEndpoint) adapter(ts *httptest.Server) *AnthropicCompatible {
+	a := &AnthropicCompatible{Endpoint: ts.URL}
+	if e.deepSeek {
+		a.ThinkingDefault = ThinkingDefaultOn
+	} else {
+		a.ThinkingDefault = ThinkingDefaultOff
+	}
+	return a
+}
+
 // last returns the request the endpoint received last.
 func (e *anthropicEndpoint) last() map[string]any {
 	e.mu.Lock()
@@ -294,7 +310,7 @@ func TestTheMessagesConfigurations(t *testing.T) {
 			ts := httptest.NewServer(srv)
 			defer ts.Close()
 
-			a := &AnthropicCompatible{Endpoint: ts.URL}
+			a := srv.adapter(ts)
 			tools := []Tool{{Name: "read"}}
 			resp, err := a.ChatStreamTools(context.Background(),
 				[]Message{{Role: "user", Content: "read the file"}},
@@ -313,7 +329,7 @@ func TestTheMessagesConfigurations(t *testing.T) {
 			follow := []Message{
 				{Role: "user", Content: "read the file"},
 				{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-					ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks,
+					ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin,
 					Thinking: resp.Thinking},
 				{Role: "tool", ToolCallID: "call_read", Name: "read", Content: "the file"},
 			}
@@ -363,7 +379,7 @@ func TestTheAliasWithNoEffortSaysNothingAndIsAnsweredWithThinking(t *testing.T) 
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	resp, err := a.ChatStreamTools(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
 		Model{ID: "claude-sonnet-4-5"}, []Tool{{Name: "read"}}, nil)
@@ -390,7 +406,7 @@ func TestTheEndpointRefusesATurnWithoutItsThinking(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	messages := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: "reading it",
@@ -417,14 +433,16 @@ func TestTheEndpointRefusesATurnWithoutItsThinking(t *testing.T) {
 // unexpected thinking block, so a request that says "no thinking" must
 // not carry one.
 func TestARequestThatForbidsThinkingReplaysNothing(t *testing.T) {
+	a := &AnthropicCompatible{Endpoint: "https://endpoint.test/anthropic"}
 	key := ReasoningKey("claude-sonnet-4-5", WireAnthropic)
 	messages := []Message{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "the answer",
 			ReasoningKey: key,
+			Origin:       string(a.origin()),
 			Reasoning:    []ReasoningBlock{{Type: ReasoningThinking, Text: "it", Signature: "sig"}}},
 	}
-	_, conversation, err := anthropicMessages(messages,
+	_, conversation, err := a.anthropicMessages(messages,
 		Model{ID: "claude-sonnet-4-5"}, ThinkingOff)
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +454,7 @@ func TestARequestThatForbidsThinkingReplaysNothing(t *testing.T) {
 	}
 
 	// A request that asks for thinking replays it, signature and all.
-	_, conversation, err = anthropicMessages(messages,
+	_, conversation, err = a.anthropicMessages(messages,
 		Model{ID: "claude-sonnet-4-5"}, ThinkingAsked)
 	if err != nil {
 		t.Fatal(err)
@@ -462,14 +480,16 @@ func TestARequestThatForbidsThinkingReplaysNothing(t *testing.T) {
 // provider thinks only when asked, so a request that says nothing
 // replays nothing.
 func TestARecordWithoutThinkingIsTreatedWithCare(t *testing.T) {
+	a := &AnthropicCompatible{Endpoint: "https://endpoint.test/anthropic"}
 	key := ReasoningKey("claude-sonnet-4-5", WireAnthropic)
 	messages := []Message{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "the answer",
 			ReasoningKey: key,
+			Origin:       string(a.origin()),
 			Reasoning:    []ReasoningBlock{{Type: ReasoningThinking, Text: "it"}}},
 	}
-	_, conversation, err := anthropicMessages(messages,
+	_, conversation, err := a.anthropicMessages(messages,
 		Model{ID: "claude-sonnet-4-5"}, ThinkingUnset)
 	if err != nil {
 		t.Fatal(err)
@@ -488,7 +508,7 @@ func TestTheAliasSurvivesSeveralContinuations(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}, {Name: "list"}}
 	model := Model{ID: "claude-sonnet-4-5"}
 	messages := []Message{{Role: "user", Content: "read the file"}}
@@ -499,7 +519,7 @@ func TestTheAliasSurvivesSeveralContinuations(t *testing.T) {
 		}
 		messages = append(messages, Message{
 			Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks,
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin,
 			Thinking: resp.Thinking,
 		})
 		for _, call := range resp.ToolCalls {
@@ -546,7 +566,7 @@ func TestTheAliasKeepsTheProvidersOwnBlocks(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	resp, err := a.ChatStreamTools(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
 		Model{ID: "claude-sonnet-4-5"}, []Tool{{Name: "read"}}, nil)
@@ -556,7 +576,7 @@ func TestTheAliasKeepsTheProvidersOwnBlocks(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks,
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin,
 			Thinking: resp.Thinking},
 		{Role: "tool", ToolCallID: "call_read", Name: "read", Content: "the file"},
 	}
@@ -582,7 +602,7 @@ func TestTheAliasCapturesTheWholeAnswer(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	resp, err := a.Chat(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
 		Model{ID: "claude-sonnet-4-5"})
@@ -607,7 +627,7 @@ func TestTheEffortMayBeConfiguredBetweenTheTurns(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	// The first turn asked for nothing and the provider thought anyway.
 	plain := Model{ID: "claude-sonnet-4-5"}
@@ -623,7 +643,7 @@ func TestTheEffortMayBeConfiguredBetweenTheTurns(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks,
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin,
 			Thinking: resp.Thinking},
 		{Role: "tool", ToolCallID: "call_read", Name: "read", Content: "the file"},
 	}
@@ -652,14 +672,15 @@ func TestTheEffortMayBeConfiguredBetweenTheTurns(t *testing.T) {
 // recovered from the tool-call identifiers rather than sent back. That
 // is the endpoint-binding caveat, and it is not settled here.
 func TestTheEffortMayBeTakenAwayBetweenTheTurns(t *testing.T) {
+	a := &AnthropicCompatible{Endpoint: "https://endpoint.test/anthropic"}
 	key := ReasoningKey("claude-sonnet-4-5", WireAnthropic)
 	asked := []Message{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "the answer",
-			ReasoningKey: key, Thinking: ThinkingAsked,
+			ReasoningKey: key, Origin: string(a.origin()), Thinking: ThinkingAsked,
 			Reasoning: []ReasoningBlock{{Type: ReasoningThinking, Text: "it"}}},
 	}
-	_, conversation, err := anthropicMessages(asked,
+	_, conversation, err := a.anthropicMessages(asked,
 		Model{ID: "claude-sonnet-4-5"}, ThinkingUnset)
 	if err != nil {
 		t.Fatal(err)
@@ -675,10 +696,10 @@ func TestTheEffortMayBeTakenAwayBetweenTheTurns(t *testing.T) {
 	unset := []Message{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "the answer",
-			ReasoningKey: key, Thinking: ThinkingUnset,
+			ReasoningKey: key, Origin: string(a.origin()), Thinking: ThinkingUnset,
 			Reasoning: []ReasoningBlock{{Type: ReasoningThinking, Text: "it"}}},
 	}
-	_, conversation, err = anthropicMessages(unset,
+	_, conversation, err = a.anthropicMessages(unset,
 		Model{ID: "claude-sonnet-4-5"}, ThinkingUnset)
 	if err != nil {
 		t.Fatal(err)
@@ -705,7 +726,7 @@ func TestTheDeepSeekModelKeepsItsBlocksWhenTheEffortIsTakenAway(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	chosen := Model{ID: "deepseek-flash", Effort: "high"}
 	resp, err := a.ChatStreamTools(context.Background(),
@@ -720,7 +741,7 @@ func TestTheDeepSeekModelKeepsItsBlocksWhenTheEffortIsTakenAway(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks,
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin,
 			Thinking: resp.Thinking},
 		{Role: "tool", ToolCallID: "call_read", Name: "read", Content: "the file"},
 	}
@@ -746,7 +767,7 @@ func TestTheClaudeModelDropsItsBlocksWhenTheEffortIsTakenAway(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	chosen := Model{ID: "claude-sonnet-4-5", Effort: "high"}
 	resp, err := a.ChatStreamTools(context.Background(),
@@ -763,7 +784,7 @@ func TestTheClaudeModelDropsItsBlocksWhenTheEffortIsTakenAway(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks,
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin,
 			Thinking: resp.Thinking},
 		{Role: "tool", ToolCallID: "call_read", Name: "read", Content: "the file"},
 	}
@@ -787,6 +808,7 @@ func TestTheClaudeModelDropsItsBlocksWhenTheEffortIsTakenAway(t *testing.T) {
 // protocol of the OpenAI dialect, or the DeepSeek protocol of the
 // Messages wire.
 func TestTheAliasDoesNotCrossTheProtocols(t *testing.T) {
+	a := &AnthropicCompatible{Endpoint: "https://endpoint.test/anthropic"}
 	aliasKey := ReasoningKey("claude-sonnet-4-5", WireAnthropic)
 	openAIKey := ReasoningKey("deepseek-flash", WireOpenAI)
 	messagesKey := ReasoningKey("deepseek-flash", WireAnthropic)
@@ -795,10 +817,14 @@ func TestTheAliasDoesNotCrossTheProtocols(t *testing.T) {
 	}
 
 	// A block of the OpenAI dialect is not replayed on the Messages wire.
-	_, conversation, err := anthropicMessages([]Message{
+	//
+	// The record names the endpoint that produced it: the protocol
+	// keeps the two apart, and the origin says whose block it is.
+	_, conversation, err := a.anthropicMessages([]Message{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "the answer",
 			ReasoningKey: openAIKey,
+			Origin:       string(a.origin()),
 			Reasoning:    []ReasoningBlock{{Type: ReasoningPlain, Text: "it"}}},
 	}, Model{ID: "claude-sonnet-4-5"}, ThinkingAsked)
 	if err != nil {
@@ -819,6 +845,7 @@ func TestTheAliasDoesNotCrossTheProtocols(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello",
 			ReasoningKey: messagesKey,
+			Origin:       string(p.origin()),
 			Reasoning:    []ReasoningBlock{{Type: ReasoningThinking, Text: "it"}}},
 	}
 	if _, err := p.ChatStreamTools(context.Background(), openaiMessages,

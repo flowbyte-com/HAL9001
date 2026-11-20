@@ -45,6 +45,19 @@ type AnthropicCompatible struct {
 	// bearer token says so explicitly: HAL never guesses it from the
 	// URL.
 	KeyHeader string
+	// CredentialProfile names the credential the endpoint uses without
+	// naming the credential itself: it is the name of the environment
+	// variable that holds it, or a marker for a credential the
+	// configuration carries itself.
+	//
+	// It is part of the endpoint's identity. Two accounts at one
+	// endpoint are two origins, and the reasoning of one is never sent
+	// to the other.
+	CredentialProfile string
+	// ThinkingDefault overrides what HAL knows about this endpoint's
+	// thinking. Unknown means HAL resolves it from the endpoint's
+	// address, and an address HAL does not know stays unknown.
+	ThinkingDefault ThinkingDefault
 }
 
 // DefaultAnthropicVersion is the API version HAL sends when the endpoint
@@ -276,8 +289,9 @@ type anthropicDelta struct {
 // The three states are kept apart, because the difference between them
 // decides what a later request replays. A request that carries the
 // thinking block asks for thinking. A request that carries nothing says
-// nothing and leaves the question to the provider: Claude thinks only
-// when asked, DeepSeek thinks by default.
+// nothing and leaves the question to the provider: an endpoint that
+// thinks by default thinks anyway, and an endpoint that thinks only
+// when asked does not.
 //
 // A request that forbids thinking is a state of its own. HAL sends none
 // today — the Messages API takes one, and the gate honours it — but the
@@ -290,6 +304,28 @@ func anthropicThinkingMode(model Model) string {
 		return ThinkingAsked
 	}
 	return ThinkingUnset
+}
+
+// origin is the reasoning origin of this endpoint.
+//
+// The same endpoint always yields the same origin, and the origin holds
+// nothing secret: it is a fingerprint of the wire, the address and the
+// credential profile.
+func (a *AnthropicCompatible) origin() Origin {
+	return OriginFor(WireAnthropic, a.Endpoint, a.CredentialProfile)
+}
+
+// thinkingDefault reports how this endpoint thinks when a request says
+// nothing about it.
+//
+// It is the endpoint's own behaviour, resolved from the endpoint and
+// never from the model identifier: a Claude alias on DeepSeek's
+// endpoint is a DeepSeek endpoint.
+func (a *AnthropicCompatible) thinkingDefault() ThinkingDefault {
+	if a.ThinkingDefault != ThinkingUnknown {
+		return a.ThinkingDefault
+	}
+	return ThinkingDefaultFor(a.Endpoint)
 }
 
 // anthropicMessages turns the engine's messages into the Anthropic shape.
@@ -305,25 +341,37 @@ func anthropicThinkingMode(model Model) string {
 // provider's own, with the provider's own signature: they are never
 // regenerated.
 //
-// What "in thinking mode" means is the provider's own rule, and it is
-// not the same for every provider. A request that asks for thinking is
+// What "in thinking mode" means is the endpoint's own rule, and it is
+// not the same for every endpoint. A request that asks for thinking is
 // in thinking mode. A request that forbids thinking is not, whatever
-// came before. A request that says nothing leaves it to the provider,
-// and the answer is in the conversation itself: a turn that asked for
-// nothing and came back with thinking says that this provider thinks
-// by default.
+// came before. A request that says nothing leaves it to the endpoint:
+// DeepSeek's endpoint thinks by default, Anthropic's thinks only when
+// asked, and an endpoint HAL knows nothing about is decided by the turn
+// that produced the blocks.
+//
+// The blocks belong to the endpoint that produced them. A record whose
+// origin is not this endpoint's is never sent to it: the request is
+// refused here, before anything goes out.
 //
 // The blocks are the provider's own shape. A DeepSeek thinking block
 // carries what DeepSeek sent — its text, and a signature only if
 // DeepSeek sent one — and nothing of Claude's is assumed about it.
-func anthropicMessages(messages []Message, model Model, mode string) (string, []anthropicMessage, error) {
+func (a *AnthropicCompatible) anthropicMessages(messages []Message, model Model, mode string) (string, []anthropicMessage, error) {
 	var systemParts []string
 	var out []anthropicMessage
 	key := ReasoningKey(model.ID, WireAnthropic)
-	// The provider thinks by default when its family says so, and when
-	// the conversation shows it: a turn that asked for nothing came
-	// back with thinking blocks.
-	defaultThinking := isDeepSeekModel(model.ID) || thinksByDefault(messages, key)
+	origin := a.origin()
+	endpoint := a.thinkingDefault()
+	// The reasoning of a turn belongs to the endpoint that produced it.
+	//
+	// A record of another endpoint is never sent to this one, whatever
+	// its protocol is: the request is refused here, before anything
+	// goes out, and the operator is told that the origin changed. A
+	// record that names no origin is refused as well — nothing is
+	// invented for it.
+	if err := checkOrigin(messages, origin, endpointLabel(a.Endpoint)); err != nil {
+		return "", nil, err
+	}
 	appendMessage := func(role string, blocks []anthropicBlock) {
 		if len(blocks) == 0 {
 			return
@@ -334,11 +382,6 @@ func anthropicMessages(messages []Message, model Model, mode string) (string, []
 		}
 		out = append(out, anthropicMessage{Role: role, Content: blocks})
 	}
-	// Whether this request replays the reasoning of an earlier turn is
-	// one decision for the whole request: it depends on how this
-	// request asked for thinking and on what the conversation says
-	// about the provider, not on the turn being looked at.
-	replay := replaysThinking(mode, defaultThinking)
 	for _, m := range messages {
 		switch m.Role {
 		case "system":
@@ -350,6 +393,12 @@ func anthropicMessages(messages []Message, model Model, mode string) (string, []
 			// The continuity data of another protocol is not ours to
 			// replay, and its state is not ours to judge.
 			foreign := key != "" && m.ReasoningKey != "" && m.ReasoningKey != key
+			// Whether this request replays the reasoning of an earlier
+			// turn is decided by how this request asked for thinking
+			// and by what this endpoint does. An endpoint HAL knows
+			// nothing about is decided by the turn that produced the
+			// blocks: the turn's own answer is the endpoint's answer.
+			replay := replaysThinking(mode, endpoint, m.Thinking)
 			switch {
 			case foreign:
 				// Nothing of it is ours: the turn goes out as it was.
@@ -567,7 +616,7 @@ func (a *AnthropicCompatible) requestBody(messages []Message, model Model, strea
 	// it, so its blocks are replayed either way.
 	thinking := anthropicThinkingFor(model)
 	deepSeekThinking, deepSeekEffort := anthropicDeepSeekEffort(model)
-	system, conversation, err := anthropicMessages(messages, model, anthropicThinkingMode(model))
+	system, conversation, err := a.anthropicMessages(messages, model, anthropicThinkingMode(model))
 	if err != nil {
 		return nil, err
 	}
@@ -698,6 +747,10 @@ func (a *AnthropicCompatible) Chat(ctx context.Context, messages []Message, mode
 		// them: a later request has to know how that request asked
 		// for thinking before it decides what to replay.
 		out.Thinking = anthropicThinkingMode(model)
+		// So does the origin of this endpoint: the reasoning belongs
+		// to the provider that produced it, and a later request has to
+		// know that before it sends anything.
+		out.Origin = string(a.origin())
 	}
 	out.Stats.FinishReason = parsed.StopReason
 	out.Stats.OutputLimitHit = parsed.StopReason == "max_tokens"
@@ -1000,6 +1053,10 @@ func (a *AnthropicCompatible) chatStream(ctx context.Context, messages []Message
 		// them: a later request has to know how that request asked
 		// for thinking before it decides what to replay.
 		out.Thinking = anthropicThinkingMode(model)
+		// So does the origin of this endpoint: the reasoning belongs
+		// to the provider that produced it, and a later request has to
+		// know that before it sends anything.
+		out.Origin = string(a.origin())
 	}
 	stats.Duration = time.Since(stats.StartedAt)
 	if err := scanner.Err(); err != nil {

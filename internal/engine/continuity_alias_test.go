@@ -125,13 +125,13 @@ func TestTheAliasKeepsItsThinkingAcrossTheSession(t *testing.T) {
 	}
 }
 
-// A record written before the thinking of the producing request was
-// kept is still read.
+// A record written before the thinking and the origin were kept is
+// still read.
 //
 // It holds the blocks the provider sent, and a request that needs them
 // is refused rather than sent without them. What it does not hold is
-// how the request that produced them asked for thinking, and that is
-// not guessed at.
+// how the request that produced them asked for thinking, and which
+// endpoint produced them, and neither is guessed at.
 func TestALegacyRecordIsStillRead(t *testing.T) {
 	dir := t.TempDir()
 	st, err := session.Open(dir, "chat")
@@ -141,16 +141,27 @@ func TestALegacyRecordIsStillRead(t *testing.T) {
 	if _, err := st.AppendTurn(session.RoleUser, "hi", session.Turn{}); err != nil {
 		t.Fatal(err)
 	}
-	// A record of the version before the thinking was kept: the
-	// payload has the blocks and no provenance.
-	record := session.NewProtocol(provider.EncodeReasoning(
-		provider.ReasoningKey("deepseek-flash", provider.WireOpenAI),
-		"deepseek-flash",
-		provider.ThinkingAsked,
-		[]provider.ReasoningBlock{{Type: provider.ReasoningPlain, Text: "the thought"}}))
+	// A record of the first version: the payload has the blocks and
+	// neither the thinking nor the origin.
+	record := session.NewProtocol([]byte(`{"key":"openai/reasoning-content",` +
+		`"model":"deepseek-flash","blocks":[{"type":"reasoning","text":"the thought"}]}`))
 	record.Version = session.ProtocolVersionLegacy
 	if _, err := st.AppendTurn(session.RoleAssistant, "the answer", session.Turn{
 		Protocol: record,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A record of the version before the origin was kept: it has the
+	// thinking, and no origin.
+	second := session.NewProtocol(provider.EncodeReasoning(provider.Continuity{
+		Key:      provider.ReasoningKey("deepseek-flash", provider.WireOpenAI),
+		Model:    "deepseek-flash",
+		Thinking: provider.ThinkingAsked,
+		Blocks:   []provider.ReasoningBlock{{Type: provider.ReasoningPlain, Text: "the thought"}},
+	}))
+	second.Version = session.ProtocolVersionOriginless
+	if _, err := st.AppendTurn(session.RoleAssistant, "the second answer", session.Turn{
+		Protocol: second,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -166,19 +177,30 @@ func TestALegacyRecordIsStillRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	messages := eng.requestMessages(history, "", "", nil)
-	assistant := provider.Message{}
+	var assistants []provider.Message
 	for _, m := range messages {
 		if m.Role == "assistant" {
-			assistant = m
+			assistants = append(assistants, m)
 		}
 	}
-	if assistant.ReasoningIncomplete {
-		t.Fatalf("a legacy record was refused: %+v", assistant)
+	if len(assistants) != 2 {
+		t.Fatalf("the assistant turns = %d", len(assistants))
 	}
-	if len(assistant.Reasoning) != 1 {
-		t.Fatalf("the legacy record carries no blocks: %+v", assistant)
+	for _, assistant := range assistants {
+		if assistant.ReasoningIncomplete {
+			t.Fatalf("a legacy record was refused: %+v", assistant)
+		}
+		if len(assistant.Reasoning) != 1 {
+			t.Fatalf("the legacy record carries no blocks: %+v", assistant)
+		}
+		if assistant.Origin != "" {
+			t.Errorf("the legacy record claims an origin %q", assistant.Origin)
+		}
 	}
-	if assistant.Thinking != "" {
-		t.Errorf("the legacy record claims the request asked %q", assistant.Thinking)
+	if assistants[0].Thinking != "" {
+		t.Errorf("the first record claims the request asked %q", assistants[0].Thinking)
+	}
+	if assistants[1].Thinking != provider.ThinkingAsked {
+		t.Errorf("the second record lost the thinking it kept: %q", assistants[1].Thinking)
 	}
 }

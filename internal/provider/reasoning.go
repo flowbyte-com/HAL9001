@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -102,12 +103,22 @@ func ReasoningKey(modelID, wire string) string {
 //
 // A request that asks for thinking is in thinking mode. A request that
 // forbids thinking is not, whatever came before. A request that says
-// nothing leaves the question to the provider: Claude thinks only when
-// asked, DeepSeek thinks by default.
+// nothing leaves the question to the provider: an endpoint that thinks
+// by default thinks anyway, and an endpoint that thinks only when asked
+// does not.
 //
 // The state travels with the blocks it belongs to, because the decision
 // a later request has to make depends on how the request that produced
 // them asked for thinking — and on nothing else.
+//
+// The state of a disabled request is reachable only from the API that
+// takes it: the Messages API understands `thinking: {"type":
+// "disabled"}`, and HAL honours the state when it reads one, but HAL
+// sends no such request of its own and no operator control produces
+// one. The state stays in the contract because the contract is about
+// what the wire can say, and because "forbidden" and "not asked for" are
+// different facts: a provider refuses an unexpected thinking block, and
+// it reads "forbidden" and "not asked for" differently.
 const (
 	// ThinkingUnset: the request says nothing about thinking.
 	ThinkingUnset = "unset"
@@ -130,6 +141,14 @@ type reasoningPayload struct {
 	// record says nothing about how its thinking came about, and the
 	// decision that follows from it is the careful one.
 	Thinking string `json:"thinking,omitempty"`
+	// Origin is the fingerprint of the endpoint that produced the
+	// blocks.
+	//
+	// It is empty for a record written before the field existed. Such a
+	// record cannot be sent to any endpoint: the reasoning belongs to
+	// the provider that produced it, and nothing says which one that
+	// was.
+	Origin string `json:"origin,omitempty"`
 	// Blocks are the provider's blocks, in the provider's order.
 	Blocks []ReasoningBlock `json:"blocks,omitempty"`
 }
@@ -148,6 +167,11 @@ type Continuity struct {
 	//
 	// It is empty for a record written before the field existed.
 	Thinking string
+	// Origin is the fingerprint of the endpoint that produced the
+	// blocks.
+	//
+	// It is empty for a record written before the field existed.
+	Origin string
 	// Blocks are the provider's blocks, in the provider's order.
 	Blocks []ReasoningBlock
 }
@@ -160,19 +184,23 @@ type Continuity struct {
 //
 // The thinking of the producing request travels with the blocks: a later
 // request has to know how the request that produced them asked for
-// thinking, and that is the one fact it cannot recover on its own.
+// thinking, and that is the one fact it cannot recover on its own. So
+// does the origin of the endpoint that produced them: the reasoning
+// belongs to that endpoint, and a later request has to know that before
+// it sends anything.
 //
 // A payload with no key or no blocks is nothing: an empty result means
 // there is no continuity to keep.
-func EncodeReasoning(key, model, thinking string, blocks []ReasoningBlock) []byte {
-	if key == "" || len(blocks) == 0 {
+func EncodeReasoning(continuity Continuity) []byte {
+	if continuity.Key == "" || len(continuity.Blocks) == 0 {
 		return nil
 	}
 	raw, err := json.Marshal(reasoningPayload{
-		Key:      key,
-		Model:    model,
-		Thinking: thinking,
-		Blocks:   blocks,
+		Key:      continuity.Key,
+		Model:    continuity.Model,
+		Thinking: continuity.Thinking,
+		Origin:   continuity.Origin,
+		Blocks:   continuity.Blocks,
 	})
 	if err != nil {
 		return nil
@@ -206,9 +234,9 @@ func EncodeReasoningKey(key string) []byte {
 // the data was too large to store, and a request that needs it must
 // not be sent.
 //
-// The thinking of the producing request is empty for a record written
-// before the field existed: nothing is known about how that request
-// asked for thinking, and nothing is guessed.
+// The thinking of the producing request and the origin of the endpoint
+// that produced it are empty for a record written before the fields
+// existed: nothing is known about them, and nothing is guessed.
 func DecodeReasoning(payload []byte) (Continuity, bool) {
 	if len(payload) == 0 {
 		return Continuity{}, false
@@ -224,6 +252,7 @@ func DecodeReasoning(payload []byte) (Continuity, bool) {
 		Key:      p.Key,
 		Model:    p.Model,
 		Thinking: p.Thinking,
+		Origin:   p.Origin,
 		Blocks:   p.Blocks,
 	}, true
 }
@@ -243,57 +272,91 @@ func ReasoningText(blocks []ReasoningBlock) string {
 // replaysThinking reports whether a request in this thinking mode
 // replays the reasoning of an earlier turn.
 //
-// The three states are apart on purpose. A request that forbids
-// thinking replays nothing, whatever came before: the provider refuses
-// an unexpected block. A request that asks for thinking replays
-// everything of its own protocol: the provider refuses a continued
-// thinking turn whose blocks are missing.
+// The three states of the request are apart on purpose. A request that
+// forbids thinking replays nothing, whatever came before: the provider
+// refuses an unexpected block. A request that asks for thinking
+// replays everything of its own protocol: the provider refuses a
+// continued thinking turn whose blocks are missing.
 //
 // A request that says nothing is the difficult one, and the answer is
-// not HAL's to guess. When the provider is known to think by default —
-// its family says so, or the conversation shows it — the request is in
-// thinking mode and the blocks are replayed. When nothing says so, the
-// provider thinks only when asked, and the blocks stay where they are.
+// not HAL's to guess. It is the endpoint's own behaviour: an endpoint
+// that thinks by default is in thinking mode whatever the request says,
+// and an endpoint that thinks only when asked is not. An endpoint HAL
+// knows nothing about is decided by the turn itself: a turn that asked
+// for nothing and came back with thinking says that this provider
+// thinks by default.
 //
 // An omitted reasoning configuration is never read as "thinking is off":
 // that is the provider's decision, and only the provider's own answer
 // settles it.
-func replaysThinking(mode string, defaultThinking bool) bool {
+func replaysThinking(mode string, endpoint ThinkingDefault, turnThinking string) bool {
 	switch mode {
 	case ThinkingOff:
 		return false
 	case ThinkingAsked:
 		return true
 	default:
-		return defaultThinking
+		switch endpoint {
+		case ThinkingDefaultOn:
+			return true
+		case ThinkingDefaultOff:
+			return false
+		default:
+			// The endpoint is not known: the turn that produced the
+			// blocks says whether this provider thinks by default.
+			return turnThinking == ThinkingUnset
+		}
 	}
 }
 
-// thinksByDefault reports whether the conversation shows that this
-// protocol's provider thinks when the request says nothing about it.
+// checkOrigin refuses a conversation whose reasoning belongs to
+// another endpoint.
 //
-// The evidence is a turn that asked for nothing and came back with
-// thinking blocks. Such a turn is only ever recorded when the provider
-// answered with reasoning, so its presence is the answer.
+// The reasoning of a turn belongs to the provider that produced it.
+// Sending it to another provider would hand one provider the private
+// reasoning of another, so the request is refused here, before
+// anything goes out.
 //
-// Only turns of this protocol count: another family's record says
-// nothing about this provider.
-func thinksByDefault(messages []Message, key string) bool {
-	if key == "" {
-		return false
-	}
+// The check is on the turn, not on the protocol: a record of another
+// endpoint is refused whatever its protocol is, because the protocol
+// says how the reasoning is written and the origin says whose it is.
+// A record that names no origin is refused too: nothing is invented
+// for it.
+func checkOrigin(messages []Message, origin Origin, endpoint string) error {
 	for _, m := range messages {
-		if m.Role != "assistant" {
+		if len(m.Reasoning) == 0 {
 			continue
 		}
-		if m.ReasoningKey != key {
-			continue
-		}
-		if m.Thinking == ThinkingUnset && len(m.Reasoning) > 0 {
-			return true
+		if m.Origin != string(origin) {
+			return OriginRefusal(origin, endpoint, Origin(m.Origin))
 		}
 	}
-	return false
+	return nil
+}
+
+// OriginRefusal explains why the reasoning of an earlier turn is not
+// sent to this endpoint.
+//
+// The reasoning belongs to the provider that produced it. Sending it
+// to another provider would hand one provider the private reasoning of
+// another, so the request is refused here, before anything goes out.
+//
+// The diagnostic names the endpoint and the two origins. The origins
+// are fingerprints: they name the endpoints without naming a
+// credential, a key or an address, and they are what an operator
+// compares to see which endpoint the reasoning came from.
+func OriginRefusal(origin Origin, endpoint string, conversation Origin) error {
+	if conversation == "" {
+		return fmt.Errorf(
+			"provider: this conversation's reasoning has no endpoint identity, "+
+				"so it cannot be sent to %s safely; start a new conversation, "+
+				"or continue with the endpoint the reasoning came from", endpoint)
+	}
+	return fmt.Errorf(
+		"provider: the provider origin changed: this conversation's reasoning came from "+
+			"another endpoint (origin %s) and is not sent to %s (origin %s); "+
+			"start a new conversation, or switch back to the endpoint the reasoning came from",
+		conversation, endpoint, origin)
 }
 
 // openAIReasoningBlocks is the continuity data of a plain reasoning

@@ -65,6 +65,41 @@ because the API refuses a value above the model's own output limit and
 a rejected request helps nobody. An operator who knows the model's
 limit can raise it.
 
+## Reasoning continuity and the provider origin
+
+Some providers require their own reasoning back when a conversation
+continues: DeepSeek's Thinking Mode wants the `reasoning_content` of an
+earlier assistant turn, and the Anthropic Messages API wants the complete,
+unmodified thinking blocks — signatures included — of the turn that called
+the tool.
+
+HAL keeps that data as the provider sent it, attached to the message it
+belongs to, so a restored conversation replays it and a compacted one takes
+it away with the message.
+
+The data belongs to the provider that sent it. HAL therefore keeps an
+**origin** with it: a fingerprint of the wire protocol, the endpoint's
+address (scheme, host, port and path — never the user information, the
+query or the fragment) and the credential *profile* (the name of the
+environment variable that holds the credential, or a marker for a credential
+the configuration carries itself). The origin is stable, deterministic and
+secret-free; the credential's value is never part of it.
+
+When a request would replay that reasoning:
+
+- the **same origin** — the reasoning is replayed, exactly as before;
+- a **different origin** — the request is refused locally, before
+  anything is sent, with a diagnostic that names the change. The reasoning
+  of one provider is never handed to another;
+- **no origin** — a record written before HAL kept the origin says nothing
+  about which provider produced it. Nothing is invented for it, and a
+  request that needs it is refused with a diagnostic.
+
+The limitation is documented rather than papered over: two accounts at one
+address are two origins only when the configuration can tell them apart.
+A configuration that carries the credential itself cannot, and the origin
+says so by being the same for both.
+
 ## Model discovery
 
 `Discoverer.ListModels` asks an endpoint which models it serves.

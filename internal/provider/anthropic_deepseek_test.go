@@ -39,6 +39,16 @@ type strictMessages struct {
 	violations int
 }
 
+// adapter builds the adapter this mock is reached through.
+//
+// The mock is DeepSeek's Anthropic-compatible endpoint, and that
+// endpoint thinks when the request says nothing about it. HAL is told
+// so: what HAL knows about an endpoint comes from the endpoint, never
+// from the model identifier.
+func (s *strictMessages) adapter(ts *httptest.Server) *AnthropicCompatible {
+	return &AnthropicCompatible{Endpoint: ts.URL, ThinkingDefault: ThinkingDefaultOn}
+}
+
 // ServeHTTP implements the mock endpoint.
 func (s *strictMessages) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
@@ -311,7 +321,7 @@ func TestDeepSeekOnTheAnthropicWireReplaysItsThinkingBlocks(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	resp, err := a.ChatStreamTools(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
@@ -339,7 +349,7 @@ func TestDeepSeekOnTheAnthropicWireReplaysItsThinkingBlocks(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks},
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin},
 		{Role: "tool", ToolCallID: "call_1", Name: "read", Content: "the file"},
 	}
 	if _, err := a.ChatStreamTools(context.Background(), follow, deepSeekModel, tools, nil); err != nil {
@@ -375,7 +385,7 @@ func TestDeepSeekOnTheAnthropicWireKeepsEveryBlock(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}, {Name: "list"}}
 	resp, err := a.ChatStreamTools(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
@@ -394,7 +404,7 @@ func TestDeepSeekOnTheAnthropicWireKeepsEveryBlock(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks},
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin},
 		{Role: "tool", ToolCallID: "call_1", Name: "read", Content: "the file"},
 		{Role: "tool", ToolCallID: "call_2", Name: "list", Content: "the listing"},
 	}
@@ -442,7 +452,7 @@ func TestDeepSeekOnTheAnthropicWireSurvivesSeveralContinuations(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}, {Name: "list"}}
 	messages := []Message{{Role: "user", Content: "read the file"}}
 	for step := 0; step < 3; step++ {
@@ -452,7 +462,7 @@ func TestDeepSeekOnTheAnthropicWireSurvivesSeveralContinuations(t *testing.T) {
 		}
 		messages = append(messages,
 			Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-				ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks})
+				ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin})
 		for _, call := range resp.ToolCalls {
 			messages = append(messages, Message{
 				Role: "tool", ToolCallID: call.ID, Name: call.Name, Content: "the result",
@@ -496,7 +506,7 @@ func TestDeepSeekOnTheAnthropicWireCapturesTheStreamedBlocks(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	resp, err := a.ChatStreamTools(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
@@ -518,7 +528,7 @@ func TestDeepSeekOnTheAnthropicWireCapturesTheStreamedBlocks(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks},
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin},
 		{Role: "tool", ToolCallID: "call_1", Name: "read", Content: "the file"},
 	}
 	if _, err := a.ChatStreamTools(context.Background(), follow, deepSeekModel, tools, nil); err != nil {
@@ -539,7 +549,7 @@ func TestDeepSeekOnTheAnthropicWireReplaysNothingWithoutThinking(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	resp, err := a.ChatStreamTools(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
@@ -566,7 +576,7 @@ func TestDeepSeekOnTheAnthropicWireKeepsAnEmptyThinkingBlock(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	resp, err := a.ChatStreamTools(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
@@ -591,7 +601,7 @@ func TestDeepSeekOnTheAnthropicWireRefusesAnUnreadableRecord(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	messages := []Message{
 		{Role: "user", Content: "read the file"},
@@ -636,11 +646,12 @@ func TestTheProtocolsStayApart(t *testing.T) {
 	srv := &strictMessages{t: t, answers: []string{deepSeekAnswer}}
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	messages := []Message{
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello",
 			ReasoningKey: claudeKey,
+			Origin:       string(a.origin()),
 			Reasoning:    []ReasoningBlock{{Type: ReasoningThinking, Text: "signed", Signature: "sig"}}},
 	}
 	if _, err := a.ChatStreamTools(context.Background(), messages, deepSeekModel, nil, nil); err != nil {
@@ -661,6 +672,7 @@ func TestTheProtocolsStayApart(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello",
 			ReasoningKey: deepSeekKey,
+			Origin:       string(p.origin()),
 			Reasoning:    []ReasoningBlock{{Type: ReasoningThinking, Text: "signed", Signature: "sig"}}},
 	}
 	if _, err := p.ChatStreamTools(context.Background(), openaiMessages,
@@ -683,7 +695,7 @@ func TestDeepSeekOnTheAnthropicWireCapturesTheWholeAnswer(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	resp, err := a.Chat(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
 		deepSeekModel)
@@ -705,7 +717,7 @@ func TestDeepSeekOnTheAnthropicWireCapturesTheWholeAnswer(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks},
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin},
 		{Role: "tool", ToolCallID: "call_1", Name: "read", Content: "the file"},
 	}
 	if _, err := a.ChatStreamTools(context.Background(), follow, deepSeekModel, tools, nil); err != nil {
@@ -732,7 +744,7 @@ func TestDeepSeekOnTheAnthropicWireReplaysWithoutAConfiguredEffort(t *testing.T)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	// No effort: the request carries no thinking toggle at all.
 	model := Model{ID: "deepseek-flash"}
@@ -749,7 +761,7 @@ func TestDeepSeekOnTheAnthropicWireReplaysWithoutAConfiguredEffort(t *testing.T)
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks},
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin},
 		{Role: "tool", ToolCallID: "call_1", Name: "read", Content: "the file"},
 	}
 	if _, err := a.ChatStreamTools(context.Background(), follow, model, tools, nil); err != nil {
@@ -776,7 +788,7 @@ func TestDeepSeekOnTheAnthropicWireSendsNoSignatureItWasNotGiven(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	resp, err := a.ChatStreamTools(context.Background(),
 		[]Message{{Role: "user", Content: "read the file"}},
@@ -787,7 +799,7 @@ func TestDeepSeekOnTheAnthropicWireSendsNoSignatureItWasNotGiven(t *testing.T) {
 	follow := []Message{
 		{Role: "user", Content: "read the file"},
 		{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls,
-			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks},
+			ReasoningKey: resp.ReasoningKey, Reasoning: resp.ReasoningBlocks, Origin: resp.Origin},
 		{Role: "tool", ToolCallID: "call_1", Name: "read", Content: "the file"},
 	}
 	if _, err := a.ChatStreamTools(context.Background(), follow, deepSeekModel, tools, nil); err != nil {
@@ -809,7 +821,7 @@ func TestTheStrictEndpointRefusesATurnWithoutItsThinkingBlocks(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	a := &AnthropicCompatible{Endpoint: ts.URL}
+	a := srv.adapter(ts)
 	tools := []Tool{{Name: "read"}}
 	// The turn goes out without the blocks it should carry.
 	messages := []Message{

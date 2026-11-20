@@ -69,14 +69,23 @@ type Message struct {
 
 // ProtocolVersion is the explicit schema version of the protocol state.
 //
-// Version 2 keeps the thinking of the request that produced the blocks
-// with the blocks themselves: a later request decides what to replay
-// from that fact.
+// Version 3 keeps the origin of the endpoint that produced the blocks
+// with the blocks themselves: the reasoning belongs to that endpoint,
+// and a later request has to know which endpoint that was before it
+// sends anything.
+//
+// The origin needed a version of its own. A missing field and a field
+// that says nothing are the same thing in a payload, and the two are
+// not the same here: a record of version 2 written before the origin
+// was kept says nothing about which endpoint produced its blocks, and a
+// record of version 3 says exactly that. One version cannot carry both
+// meanings.
 //
 // A record of any other version is ignored rather than guessed at, with
-// one exception: the version before it is read, and read as what it is —
-// a record that says nothing about how its thinking came about.
-const ProtocolVersion = 2
+// one exception: the versions before it are read, and read as what they
+// are — records that say nothing about how their thinking came about
+// and nothing about which endpoint produced it.
+const ProtocolVersion = 3
 
 // ProtocolVersionLegacy is the version before the thinking of the
 // producing request was kept.
@@ -86,6 +95,25 @@ const ProtocolVersion = 2
 // them. What they do not hold is how the request that produced them
 // asked for thinking, and that is not guessed at.
 const ProtocolVersionLegacy = 1
+
+// ProtocolVersionOriginless is the version before the origin of the
+// producing endpoint was kept.
+//
+// Its records are still read, and their blocks are still there. What
+// they do not hold is which endpoint produced them, and a record that
+// cannot say is never sent to any endpoint.
+const ProtocolVersionOriginless = 2
+
+// ReadableProtocolVersion reports whether a protocol record of this
+// version can still be read.
+//
+// The versions before the current one are read: they hold the blocks
+// the provider sent, and a request that needs them is refused rather
+// than sent without them. What they do not hold is what was added
+// later, and nothing about that is guessed at.
+func ReadableProtocolVersion(version int) bool {
+	return version == ProtocolVersionLegacy || version == ProtocolVersionOriginless
+}
 
 // MaxProtocolBytes bounds the continuity data one message may carry.
 //

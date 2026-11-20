@@ -30,6 +30,19 @@ type Options struct {
 	TurnTimeout time.Duration
 	// Client is the HTTP client. Nil lets the adapter build one.
 	Client *http.Client
+	// CredentialProfile names the credential the endpoint uses without
+	// naming the credential itself: it is the name of the environment
+	// variable that holds it, or a marker for a credential the
+	// configuration carries itself.
+	//
+	// It is part of the endpoint's identity: two accounts at one
+	// endpoint are two origins, and the reasoning of one is never sent
+	// to the other.
+	CredentialProfile string
+	// ThinkingDefault overrides what HAL knows about this endpoint's
+	// thinking. Unknown means HAL resolves it from the endpoint's
+	// address, and an address HAL does not know stays unknown.
+	ThinkingDefault ThinkingDefault
 }
 
 // NewForProtocol builds the adapter that speaks a wire protocol.
@@ -41,21 +54,24 @@ func NewForProtocol(wire, endpoint, apiKey string, opts Options) (Provider, erro
 	switch wire {
 	case "", WireOpenAI:
 		return &OpenAICompatible{
-			Endpoint:         endpoint,
-			APIKey:           apiKey,
-			Client:           opts.Client,
-			DefaultMaxTokens: opts.DefaultMaxTokens,
-			IdleTimeout:      opts.IdleTimeout,
-			TurnTimeout:      opts.TurnTimeout,
+			Endpoint:          endpoint,
+			APIKey:            apiKey,
+			Client:            opts.Client,
+			DefaultMaxTokens:  opts.DefaultMaxTokens,
+			IdleTimeout:       opts.IdleTimeout,
+			TurnTimeout:       opts.TurnTimeout,
+			CredentialProfile: opts.CredentialProfile,
 		}, nil
 	case WireAnthropic:
 		return &AnthropicCompatible{
-			Endpoint:         endpoint,
-			APIKey:           apiKey,
-			Client:           opts.Client,
-			DefaultMaxTokens: opts.DefaultMaxTokens,
-			IdleTimeout:      opts.IdleTimeout,
-			TurnTimeout:      opts.TurnTimeout,
+			Endpoint:          endpoint,
+			APIKey:            apiKey,
+			Client:            opts.Client,
+			DefaultMaxTokens:  opts.DefaultMaxTokens,
+			IdleTimeout:       opts.IdleTimeout,
+			TurnTimeout:       opts.TurnTimeout,
+			CredentialProfile: opts.CredentialProfile,
+			ThinkingDefault:   opts.ThinkingDefault,
 		}, nil
 	default:
 		return nil, fmt.Errorf("provider: unsupported wire protocol %q (supported: %s, %s)",

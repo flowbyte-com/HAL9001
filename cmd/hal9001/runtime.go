@@ -28,6 +28,21 @@ type providerTarget struct {
 	Wire string
 	// Credential is the secret the endpoint uses.
 	Credential string
+	// CredentialProfile names the credential without naming it: it is
+	// the name of the environment variable that holds it, or a marker
+	// for a credential the configuration carries itself.
+	//
+	// It is part of the endpoint's identity, so two accounts at one
+	// endpoint are two origins.
+	CredentialProfile string
+	// ThinkingDefault says how the endpoint thinks when a request says
+	// nothing about it.
+	//
+	// It is a fact about the endpoint, never about the model: the same
+	// Claude model is a Claude model on one endpoint and an alias on
+	// another. Unknown means the operator said nothing, and HAL
+	// resolves what it can from the address.
+	ThinkingDefault provider.ThinkingDefault
 	// ModelID is the model the request asks for.
 	ModelID string
 	// Effort is the reasoning level of that model.
@@ -95,6 +110,8 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 			target.BaseURL = endpoint.BaseURL
 			target.Wire = string(wire)
 			target.Credential = endpoint.CredentialValue()
+			target.CredentialProfile = endpoint.CredentialProfile()
+			target.ThinkingDefault = thinkingDefaultFor(endpoint)
 			model, _ := stored.ActiveModelRecord()
 			target.ModelID = model.ID
 			target.Effort = effortForRecord(model)
@@ -107,6 +124,11 @@ func (a *app) resolveTarget(stored config.FileConfig) (providerTarget, error) {
 		// credential and a flat model list.
 		target.BaseURL = a.cfg.Endpoint
 		target.Credential = a.cfg.APIKey
+		// A configuration of the first version has one credential for
+		// one endpoint. The profile follows the migration's rule, so
+		// a conversation that survives the migration keeps its
+		// origin.
+		target.CredentialProfile = stored.CredentialProfile()
 		target.Wire = provider.WireOpenAI
 		target.ModelID = a.cfg.Model
 		if record, ok := legacyModelRecord(a, stored, target.ModelID); ok {
@@ -326,6 +348,23 @@ func wireProtocolFor(name string) (string, error) {
 	}
 }
 
+// thinkingDefaultFor reads an endpoint's thinking default.
+//
+// The operator's own setting wins: it is a fact about the endpoint, and
+// it is the only thing that can settle an endpoint HAL does not know.
+// An endpoint that says nothing keeps what HAL resolves from its
+// address.
+func thinkingDefaultFor(endpoint config.EndpointRecord) provider.ThinkingDefault {
+	switch value, ok := endpoint.ThinkingDefaultValue(); {
+	case ok && value == config.ThinkingDefaultOn:
+		return provider.ThinkingDefaultOn
+	case ok && value == config.ThinkingDefaultOff:
+		return provider.ThinkingDefaultOff
+	default:
+		return provider.ThinkingUnknown
+	}
+}
+
 // providerForTarget builds the provider a target describes.
 //
 // A target with no address has no provider: the conversation runs
@@ -339,9 +378,11 @@ func (a *app) providerForTarget(target providerTarget) (provider.Provider, error
 		wire = provider.WireOpenAI
 	}
 	return provider.NewForProtocol(wire, target.BaseURL, target.Credential, provider.Options{
-		DefaultMaxTokens: a.cfg.MaxTokens,
-		IdleTimeout:      seconds(a.cfg.StreamIdleSeconds),
-		TurnTimeout:      seconds(a.cfg.TurnTimeoutSeconds),
+		DefaultMaxTokens:  a.cfg.MaxTokens,
+		IdleTimeout:       seconds(a.cfg.StreamIdleSeconds),
+		TurnTimeout:       seconds(a.cfg.TurnTimeoutSeconds),
+		CredentialProfile: target.CredentialProfile,
+		ThinkingDefault:   target.ThinkingDefault,
 	})
 }
 

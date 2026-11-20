@@ -25,6 +25,7 @@ without reading the implementation.
       "base_url": "https://api.minimax.io/v1",
       "credential_env": "MINIMAX_API_KEY",// environment-variable reference
       "credential": "",                   // literal secret; only when no env reference
+      "thinking_default": "",             // "on" | "off" | "" (unknown)
       "discovery": {
         "enabled": true,
         "last_checked": "2026-11-08T08:00:00Z"
@@ -64,8 +65,34 @@ without reading the implementation.
 | `base_url` | The API base URL. |
 | `credential_env` | Name of an environment variable holding the credential. Preferred. |
 | `credential` | A literal credential, used only when `credential_env` is empty. Never written to a log, notice or diagnostic. |
+| `thinking_default` | How the endpoint thinks when a request says nothing about it: `"on"`, `"off"`, or empty. |
 | `discovery` | Whether the provider's catalogue may be probed, and when it was last probed. |
 | `models` | The models of *this* endpoint. Model identifiers are scoped to it. |
+
+### Thinking default
+
+`thinking_default` is a fact about the **endpoint**, never about the model
+identifier. The same Claude model is a Claude model on Anthropic's endpoint
+and an alias on DeepSeek's, and the two endpoints do not behave alike.
+
+It decides one thing: whether the reasoning of an earlier turn is replayed
+when the current request says nothing about thinking. A provider that
+thinks by default needs its blocks back — its own API refuses the
+continuation without them — and a provider that thinks only when asked
+refuses a turn that carries blocks it did not ask for.
+
+The order of the answers is deliberate:
+
+1. the operator's own setting (`thinking_default`);
+2. what HAL knows about the endpoint's address — DeepSeek's
+   Anthropic-compatible endpoint thinks by default, Anthropic's thinks only
+   when asked;
+3. the endpoint's own recorded answer: a turn that asked for nothing and
+   came back with reasoning says that this provider thinks by default.
+
+An address HAL does not recognise is never treated as one of the known
+providers, and a gateway is never taken for Anthropic or for DeepSeek
+because of what it serves.
 
 ### Credentials
 

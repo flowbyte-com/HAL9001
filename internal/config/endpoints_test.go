@@ -447,3 +447,90 @@ func TestEndpointsNeedingReview(t *testing.T) {
 		t.Errorf("item = %+v", items[0])
 	}
 }
+
+// The credential profile names the credential without naming it.
+//
+// It is part of the endpoint's identity, so two accounts at one address
+// are two profiles — as far as the configuration can tell them apart.
+// The secret itself never reaches the profile.
+func TestTheCredentialProfileNamesTheCredentialWithoutNamingIt(t *testing.T) {
+	t.Setenv("HAL_TEST_KEY", "the-secret-value")
+	named := EndpointRecord{CredentialEnv: "HAL_TEST_KEY"}
+	if got := named.CredentialProfile(); got != "env:HAL_TEST_KEY" {
+		t.Errorf("profile = %q, want the environment variable's name", got)
+	}
+	literal := EndpointRecord{Credential: "the-secret-value"}
+	if got := literal.CredentialProfile(); got != "inline" {
+		t.Errorf("profile = %q, want the marker of a carried credential", got)
+	}
+	bare := EndpointRecord{}
+	if got := bare.CredentialProfile(); got != "env:"+EnvAPIKey {
+		t.Errorf("profile = %q, want the global variable's name", got)
+	}
+	// The secret is never part of the profile.
+	for _, profile := range []string{
+		named.CredentialProfile(), literal.CredentialProfile(), bare.CredentialProfile(),
+	} {
+		if strings.Contains(profile, "the-secret-value") {
+			t.Errorf("the profile carries the secret: %q", profile)
+		}
+	}
+}
+
+// The thinking default is a fact about the endpoint, and only the two
+// documented values are accepted.
+func TestTheThinkingDefaultIsReadAndValidated(t *testing.T) {
+	for _, value := range []string{ThinkingDefaultOn, ThinkingDefaultOff, "ON", " off "} {
+		endpoint := EndpointRecord{ThinkingDefault: value}
+		got, ok := endpoint.ThinkingDefaultValue()
+		if !ok {
+			t.Errorf("the value %q was not read", value)
+			continue
+		}
+		want := ThinkingDefaultOn
+		if strings.EqualFold(strings.TrimSpace(value), ThinkingDefaultOff) {
+			want = ThinkingDefaultOff
+		}
+		if got != want {
+			t.Errorf("the value %q = %q, want %q", value, got, want)
+		}
+	}
+	// An endpoint that says nothing says nothing.
+	endpoint := EndpointRecord{}
+	if _, ok := endpoint.ThinkingDefaultValue(); ok {
+		t.Error("an endpoint that said nothing claims a thinking default")
+	}
+	// A value HAL does not know is refused when the endpoint is
+	// written, not silently ignored.
+	broken := EndpointRecord{ID: "broken", Name: "Broken", Protocol: ProtocolOpenAI,
+		BaseURL: "https://api.example.com/v1", ThinkingDefault: "perhaps"}
+	if err := broken.Validate(); err == nil {
+		t.Error("an unknown thinking default was accepted")
+	}
+}
+
+// A configuration of the first version and the endpoint it becomes
+// name the same credential.
+//
+// The origin of a conversation is built from that name, and a
+// conversation that survives the migration keeps its origin.
+func TestTheLegacyProfileSurvivesTheMigration(t *testing.T) {
+	t.Setenv(EnvAPIKey, "the-global-key")
+	cases := []struct {
+		name string
+		api  string
+	}{
+		{"a reference", "$HAL_TEST_KEY"},
+		{"a literal", "the-secret-value"},
+		{"nothing", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			legacy := FileConfig{APIKey: c.api}
+			endpoint := migrateEndpoint(legacy)
+			if got, want := legacy.CredentialProfile(), endpoint.CredentialProfile(); got != want {
+				t.Errorf("the profile before the migration = %q, after = %q", got, want)
+			}
+		})
+	}
+}

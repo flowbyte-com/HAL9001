@@ -58,6 +58,15 @@ type Message struct {
 	//
 	// It is empty for a record written before the field existed.
 	Thinking string `json:"-"`
+	// Origin is the fingerprint of the endpoint that produced this
+	// message's blocks.
+	//
+	// The reasoning belongs to the provider that produced it. A record
+	// whose origin is not the endpoint's is never sent to it.
+	//
+	// It is empty for a record written before the field existed, and
+	// such a record is never sent to any endpoint.
+	Origin string `json:"-"`
 
 	// Reference marks a message that carries lower-trust reference
 	// data: historical material that stands in for something else, and
@@ -131,7 +140,13 @@ type Response struct {
 	//
 	// It travels with the blocks into the conversation record, because
 	// the replay decision of a later request depends on it.
-	Thinking     string     `json:"-"`
+	Thinking string `json:"-"`
+	// Origin is the fingerprint of the endpoint that produced these
+	// blocks.
+	//
+	// It travels with the blocks into the conversation record, because
+	// the reasoning belongs to that endpoint and no other.
+	Origin       string     `json:"-"`
 	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
 	FinishReason string     `json:"finish_reason,omitempty"`
 	// Stats is content-free telemetry for the turn: counts, durations and

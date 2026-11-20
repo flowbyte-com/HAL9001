@@ -325,11 +325,12 @@ func TestARecordOfAnotherVersionRefusesTheRequest(t *testing.T) {
 	if _, err := st.AppendTurn(session.RoleUser, "hi", session.Turn{}); err != nil {
 		t.Fatal(err)
 	}
-	record := session.NewProtocol(provider.EncodeReasoning(
-		provider.ReasoningKey("deepseek-reasoner", provider.WireOpenAI),
-		"deepseek-reasoner",
-		provider.ThinkingAsked,
-		[]provider.ReasoningBlock{{Type: provider.ReasoningPlain, Text: "the thought"}}))
+	record := session.NewProtocol(provider.EncodeReasoning(provider.Continuity{
+		Key:      provider.ReasoningKey("deepseek-reasoner", provider.WireOpenAI),
+		Model:    "deepseek-reasoner",
+		Thinking: provider.ThinkingAsked,
+		Blocks:   []provider.ReasoningBlock{{Type: provider.ReasoningPlain, Text: "the thought"}},
+	}))
 	record.Version = session.ProtocolVersion + 1
 	if _, err := st.AppendTurn(session.RoleAssistant, "the answer", session.Turn{
 		Protocol: record,
@@ -374,8 +375,13 @@ func TestTheCompactionTakesTheReasoningWithTheMessage(t *testing.T) {
 	history := []session.Message{
 		{Role: session.RoleUser, Content: "hi"},
 		{Role: session.RoleAssistant, Content: "the answer", Protocol: session.NewProtocol(
-			provider.EncodeReasoning(key, "deepseek-reasoner", provider.ThinkingAsked, []provider.ReasoningBlock{
-				{Type: provider.ReasoningPlain, Text: "the model weighed it"},
+			provider.EncodeReasoning(provider.Continuity{
+				Key:      key,
+				Model:    "deepseek-reasoner",
+				Thinking: provider.ThinkingAsked,
+				Blocks: []provider.ReasoningBlock{
+					{Type: provider.ReasoningPlain, Text: "the model weighed it"},
+				},
 			}))},
 		{Role: session.RoleUser, Content: "and now the other one"},
 	}

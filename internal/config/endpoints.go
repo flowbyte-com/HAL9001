@@ -104,6 +104,41 @@ type EndpointRecord struct {
 	// Review is a note for the operator. A non-empty value means the
 	// endpoint needs the operator's attention.
 	Review string `json:"review,omitempty"`
+	// ThinkingDefault says how the endpoint thinks when a request says
+	// nothing about it: "on", "off", or empty.
+	//
+	// It is a fact about the endpoint, never about the model
+	// identifier: the same Claude model is a Claude model on one
+	// endpoint and an alias on another. An empty value means the
+	// operator said nothing, and HAL resolves what it can from the
+	// address — a gateway HAL does not know keeps its own answer.
+	ThinkingDefault string `json:"thinking_default,omitempty"`
+}
+
+// The documented values of an endpoint's thinking default.
+const (
+	// ThinkingDefaultOn: the endpoint thinks when the request does not
+	// ask for it.
+	ThinkingDefaultOn = "on"
+	// ThinkingDefaultOff: the endpoint thinks only when the request
+	// asks for it.
+	ThinkingDefaultOff = "off"
+)
+
+// ThinkingDefaultValue returns the endpoint's thinking default as it is
+// configured.
+//
+// It reports false for a value that names no state: the operator said
+// nothing, and HAL resolves what it can from the address.
+func (e EndpointRecord) ThinkingDefaultValue() (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(e.ThinkingDefault)) {
+	case ThinkingDefaultOn:
+		return ThinkingDefaultOn, true
+	case ThinkingDefaultOff:
+		return ThinkingDefaultOff, true
+	default:
+		return "", false
+	}
 }
 
 // DiscoveryRecord describes the optional model-catalogue discovery.
@@ -169,6 +204,30 @@ func (e EndpointRecord) CredentialValue() string {
 // endpoint. It never reveals the credential itself.
 func (e EndpointRecord) HasCredential() bool {
 	return e.CredentialValue() != ""
+}
+
+// CredentialProfile names the credential this endpoint uses without
+// naming the credential itself.
+//
+// It is the name of the environment variable that holds the credential,
+// or a marker for a credential the configuration carries itself. It is
+// part of the endpoint's identity: two accounts at one endpoint are two
+// profiles, and the reasoning of one is never sent to the other.
+//
+// The order follows the resolution of the credential itself: an
+// endpoint that names no credential of its own uses the global
+// variable, and its profile says so.
+//
+// The profile is never a secret: it names where the credential is, not
+// what it is.
+func (e EndpointRecord) CredentialProfile() string {
+	if name := strings.TrimSpace(e.CredentialEnv); name != "" {
+		return "env:" + name
+	}
+	if secret := strings.TrimSpace(e.Credential); secret != "" {
+		return "inline"
+	}
+	return "env:" + EnvAPIKey
 }
 
 // EffectiveWireProtocol returns the wire protocol HAL will speak to this
@@ -244,6 +303,12 @@ func (e EndpointRecord) Validate() error {
 	}
 	if e.CredentialEnv != "" && !validEnvName(e.CredentialEnv) {
 		return fmt.Errorf("endpoint %q names an unusable environment variable %q", e.ID, e.CredentialEnv)
+	}
+	switch strings.ToLower(strings.TrimSpace(e.ThinkingDefault)) {
+	case "", ThinkingDefaultOn, ThinkingDefaultOff:
+	default:
+		return fmt.Errorf("endpoint %q has an unknown thinking default %q (known: %q, %q)",
+			e.ID, e.ThinkingDefault, ThinkingDefaultOn, ThinkingDefaultOff)
 	}
 	seen := map[string]bool{}
 	for _, m := range e.Models {
